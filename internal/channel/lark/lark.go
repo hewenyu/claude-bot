@@ -61,10 +61,13 @@ const (
 
 // Field values in Lark events and API responses.
 const (
-	senderUser   = "user"   // sender_type of a person
-	mentionedBot = "bot"    // mentioned_type of an app
-	scopeTenant  = "tenant" // scope_type of permissions granted to the app
-	scopeGranted = 1        // grant_status of an active permission
+	chatP2P       = "p2p"    // chat_type of a direct chat
+	resourceImage = "image"  // message resource type of an image
+	resourceFile  = "file"   // message resource type of any other file
+	senderUser    = "user"   // sender_type of a person
+	mentionedBot  = "bot"    // mentioned_type of an app
+	scopeTenant   = "tenant" // scope_type of permissions granted to the app
+	scopeGranted  = 1        // grant_status of an active permission
 )
 
 const (
@@ -295,7 +298,7 @@ func fromEvent(ev *larkim.P2MessageReceiveV1, botOpenID string) (channel.Message
 
 	mentions := eventMentions(m.Mentions, botOpenID)
 
-	chatType := larkcore.StringValue(m.ChatType)
+	chatType := toChatType(larkcore.StringValue(m.ChatType))
 	if chatType != channel.ChatDirect && !slices.ContainsFunc(mentions, func(x mention) bool { return x.IsBot }) {
 		return channel.Message{}, false // group chatter not addressed to the bot
 	}
@@ -316,6 +319,14 @@ func fromEvent(ev *larkim.P2MessageReceiveV1, botOpenID string) (channel.Message
 		Attachments: atts,
 		CreatedAt:   millis(larkcore.StringValue(m.CreateTime)),
 	}, true
+}
+
+func toChatType(larkType string) channel.ChatType {
+	if larkType == chatP2P {
+		return channel.ChatDirect
+	}
+
+	return channel.ChatGroup
 }
 
 // eventMentions converts event mentions, flagging the ones that are our bot.
@@ -450,12 +461,7 @@ func dedupeKey(parts ...string) string {
 }
 
 // Get implements channel.Channel.
-func (c *Channel) Get(ctx context.Context, id string) (channel.Message, error) {
-	_, platformID, err := channel.SplitID(id)
-	if err != nil {
-		return channel.Message{}, err
-	}
-
+func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, error) {
 	resp, err := c.client.Im.Message.Get(ctx, larkim.NewGetMessageReqBuilder().MessageId(platformID).Build())
 	if err != nil {
 		return channel.Message{}, fmt.Errorf("lark get message: %w", err)
@@ -521,7 +527,7 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 	}
 
 	resp, err := c.client.Im.MessageResource.Get(ctx, larkim.NewGetMessageResourceReqBuilder().
-		MessageId(platformID).FileKey(att.Key).Type(att.Kind).Build())
+		MessageId(platformID).FileKey(att.Key).Type(resourceType(att.Kind)).Build())
 	if err != nil {
 		return "", fmt.Errorf("lark download: %w", err)
 	}
@@ -545,6 +551,14 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 	}
 
 	return path, nil
+}
+
+func resourceType(kind channel.AttachmentKind) string {
+	if kind == channel.AttachmentImage {
+		return resourceImage
+	}
+
+	return resourceFile
 }
 
 // fileName picks a local name for a download: the attachment's own name, the

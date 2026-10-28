@@ -26,8 +26,8 @@ func TestSplitID(t *testing.T) {
 
 			ch, pid, err := SplitID(tt.id)
 			if tt.wantErr {
-				if !errors.Is(err, ErrUnknownChannel) {
-					t.Fatalf("SplitID(%q) err = %v, want ErrUnknownChannel", tt.id, err)
+				if !errors.Is(err, ErrInvalidID) {
+					t.Fatalf("SplitID(%q) err = %v, want ErrInvalidID", tt.id, err)
 				}
 
 				return

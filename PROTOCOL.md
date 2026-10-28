@@ -56,7 +56,7 @@ type Channel interface {
     Listen(ctx context.Context, deliver func(Message) error, ready func()) error
     Reply(ctx context.Context, msg Message, text string) error
     Send(ctx context.Context, chatID, text string) error
-    Get(ctx context.Context, id string) (Message, error)
+    Get(ctx context.Context, platformID string) (Message, error)
     Download(ctx context.Context, msg Message, att Attachment, dir string) (string, error)
     Ack(ctx context.Context, msg Message) error
 }
