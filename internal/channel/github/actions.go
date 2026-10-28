@@ -5,6 +5,21 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
+)
+
+// Issue and PR states, and why an issue was closed.
+const (
+	stateOpen        = "open"
+	stateClosed      = "closed"
+	reasonCompleted  = "completed"
+	reasonNotPlanned = "not_planned"
+)
+
+// Accepted values of Merge's method and Review's event.
+var (
+	mergeMethods = []string{MergeSquash, MergeCommit, MergeRebase}
+	reviewEvents = []string{ReviewApprove, ReviewRequestChanges, ReviewComment}
 )
 
 // Close closes the issue or PR that id (a protocol or platform id) belongs
@@ -16,29 +31,29 @@ func (c *Channel) Close(ctx context.Context, id string, notPlanned bool) error {
 	}
 
 	var i issue
-	if err := c.get(ctx, fmt.Sprintf("/repos/%s/issues/%d", c.repo, r.number), nil, &i); err != nil {
+	if err := c.get(ctx, c.repoPath("/issues/%d", r.number), nil, &i); err != nil {
 		return err
 	}
 
 	if i.isPR() {
-		return c.send(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", c.repo, r.number), map[string]string{"state": "closed"}, nil)
+		return c.send(ctx, http.MethodPatch, c.repoPath("/pulls/%d", r.number), map[string]string{"state": stateClosed}, nil)
 	}
 
-	reason := "completed"
+	reason := reasonCompleted
 	if notPlanned {
-		reason = "not_planned"
+		reason = reasonNotPlanned
 	}
 
-	body := map[string]string{"state": "closed", "state_reason": reason}
+	body := map[string]string{"state": stateClosed, "state_reason": reason}
 
-	return c.send(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", c.repo, r.number), body, nil)
+	return c.send(ctx, http.MethodPatch, c.repoPath("/issues/%d", r.number), body, nil)
 }
 
 // Merge merges the PR that id belongs to with method (MergeSquash,
 // MergeCommit or MergeRebase) and returns the resulting commit.
 func (c *Channel) Merge(ctx context.Context, id, method string) (string, error) {
-	if !slices.Contains([]string{MergeSquash, MergeCommit, MergeRebase}, method) {
-		return "", fmt.Errorf("github merge: method %q: want %s, %s or %s", method, MergeSquash, MergeCommit, MergeRebase)
+	if !slices.Contains(mergeMethods, method) {
+		return "", fmt.Errorf("github merge: method %q: want one of %s", method, strings.Join(mergeMethods, ", "))
 	}
 
 	r, err := c.refOf(id)
@@ -50,7 +65,7 @@ func (c *Channel) Merge(ctx context.Context, id, method string) (string, error) 
 		SHA string `json:"sha"`
 	}
 
-	path := fmt.Sprintf("/repos/%s/pulls/%d/merge", c.repo, r.number)
+	path := c.repoPath("/pulls/%d/merge", r.number)
 	if err := c.send(ctx, http.MethodPut, path, map[string]string{"merge_method": method}, &res); err != nil {
 		return "", err
 	}
@@ -62,8 +77,8 @@ func (c *Channel) Merge(ctx context.Context, id, method string) (string, error) 
 // ReviewApprove, ReviewRequestChanges or ReviewComment; the last two need a
 // body.
 func (c *Channel) Review(ctx context.Context, id, event, body string) error {
-	if !slices.Contains([]string{ReviewApprove, ReviewRequestChanges, ReviewComment}, event) {
-		return fmt.Errorf("github review: event %q: want %s, %s or %s", event, ReviewApprove, ReviewRequestChanges, ReviewComment)
+	if !slices.Contains(reviewEvents, event) {
+		return fmt.Errorf("github review: event %q: want one of %s", event, strings.Join(reviewEvents, ", "))
 	}
 
 	if body == "" && event != ReviewApprove {
@@ -80,5 +95,5 @@ func (c *Channel) Review(ctx context.Context, id, event, body string) error {
 		req["body"] = withMarker(body)
 	}
 
-	return c.send(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/reviews", c.repo, r.number), req, nil)
+	return c.send(ctx, http.MethodPost, c.repoPath("/pulls/%d/reviews", r.number), req, nil)
 }

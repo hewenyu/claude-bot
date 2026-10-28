@@ -1,5 +1,5 @@
 // Package channel defines the claude-bot protocol: the message shape and the
-// interface every chat platform adapter (Lark, Discord)
+// interface every platform adapter (Lark, Discord, Telegram, Slack, GitHub)
 // implements. The CLI and the Claude-facing workflow depend only on this.
 package channel
 

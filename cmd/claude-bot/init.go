@@ -101,7 +101,7 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 
 	fmt.Println("\n下一步：在这个仓库里打开 Claude Code，运行  /loop /bot")
 	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
-	fmt.Println("要再接入其他渠道，运行  claude-bot init --channel <lark|discord|telegram|slack|github>")
+	fmt.Printf("要再接入其他渠道，运行  claude-bot init --channel <%s>\n", channelNames("|"))
 
 	return nil
 }
@@ -176,7 +176,7 @@ func parseInitFlags(args []string) (initOptions, error) {
 	var o initOptions
 
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.StringVar(&o.channel, "channel", "", "lark, discord, telegram, slack or github (default: ask on a terminal, else lark)")
+	fs.StringVar(&o.channel, "channel", "", channelNames(", ")+" (default: ask on a terminal, else "+channelChoices[0].name+")")
 	fs.BoolVar(&o.botMD, "bot-md", false, "only rewrite .claude/commands/bot.md with this version's (overwrites it), nothing else")
 	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
 	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
@@ -236,7 +236,7 @@ func settleChannel(o *initOptions) error {
 	case len(implied) == 1:
 		o.channel = implied[0]
 	case o.channel != "" && !knownChannel(o.channel):
-		return fmt.Errorf("%w: unknown --channel %q: want lark, discord, telegram, slack or github", errUsage, o.channel)
+		return fmt.Errorf("%w: unknown --channel %q: want one of %s", errUsage, o.channel, channelNames(", "))
 	}
 
 	return nil

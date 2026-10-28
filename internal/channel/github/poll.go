@@ -2,9 +2,7 @@ package github
 
 import (
 	"context"
-	"fmt"
 	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -46,13 +44,11 @@ type poller struct {
 }
 
 func newPoller(c *Channel, me string, deliver func(channel.Message) error, start time.Time) *poller {
-	repo := "/repos/" + c.repo
-
 	return &poller{
 		c: c, me: me, deliver: deliver, start: start,
-		issues:         feed{path: repo + "/issues", since: start},
-		comments:       feed{path: repo + "/issues/comments", since: start},
-		reviewComments: feed{path: repo + "/pulls/comments", since: start},
+		issues:         feed{path: c.repoPath("/issues"), since: start},
+		comments:       feed{path: c.repoPath("/issues/comments"), since: start},
+		reviewComments: feed{path: c.repoPath("/pulls/comments"), since: start},
 	}
 }
 
@@ -145,10 +141,10 @@ func pollFeed[T any](ctx context.Context, p *poller, f *feed, handle func(T) tim
 // comments arrive on their own; a review is delivered for its summary or
 // its verdict.
 func (p *poller) pollReviews(ctx context.Context, n int) error {
-	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", p.c.repo, n)
+	path := p.c.repoPath("/pulls/%d/reviews", n)
 
 	_, err := listAll(ctx, p.c, path, nil, "", func(rv review) {
-		if rv.Body == "" && rv.State == "COMMENTED" {
+		if rv.Body == "" && rv.State == reviewCommented {
 			return // just the wrapper of inline comments
 		}
 
@@ -168,7 +164,7 @@ func (p *poller) pollReviews(ctx context.Context, n int) error {
 func (p *poller) importOpen(ctx context.Context) error {
 	var open []issue
 
-	_, err := listAll(ctx, p.c, "/repos/"+p.c.repo+"/issues", url.Values{"state": {"open"}}, "", func(i issue) {
+	_, err := listAll(ctx, p.c, p.c.repoPath("/issues"), url.Values{"state": {stateOpen}}, "", func(i issue) {
 		open = append(open, i)
 	})
 	if err != nil {
@@ -200,19 +196,9 @@ func (p *poller) importOpen(ctx context.Context) error {
 
 // lastComment is the latest comment on i, nil if there is none.
 func (p *poller) lastComment(ctx context.Context, i issue) (*comment, error) {
-	if i.Comments == 0 {
-		return nil, nil
-	}
-
-	q := url.Values{"per_page": {"1"}, "page": {strconv.Itoa(i.Comments)}}
-
-	var cs []comment
-	if err := p.c.get(ctx, p.c.commentsPath(i.Number), q, &cs); err != nil {
+	cs, err := p.c.latestComments(ctx, i, 1)
+	if err != nil || len(cs) == 0 {
 		return nil, err
-	}
-
-	if len(cs) == 0 {
-		return nil, nil
 	}
 
 	return &cs[0], nil

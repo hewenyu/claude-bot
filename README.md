@@ -9,9 +9,9 @@
 
 把飞书 / Lark、Discord、Telegram 或 Slack 机器人接到项目仓库里常驻的 Claude Code 会话上，GitHub 的 issue 和 PR 也可以作为一个渠道接进来。
 
-项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它还会用 `gh` 盯仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
+项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它也盯着仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
 
-claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地收件箱，并提供回复命令。理解需求、决定怎么做、怎么回复，都由 Claude 自己判断。GitHub 相关操作 Claude 直接用 `gh`。
+claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地收件箱，并提供回复命令。理解需求、决定怎么做、怎么回复，都由 Claude 自己判断。没把 GitHub 接成渠道时，Claude 用 `gh` 自己扫 issue 和 PR。
 
 ## 特性
 
@@ -28,15 +28,15 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 ```
  私聊 bot / 群里 @bot                 ┌──▶ 给原消息加表情：收到了
  （飞书、Discord、Telegram、Slack）    │
-        ──长连接 / 长轮询──▶ claude-bot serve ──▶ .claude-bot/inbox/
-                                                           │
- Claude Code (/loop /bot) ◀──── claude-bot inbox --wait ───┘
+ GitHub 的 issue、PR、评论、review     │
+        ──长连接 / 轮询──▶ claude-bot serve ──▶ .claude-bot/inbox/
+                                                         │
+ Claude Code (/loop /bot) ◀──── claude-bot inbox --wait ─┘
           │
-          └── claude-bot reply <id> ──▶ 原消息下回复（群里 @ 发送者）
+          └── claude-bot reply <id> ──▶ 原消息下回复（群里 @ 发送者，GitHub 上发评论）
 ```
 
-- **不需要公网地址**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，Telegram 用长轮询，都是从本机主动连出去的。
-- **一个仓库一个 bot**：凭证、收件箱、监听进程都放在仓库自己的 `.claude-bot/` 里，多个项目可以同时值守。一个仓库里可以同时接多个渠道。
+- **怎么连出去**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，Telegram 用长轮询，GitHub 每 30 秒轮询一次 REST API，都是从本机主动发起的。
 - **监听进程按需启动**：第一次执行 `claude-bot inbox` 时，会在后台自动拉起 `serve`。
 
 ### 多条消息怎么处理
@@ -59,9 +59,9 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - macOS 或 Linux
 - Go 1.27+（用于安装）
 - git
-- [GitHub CLI](https://cli.github.com)（`gh`，已登录）
+- [GitHub CLI](https://cli.github.com)（`gh`，已登录；把 GitHub 接成渠道后，盯 issue 和 PR 就不再需要它）
 - [Claude Code](https://claude.com/claude-code)
-- 飞书 / Lark、Discord、Telegram 或 Slack 中任意一个的账号
+- 飞书 / Lark、Discord、Telegram、Slack 或 GitHub 中任意一个的账号
 
 ## 安装
 
@@ -90,11 +90,11 @@ claude-bot init
 
 不管选哪个渠道，`init` 都会把凭证写入 `.claude-bot/config.json`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通（GitHub 没有私聊，只检查 token 能不能访问仓库）。
 
+`.claude/commands/bot.md` 是值守流程（处理聊天消息和 GitHub 的 issue、PR），可以按项目约定修改。
+
 #### 选飞书时
 
 `init` 会打开浏览器，走飞书官方的应用注册授权流程。登录后点「确认」，就会创建好应用，并配置好机器人能力、[权限](#权限)和事件订阅（长连接），不用去开放平台手动配置。已经有应用的话，用 `--app-id` 和 `--app-secret` 接入。
-
-`.claude/commands/bot.md` 是值守流程（处理聊天消息和 GitHub 的 issue、PR），可以按项目约定修改。
 
 #### 选 Discord 时
 
@@ -350,21 +350,21 @@ make build    # bin/claude-bot
 代码结构：
 
 ```
-cmd/claude-bot/          CLI 入口和各个命令
-internal/channel/        渠道协议：消息格式和 Channel 接口
-internal/channel/lark/   飞书 / Lark 适配器、应用注册流程
-internal/channel/discord/ Discord 适配器
-internal/channel/telegram/ Telegram 适配器（Bot API 长轮询）
-internal/channel/slack/  Slack 适配器（Socket Mode）
-internal/channel/github/ GitHub 适配器（REST API 轮询 issue、PR、评论和 review）
-internal/markdown/       各适配器共用的 Markdown 拆分
-internal/inbox/          基于文件的收件箱
-internal/config/         项目定位和凭证加载
-internal/transport/      各适配器共用的 HTTP / WebSocket 客户端、代理、限长下载、重连退避
-internal/atomicfile/     原子写文件
+cmd/claude-bot/             CLI 入口和各个命令（init 按渠道拆在 init_*.go 里）
+internal/channel/           渠道协议：消息格式、Channel 接口、id 和下载的公共函数
+internal/channel/lark/      飞书 / Lark 适配器、应用注册流程
+internal/channel/discord/   Discord 适配器（Gateway 长连接）
+internal/channel/telegram/  Telegram 适配器（Bot API 长轮询）
+internal/channel/slack/     Slack 适配器（Socket Mode）
+internal/channel/github/    GitHub 适配器（REST API 轮询 issue、PR、评论和 review；close / merge / review 操作）
+internal/markdown/          各适配器共用的 Markdown 拆分
+internal/inbox/             基于文件的收件箱
+internal/config/            项目定位和凭证加载
+internal/transport/         各适配器共用的 HTTP / WebSocket 客户端、代理、限长下载、重连退避
+internal/atomicfile/        原子写文件
 ```
 
-接入新的聊天平台只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](PROTOCOL.md#3-渠道适配器)。
+各适配器只依赖 `channel`、`transport`、`markdown` 这几个公共包，互相之间没有依赖；CLI 收发消息只通过 `channel.Channel` 接口，用到具体渠道类型的只有按配置创建适配器（`app.go`）和 `init`、`status`、`github` 这几个命令。接入新的平台只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](PROTOCOL.md#3-渠道适配器)。
 
 `.claude/skills/` 下装了 Go 最佳实践相关的 skill（[samber/cc-skills-golang](https://github.com/samber/cc-skills-golang)），在这个仓库里开发时 Claude 会参照这些规范。
 

@@ -140,7 +140,7 @@ func (c *Channel) Account(ctx context.Context) (Account, error) {
 			Push bool `json:"push"`
 		} `json:"permissions"`
 	}
-	if err := c.get(ctx, "/repos/"+c.repo, nil, &r); err != nil {
+	if err := c.get(ctx, c.repoPath(""), nil, &r); err != nil {
 		return Account{}, fmt.Errorf("github: no access to %s with this token: %w", c.repo, err)
 	}
 
@@ -209,7 +209,7 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 	}
 
 	if r.kind == kindReviewComment && msg.ThreadID != "" {
-		return c.post(ctx, fmt.Sprintf("/repos/%s/pulls/%d/comments/%s/replies", c.repo, r.number, msg.ThreadID), text)
+		return c.post(ctx, c.repoPath("/pulls/%d/comments/%s/replies", r.number, msg.ThreadID), text)
 	}
 
 	return c.post(ctx, c.commentsPath(r.number), text)
@@ -226,7 +226,7 @@ func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 }
 
 func (c *Channel) commentsPath(number int) string {
-	return fmt.Sprintf("/repos/%s/issues/%d/comments", c.repo, number)
+	return c.repoPath("/issues/%d/comments", number)
 }
 
 // post comments text, split to fit GitHub's limit. Every part carries the
@@ -257,19 +257,19 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 	case kindComment:
 		var cm comment
 
-		err := c.get(ctx, fmt.Sprintf("/repos/%s/issues/comments/%d", c.repo, r.id), nil, &cm)
+		err := c.get(ctx, c.repoPath("/issues/comments/%d", r.id), nil, &cm)
 
 		return c.fromComment(cm), err
 	case kindReviewComment:
 		var rc reviewComment
 
-		err := c.get(ctx, fmt.Sprintf("/repos/%s/pulls/comments/%d", c.repo, r.id), nil, &rc)
+		err := c.get(ctx, c.repoPath("/pulls/comments/%d", r.id), nil, &rc)
 
 		return c.fromReviewComment(rc), err
 	case kindReview:
 		var rv review
 
-		err := c.get(ctx, fmt.Sprintf("/repos/%s/pulls/%d/reviews/%d", c.repo, r.number, r.id), nil, &rv)
+		err := c.get(ctx, c.repoPath("/pulls/%d/reviews/%d", r.number, r.id), nil, &rv)
 
 		return c.fromReview(r.number, rv), err
 	}
@@ -280,7 +280,7 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 // conversation is an issue or PR with its latest comments appended.
 func (c *Channel) conversation(ctx context.Context, number int) (channel.Message, error) {
 	var i issue
-	if err := c.get(ctx, fmt.Sprintf("/repos/%s/issues/%d", c.repo, number), nil, &i); err != nil {
+	if err := c.get(ctx, c.repoPath("/issues/%d", number), nil, &i); err != nil {
 		return channel.Message{}, err
 	}
 
@@ -289,11 +289,8 @@ func (c *Channel) conversation(ctx context.Context, number int) (channel.Message
 		return msg, nil
 	}
 
-	// The last page holds the latest comments.
-	q := url.Values{"per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa((i.Comments + perPage - 1) / perPage)}}
-
-	var comments []comment
-	if err := c.get(ctx, c.commentsPath(number), q, &comments); err != nil {
+	comments, err := c.latestComments(ctx, i, perPage)
+	if err != nil {
 		return channel.Message{}, err
 	}
 
@@ -309,13 +306,32 @@ func (c *Channel) conversation(ctx context.Context, number int) (channel.Message
 	b.WriteString(":")
 
 	for _, cm := range comments {
-		fmt.Fprintf(&b, "\n\n@%s (%s, #c%d):\n%s", cm.User.Login, cm.CreatedAt.UTC().Format(time.DateTime), cm.ID, cm.Body)
+		fmt.Fprintf(&b, "\n\n%s (%s, %s):\n%s",
+			cm.User.toUser().Mention, cm.CreatedAt.UTC().Format(time.DateTime), anchor(kindComment, cm.ID), cm.Body)
 	}
 
 	msg.Text = b.String()
 	msg.Attachments = attachments(msg.Text)
 
 	return msg, nil
+}
+
+// latestComments returns the last page of i's comments, at most n of them:
+// the latest ones.
+func (c *Channel) latestComments(ctx context.Context, i issue, n int) ([]comment, error) {
+	if i.Comments == 0 {
+		return nil, nil
+	}
+
+	lastPage := (i.Comments + n - 1) / n
+	q := url.Values{"per_page": {strconv.Itoa(n)}, "page": {strconv.Itoa(lastPage)}}
+
+	var comments []comment
+	if err := c.get(ctx, c.commentsPath(i.Number), q, &comments); err != nil {
+		return nil, err
+	}
+
+	return comments, nil
 }
 
 // Download implements channel.Channel. The token goes only to github.com:
@@ -361,11 +377,11 @@ func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
 
 	switch r.kind {
 	case kindIssue:
-		path = fmt.Sprintf("/repos/%s/issues/%d/reactions", c.repo, r.number)
+		path = c.repoPath("/issues/%d/reactions", r.number)
 	case kindComment:
-		path = fmt.Sprintf("/repos/%s/issues/comments/%d/reactions", c.repo, r.id)
+		path = c.repoPath("/issues/comments/%d/reactions", r.id)
 	case kindReviewComment:
-		path = fmt.Sprintf("/repos/%s/pulls/comments/%d/reactions", c.repo, r.id)
+		path = c.repoPath("/pulls/comments/%d/reactions", r.id)
 	default:
 		return nil
 	}

@@ -46,7 +46,8 @@ const (
 	sharedPerm  = 0o644
 )
 
-var errNotConfigured = errors.New("no channel configured: run `claude-bot init` (Lark), or init with --discord-token, --telegram-token, --slack-app-token and --slack-bot-token, or --github-token in the project; or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, or SLACK_APP_TOKEN and SLACK_BOT_TOKEN")
+var errNotConfigured = errors.New("no channel configured: run `claude-bot init` in the project (or `claude-bot init --channel <name>`); " +
+	"or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, or SLACK_APP_TOKEN and SLACK_BOT_TOKEN")
 
 func newApp(ctx context.Context, project string) (*app, error) {
 	dir, err := config.Dir(ctx, project)

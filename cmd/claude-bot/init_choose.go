@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -41,13 +42,17 @@ var channelChoices = []channelChoice{
 }
 
 func knownChannel(name string) bool {
-	for _, c := range channelChoices {
-		if c.name == name {
-			return true
-		}
+	return slices.ContainsFunc(channelChoices, func(c channelChoice) bool { return c.name == name })
+}
+
+// channelNames lists the channels in menu order, joined by sep.
+func channelNames(sep string) string {
+	names := make([]string, len(channelChoices))
+	for i, c := range channelChoices {
+		names[i] = c.name
 	}
 
-	return false
+	return strings.Join(names, sep)
 }
 
 // configured reports whether cfg already sets up the channel.

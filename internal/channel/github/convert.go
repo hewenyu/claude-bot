@@ -31,7 +31,10 @@ const (
 	kindReview        = 'v' // a review: "...#v<id>"
 )
 
-const kindSep = "#"
+const (
+	kindSep     = "#"
+	anchorKinds = string(kindComment) + string(kindReviewComment) + string(kindReview)
+)
 
 // ref locates an issue or PR, or something posted on it.
 type ref struct {
@@ -50,7 +53,13 @@ func (c *Channel) platformID(r ref) string {
 		return c.thread(r.number)
 	}
 
-	return c.thread(r.number) + kindSep + string(r.kind) + strconv.FormatInt(r.id, 10)
+	return c.thread(r.number) + anchor(r.kind, r.id)
+}
+
+// anchor is what follows the issue or PR in the platform id of something
+// posted on it, e.g. "#c123".
+func anchor(kind byte, id int64) string {
+	return kindSep + string(kind) + strconv.FormatInt(id, 10)
 }
 
 // parseRef reads a platform id of the configured repository.
@@ -62,7 +71,7 @@ func (c *Channel) parseRef(platformID string) (ref, error) {
 		return ref{}, bad
 	}
 
-	num, anchor, hasAnchor := strings.Cut(rest, kindSep)
+	num, tail, hasAnchor := strings.Cut(rest, kindSep)
 
 	n, err := strconv.Atoi(num)
 	if err != nil || n <= 0 {
@@ -74,13 +83,13 @@ func (c *Channel) parseRef(platformID string) (ref, error) {
 		return r, nil
 	}
 
-	if len(anchor) < 2 || !strings.ContainsRune("crv", rune(anchor[0])) {
+	if len(tail) < 2 || strings.IndexByte(anchorKinds, tail[0]) < 0 {
 		return ref{}, bad
 	}
 
-	r.kind = anchor[0]
+	r.kind = tail[0]
 
-	if r.id, err = strconv.ParseInt(anchor[1:], 10, 64); err != nil || r.id <= 0 {
+	if r.id, err = strconv.ParseInt(tail[1:], 10, 64); err != nil || r.id <= 0 {
 		return ref{}, bad
 	}
 
@@ -166,12 +175,20 @@ type review struct {
 	SubmittedAt time.Time `json:"submitted_at"`
 }
 
-// Review states with a verdict worth delivering even without a body.
+// Review states, as the API reports them.
+const (
+	reviewApproved         = "APPROVED"
+	reviewChangesRequested = "CHANGES_REQUESTED"
+	reviewCommented        = "COMMENTED"
+	reviewDismissed        = "DISMISSED"
+)
+
+// reviewVerdicts words the review states for the message text.
 var reviewVerdicts = map[string]string{
-	"APPROVED":          "approved",
-	"CHANGES_REQUESTED": "changes requested",
-	"COMMENTED":         "commented",
-	"DISMISSED":         "dismissed",
+	reviewApproved:         "approved",
+	reviewChangesRequested: "changes requested",
+	reviewCommented:        "commented",
+	reviewDismissed:        "dismissed",
 }
 
 // numberOf reads the issue or PR number at the end of an API URL.

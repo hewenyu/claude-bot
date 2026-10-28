@@ -1,6 +1,6 @@
 // Command claude-bot connects a project's chat bot (Lark / Feishu, Discord,
-// Telegram, Slack) and its GitHub issues and PRs to a Claude Code session running /loop in that project's
-// repository.
+// Telegram, Slack) and its GitHub issues and PRs to a Claude Code session
+// running /loop in that project's repository.
 package main
 
 import (

@@ -133,6 +133,12 @@ func apiError(r request, resp *http.Response) error {
 	return &APIError{Method: r.method, Path: r.path, Status: resp.StatusCode, Message: e.Message}
 }
 
+// repoPath is an API path below the repository, e.g. repoPath("/issues/%d", 42)
+// is /repos/<owner>/<repo>/issues/42.
+func (c *Channel) repoPath(format string, args ...any) string {
+	return "/repos/" + c.repo + fmt.Sprintf(format, args...)
+}
+
 // get is a plain GET.
 func (c *Channel) get(ctx context.Context, path string, query url.Values, out any) error {
 	_, err := c.call(ctx, request{method: http.MethodGet, path: path, query: query}, out)

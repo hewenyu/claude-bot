@@ -10,7 +10,10 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 )
 
-const githubUsage = "github close <id> [--not-planned] | merge <id> [--method squash|merge|rebase] | review <id> approve|request-changes|comment [text|-]"
+const (
+	reviewUsage = "github review <id> approve|request-changes|comment [text|-]"
+	githubUsage = "github close <id> [--not-planned] | merge <id> [--method squash|merge|rebase] | " + reviewUsage
+)
 
 // Review verdicts as typed on the command line.
 var reviewEvents = map[string]string{
@@ -76,7 +79,7 @@ func cmdGitHub(ctx context.Context, project string, args []string) error {
 
 func review(ctx context.Context, ch *github.Channel, id string, args []string) error {
 	if len(args) == 0 || reviewEvents[args[0]] == "" {
-		return fmt.Errorf("%w: github review <id> approve|request-changes|comment [text|-]", errUsage)
+		return fmt.Errorf("%w: %s", errUsage, reviewUsage)
 	}
 
 	event := reviewEvents[args[0]]
