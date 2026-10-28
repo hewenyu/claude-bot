@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
@@ -47,7 +48,8 @@ const (
 )
 
 var errNotConfigured = errors.New("no channel configured: run `claude-bot init` in the project (or `claude-bot init --channel <name>`); " +
-	"or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, or SLACK_APP_TOKEN and SLACK_BOT_TOKEN")
+	"or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN and SLACK_BOT_TOKEN, " +
+	"or DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET")
 
 func newApp(ctx context.Context, project string) (*app, error) {
 	dir, err := config.Dir(ctx, project)
@@ -84,6 +86,7 @@ func openChannels(cfg config.Config, log *slog.Logger) ([]channel.Channel, error
 		addChannel(&chs, cfg.Telegram, telegram.New, log),
 		addChannel(&chs, cfg.Slack, slack.New, log),
 		addChannel(&chs, cfg.GitHub, github.New, log),
+		addChannel(&chs, cfg.DingTalk, dingtalk.New, log),
 	)
 
 	return chs, err

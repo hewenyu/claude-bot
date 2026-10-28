@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
@@ -22,8 +23,9 @@ import (
 
 // Setup guides in the README.
 const (
-	slackGuide  = "https://github.com/hewenyu/claude-bot#选-slack-时"
-	githubGuide = "https://github.com/hewenyu/claude-bot#选-github-时"
+	slackGuide    = "https://github.com/hewenyu/claude-bot#选-slack-时"
+	githubGuide   = "https://github.com/hewenyu/claude-bot#选-github-时"
+	dingtalkGuide = "https://github.com/hewenyu/claude-bot#选钉钉时"
 )
 
 // channelChoice is one entry of the init menu.
@@ -39,6 +41,7 @@ var channelChoices = []channelChoice{
 	{name: telegram.Name, label: "Telegram（需要 @BotFather 给的 token）"},
 	{name: slack.Name, label: "Slack（需要 app token 和 bot token）"},
 	{name: github.Name, label: "GitHub（仓库的 issue、PR 和评论，需要 token）"},
+	{name: dingtalk.Name, label: "钉钉 / DingTalk（企业内部应用的机器人，需要 Client ID 和 Client Secret）"},
 }
 
 func knownChannel(name string) bool {
@@ -68,6 +71,8 @@ func configured(cfg config.Config, name string) bool {
 		return cfg.Slack != nil
 	case github.Name:
 		return cfg.GitHub != nil
+	case dingtalk.Name:
+		return cfg.DingTalk != nil
 	}
 
 	return false
@@ -202,6 +207,23 @@ func askTokens(o *initOptions, p *prompter) error {
 		var err error
 		if o.slackAppToken, err = p.ask("App-Level Token（xapp-…）"); err == nil {
 			o.slackBotToken, err = p.ask("Bot User OAuth Token（xoxb-…）")
+		}
+
+		return err
+	case dingtalk.Name:
+		if o.dingtalkID != "" {
+			return nil
+		}
+
+		if p == nil {
+			return fmt.Errorf("%w: --channel dingtalk needs --dingtalk-client-id and --dingtalk-client-secret", errUsage)
+		}
+
+		p.say("先按 README 创建钉钉应用并开启 Stream 模式的机器人：%s\n", dingtalkGuide)
+
+		var err error
+		if o.dingtalkID, err = p.ask("Client ID（AppKey）"); err == nil {
+			o.dingtalkSecret, err = p.ask("Client Secret（AppSecret）")
 		}
 
 		return err

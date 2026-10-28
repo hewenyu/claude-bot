@@ -266,6 +266,9 @@ func TestParseInitFlags_settlesChannel(t *testing.T) {
 		{args: []string{"--bot-md"}, ok: true},
 		{args: []string{"--github-token", "g", "--github-repo", "o/r"}, channel: "github", ok: true},
 		{args: []string{"--channel", "github"}, channel: "github", ok: true},
+		{args: []string{"--dingtalk-client-id", "ding1", "--dingtalk-client-secret", "s"}, channel: "dingtalk", ok: true},
+		{args: []string{"--dingtalk-client-id", "ding1"}},
+		{args: []string{"--dingtalk-client-id", "ding1", "--dingtalk-client-secret", "s", "--github-token", "g"}},
 		{args: []string{"--channel", "wechat"}},
 		{args: []string{"--channel", "discord", "--telegram-token", "1:t"}},
 		{args: []string{"--slack-bot-token", "xoxb-1"}},
@@ -323,6 +326,7 @@ func TestChooseChannel(t *testing.T) {
 		{input: "4", want: "slack"}, // no trailing newline
 		{input: "x\n9\n2\n", want: "discord"},
 		{input: "5\n", want: "github"},
+		{input: "6\n", want: "dingtalk"},
 	}
 
 	for _, tt := range tests {

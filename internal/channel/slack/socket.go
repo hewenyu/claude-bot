@@ -16,10 +16,6 @@ import (
 const (
 	backoffStart = 2 * time.Second // first wait after a failed connection
 	backoffCap   = time.Minute
-	pingEvery    = 30 * time.Second
-	readTimeout  = 3 * pingEvery // no frame, not even a pong, for this long: reconnect
-	writeTimeout = 10 * time.Second
-	maxFrame     = 4 << 20
 
 	envelopeHello      = "hello"
 	envelopeDisconnect = "disconnect"
@@ -114,7 +110,7 @@ func (c *Channel) session(ctx context.Context, bot Bot, deliver func(channel.Mes
 	done := make(chan struct{})
 	defer close(done)
 
-	keepAlive(conn, done)
+	touch := transport.KeepAlive(conn, done)
 
 	for {
 		_, data, err := conn.ReadMessage()
@@ -126,7 +122,7 @@ func (c *Channel) session(ctx context.Context, bot Bot, deliver func(channel.Mes
 			return connected, fmt.Errorf("slack socket: %w", err)
 		}
 
-		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
+		touch()
 
 		hello, end, err := c.frame(conn, data, bot, deliver)
 		if hello {
@@ -156,7 +152,7 @@ func (c *Channel) frame(conn *websocket.Conn, data []byte, bot Bot, deliver func
 	// Acknowledge first: Slack redelivers what is not acknowledged within
 	// 3 s, and the inbox drops duplicates anyway.
 	if env.EnvelopeID != "" {
-		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+		_ = conn.SetWriteDeadline(time.Now().Add(transport.WriteTimeout))
 		if err := conn.WriteJSON(map[string]string{"envelope_id": env.EnvelopeID}); err != nil {
 			return false, true, fmt.Errorf("slack socket ack: %w", err)
 		}
@@ -176,35 +172,6 @@ func (c *Channel) frame(conn *websocket.Conn, data []byte, bot Bot, deliver func
 	}
 
 	return false, false, nil
-}
-
-// keepAlive pings the server until done is closed; every frame, pongs
-// included, pushes the read deadline back.
-func keepAlive(conn *websocket.Conn, done <-chan struct{}) {
-	conn.SetReadLimit(maxFrame)
-	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(readTimeout))
-	})
-	conn.SetPingHandler(func(data string) error {
-		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-
-		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(writeTimeout))
-	})
-
-	go func() {
-		t := time.NewTicker(pingEvery)
-		defer t.Stop()
-
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeTimeout))
-			}
-		}
-	}()
 }
 
 func (c *Channel) handle(payload json.RawMessage, bot Bot, deliver func(channel.Message) error) {

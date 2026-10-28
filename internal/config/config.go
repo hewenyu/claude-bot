@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
+	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
@@ -32,14 +33,16 @@ const (
 
 // Environment variables.
 const (
-	claudeProjectEnv = "CLAUDE_PROJECT_DIR" // set by Claude Code for its session
-	larkAppIDEnv     = "LARK_APP_ID"
-	larkSecretEnv    = "LARK_APP_SECRET" //nolint:gosec // the variable name, not a secret
-	larkDomainEnv    = "LARK_DOMAIN"
-	discordTokenEnv  = "DISCORD_BOT_TOKEN"  //nolint:gosec // the variable name, not a secret
-	telegramTokenEnv = "TELEGRAM_BOT_TOKEN" //nolint:gosec // the variable name, not a secret
-	slackAppTokenEnv = "SLACK_APP_TOKEN"    //nolint:gosec // the variable name, not a secret
-	slackBotTokenEnv = "SLACK_BOT_TOKEN"    //nolint:gosec // the variable name, not a secret
+	claudeProjectEnv  = "CLAUDE_PROJECT_DIR" // set by Claude Code for its session
+	larkAppIDEnv      = "LARK_APP_ID"
+	larkSecretEnv     = "LARK_APP_SECRET" //nolint:gosec // the variable name, not a secret
+	larkDomainEnv     = "LARK_DOMAIN"
+	discordTokenEnv   = "DISCORD_BOT_TOKEN"  //nolint:gosec // the variable name, not a secret
+	telegramTokenEnv  = "TELEGRAM_BOT_TOKEN" //nolint:gosec // the variable name, not a secret
+	slackAppTokenEnv  = "SLACK_APP_TOKEN"    //nolint:gosec // the variable name, not a secret
+	slackBotTokenEnv  = "SLACK_BOT_TOKEN"    //nolint:gosec // the variable name, not a secret
+	dingtalkIDEnv     = "DINGTALK_CLIENT_ID"
+	dingtalkSecretEnv = "DINGTALK_CLIENT_SECRET"
 )
 
 // Config is .claude-bot/config.json. Each configured channel is enabled.
@@ -49,6 +52,7 @@ type Config struct {
 	Telegram *telegram.Config `json:"telegram,omitempty"`
 	Slack    *slack.Config    `json:"slack,omitempty"`
 	GitHub   *github.Config   `json:"github,omitempty"`
+	DingTalk *dingtalk.Config `json:"dingtalk,omitempty"`
 }
 
 // Dir returns <project root>/.claude-bot. The project root is, in order: the
@@ -108,8 +112,9 @@ func gitTop(ctx context.Context, dir string) string {
 }
 
 // Load reads dir/config.json and applies LARK_APP_ID, LARK_APP_SECRET,
-// LARK_DOMAIN, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN and
-// SLACK_BOT_TOKEN from the environment.
+// LARK_DOMAIN, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN,
+// SLACK_BOT_TOKEN, DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET from the
+// environment.
 func Load(dir string) (Config, error) {
 	var cfg Config
 
@@ -138,6 +143,10 @@ func Load(dir string) (Config, error) {
 
 	if app, bot := os.Getenv(slackAppTokenEnv), os.Getenv(slackBotTokenEnv); app != "" && bot != "" {
 		cfg.Slack = &slack.Config{AppToken: app, BotToken: bot}
+	}
+
+	if id, secret := os.Getenv(dingtalkIDEnv), os.Getenv(dingtalkSecretEnv); id != "" && secret != "" {
+		cfg.DingTalk = &dingtalk.Config{ClientID: id, ClientSecret: secret}
 	}
 
 	return cfg, nil

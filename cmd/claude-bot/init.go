@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
@@ -34,11 +35,12 @@ const (
 var quiet = slog.New(slog.DiscardHandler)
 
 type initOptions struct {
-	channel                             string // lark, discord, telegram, slack or github
+	channel                             string // lark, discord, telegram, slack, dingtalk or github
 	appID, secret, domain, proxy, name  string
 	discordToken, telegramToken         string
 	slackAppToken, slackBotToken        string
 	githubToken, githubRepo             string
+	dingtalkID, dingtalkSecret          string
 	reregister, noOpen, noVerify, force bool
 	botMD                               bool // only rewrite the /bot command
 }
@@ -167,6 +169,8 @@ func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root s
 		return setupSlack(ctx, cfg, o)
 	case github.Name:
 		return setupGitHub(ctx, cfg, o, root)
+	case dingtalk.Name:
+		return setupDingTalk(ctx, cfg, o)
 	}
 
 	return setupLark(ctx, cfg, o, root)
@@ -186,8 +190,10 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.StringVar(&o.slackAppToken, "slack-app-token", "", "set up a Slack app: its app-level token (xapp-…), with --slack-bot-token")
 	fs.StringVar(&o.slackBotToken, "slack-bot-token", "", "set up a Slack app: its bot token (xoxb-…), with --slack-app-token")
 	fs.StringVar(&o.githubToken, "github-token", "", "set up the GitHub channel with this token (issues, PRs, comments and reviews of the repository)")
+	fs.StringVar(&o.dingtalkID, "dingtalk-client-id", "", "set up a DingTalk app: its Client ID (AppKey), with --dingtalk-client-secret")
+	fs.StringVar(&o.dingtalkSecret, "dingtalk-client-secret", "", "set up a DingTalk app: its Client Secret (AppSecret), with --dingtalk-client-id")
 	fs.StringVar(&o.githubRepo, "github-repo", "", "with --github-token: <owner>/<name> (default: from the origin remote)")
-	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for the others)")
+	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu and dingtalk, env for the others)")
 	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
 	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
 	fs.BoolVar(&o.noOpen, "no-open", false, "print the authorization link without opening a browser")
@@ -206,6 +212,10 @@ func parseInitFlags(args []string) (initOptions, error) {
 		return o, fmt.Errorf("%w: --slack-app-token and --slack-bot-token go together", errUsage)
 	}
 
+	if (o.dingtalkID == "") != (o.dingtalkSecret == "") {
+		return o, fmt.Errorf("%w: --dingtalk-client-id and --dingtalk-client-secret go together", errUsage)
+	}
+
 	return o, settleChannel(&o)
 }
 
@@ -220,6 +230,7 @@ func settleChannel(o *initOptions) error {
 		telegram.Name: o.telegramToken != "",
 		slack.Name:    o.slackBotToken != "",
 		github.Name:   o.githubToken != "",
+		dingtalk.Name: o.dingtalkID != "",
 	} {
 		if set {
 			implied = append(implied, name)
@@ -230,7 +241,7 @@ func settleChannel(o *initOptions) error {
 	case o.botMD && (o.channel != "" || len(implied) > 0):
 		return fmt.Errorf("%w: --bot-md only rewrites the /bot command; run it without channel flags", errUsage)
 	case len(implied) > 1:
-		return fmt.Errorf("%w: --app-id, --discord-token, --telegram-token, --slack-*-token and --github-token set up different channels; run init once for each", errUsage)
+		return fmt.Errorf("%w: --app-id, --discord-token, --telegram-token, --slack-*-token, --dingtalk-client-* and --github-token set up different channels; run init once for each", errUsage)
 	case len(implied) == 1 && o.channel != "" && o.channel != implied[0]:
 		return fmt.Errorf("%w: --channel %s does not match the %s credentials given", errUsage, o.channel, implied[0])
 	case len(implied) == 1:

@@ -7,7 +7,7 @@
 
 **在群里 @ 一下，Claude Code 就去仓库里把活干了。**
 
-把飞书 / Lark、Discord、Telegram 或 Slack 机器人接到项目仓库里常驻的 Claude Code 会话上，GitHub 的 issue 和 PR 也可以作为一个渠道接进来。
+把飞书 / Lark、Discord、Telegram、Slack 或钉钉机器人接到项目仓库里常驻的 Claude Code 会话上，GitHub 的 issue 和 PR 也可以作为一个渠道接进来。
 
 项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它也盯着仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
 
@@ -15,7 +15,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 
 ## 特性
 
-- **四个聊天渠道**：飞书 / Lark、Discord、Telegram、Slack，一个仓库里可以同时接多个。私聊和群里 @bot 都支持，回复会回在原消息下（或原话题、thread 里），群聊里会 @ 提问的人。
+- **五个聊天渠道**：飞书 / Lark、Discord、Telegram、Slack、钉钉，一个仓库里可以同时接多个。私聊和群里 @bot 都支持，回复会回在原消息下（或原话题、thread 里），群聊里会 @ 提问的人（钉钉的接口发不了 @，只写上昵称）。
 - **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，家里的电脑、公司内网都能用，不用配域名、HTTPS 和回调地址。
 - **一个仓库一个 bot**：凭证、收件箱、监听进程都放在仓库自己的 `.claude-bot/` 里，多个项目可以同时值守、互不影响。
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就会自动建好应用、配好权限；其他渠道粘贴 token 即可。最后发一条私聊验证收发都已打通。
@@ -26,8 +26,9 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 ## 工作原理
 
 ```
- 私聊 bot / 群里 @bot                 ┌──▶ 给原消息加表情：收到了
- （飞书、Discord、Telegram、Slack）    │
+ 私聊 bot / 群里 @bot                  ┌──▶ 给原消息加表情：收到了
+ （飞书、Discord、Telegram、Slack、    │
+   钉钉）                              │
  GitHub 的 issue、PR、评论、review     │
         ──长连接 / 轮询──▶ claude-bot serve ──▶ .claude-bot/inbox/
                                                          │
@@ -36,7 +37,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
           └── claude-bot reply <id> ──▶ 原消息下回复（群里 @ 发送者，GitHub 上发评论）
 ```
 
-- **怎么连出去**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，Telegram 用长轮询，GitHub 每 30 秒轮询一次 REST API，都是从本机主动发起的。
+- **怎么连出去**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，钉钉用 Stream 模式，Telegram 用长轮询，GitHub 每 30 秒轮询一次 REST API，都是从本机主动发起的。
 - **监听进程按需启动**：第一次执行 `claude-bot inbox` 时，会在后台自动拉起 `serve`。之后用 `init` 新接了渠道，下一次 `inbox` 会发现正在运行的监听进程没有监听这个渠道，自动把它重启。
 
 ### 多条消息怎么处理
@@ -61,7 +62,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - git
 - [GitHub CLI](https://cli.github.com)（`gh`，已登录；把 GitHub 接成渠道后，盯 issue 和 PR 就不再需要它）
 - [Claude Code](https://claude.com/claude-code)
-- 飞书 / Lark、Discord、Telegram、Slack 或 GitHub 中任意一个的账号
+- 飞书 / Lark、Discord、Telegram、Slack、钉钉或 GitHub 中任意一个的账号
 
 ## 安装
 
@@ -86,7 +87,7 @@ cd your-project
 claude-bot init
 ```
 
-`init` 会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack、GitHub）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram、Slack 或 GitHub 时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
+`init` 会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack、GitHub、钉钉）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram、Slack、GitHub 或钉钉时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
 
 不管选哪个渠道，`init` 都会把凭证写入 `.claude-bot/config.json`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通（GitHub 没有私聊，只检查 token 能不能访问仓库）。
 
@@ -168,6 +169,30 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
 
 在频道里 @bot 的消息，回复会发在这条消息的 thread 里，并 @ 提问的人；私信里直接回复。回复里的 `<!channel>`、`<!here>` 这类全员提醒不会生效。
 
+#### 选钉钉时
+
+钉钉用企业内部应用的机器人，消息通过 Stream 模式（WebSocket 长连接）推过来，同样不需要公网地址和回调 URL。
+
+1. 在[钉钉开发者后台](https://open-dev.dingtalk.com)创建一个企业内部应用（需要是企业的管理员或子管理员）。
+2. 在应用里添加「机器人」能力，消息接收模式选 **Stream 模式**，然后发布机器人。
+3. 在「权限管理」里开通「企业内机器人发送消息权限」。下载附件等用到的其他权限如果没开，调用时钉钉会在报错里写明缺哪一个，按提示开通即可。
+4. 在「版本管理与发布」里发布应用，让成员能搜到这个机器人。
+5. 在「凭证与基础信息」里找到 Client ID（原 AppKey）和 Client Secret（原 AppSecret）。在 `init` 的菜单里选钉钉后依次粘贴，或者直接运行：
+
+   ```bash
+   claude-bot init --dingtalk-client-id <Client ID> --dingtalk-client-secret <Client Secret>
+   ```
+
+   它会验证凭证，写进 `.claude-bot/config.json`，然后等你私聊机器人来验证连接。之后在群设置 → 机器人里把它加进群。
+
+钉钉和其他渠道相比有几处不同，都是开放接口本身的限制：
+
+- 群里的回复会以「@昵称」开头，但钉钉的接口发不了真正的 @，对方不会收到 @ 提醒。
+- 没有给机器人用的表情回应接口，收到消息时不会回 👀。
+- 读不了历史消息，所以 `get` 不可用。
+- `send` 只能发到群（`dingtalk:<conversationId>`）。私聊只能通过回复对方的消息来发。
+- 私聊回复要用对方的企业员工 ID。组织外的人私聊机器人时，消息能收到，但回复不了。
+
 #### 选 GitHub 时
 
 接了 GitHub 渠道之后，Claude 不用每轮跑 `gh` 去扫仓库：新开的 issue 和 PR、issue 和 PR 下的评论、PR 的 review 和行内 review 评论，都会进收件箱（只收人发的，Actions、Dependabot 这类 bot 的不收）。Claude 回复时会在原 issue 或 PR 下发评论并 @ 对方，行内 review 评论回在同一个讨论串里。同样不需要公网地址和 webhook：监听进程每 30 秒轮询一次 REST API，没有新动态时 GitHub 返回 304，不占限流额度。
@@ -235,12 +260,13 @@ claude-bot [-C <repo>] <command> [args]
 
 | 参数 | 说明 |
 |---|---|
-| `--channel lark\|discord\|telegram\|slack\|github` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
+| `--channel lark\|discord\|telegram\|slack\|github\|dingtalk` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
 | `--bot-md` | 只用当前版本覆盖 `.claude/commands/bot.md`，不动任何配置。升级 claude-bot 后用它更新值守流程 |
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
 | `--discord-token` | 接入 Discord bot |
 | `--telegram-token` | 接入 Telegram bot |
 | `--slack-app-token`、`--slack-bot-token` | 接入 Slack 应用，两个一起用 |
+| `--dingtalk-client-id`、`--dingtalk-client-secret` | 接入钉钉应用的机器人，两个一起用 |
 | `--github-token`、`--github-repo` | 接入 GitHub 渠道；仓库默认取 `origin` |
 | `--domain feishu\|lark` | 配合 `--app-id` 使用，指定国内版或国际版，默认 `feishu` |
 | `--proxy direct\|env\|<url>` | 网络代理，见[代理](#代理) |
@@ -286,10 +312,11 @@ claude-bot [-C <repo>] <command> [args]
 | `DISCORD_BOT_TOKEN` | 不使用 `init`，直接用环境变量提供 Discord bot token（覆盖 `config.json`） |
 | `TELEGRAM_BOT_TOKEN` | 同上，Telegram bot token |
 | `SLACK_APP_TOKEN`、`SLACK_BOT_TOKEN` | 同上，Slack 的两个 token（两个都设置时生效） |
+| `DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET` | 同上，钉钉应用的 Client ID 和 Client Secret（两个都设置时生效） |
 
 ### 代理
 
-飞书默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到 `open.feishu.cn` 的 TLS 连接失败。Lark 国际版、Discord、Telegram、Slack 和 GitHub 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
+飞书和钉钉默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到国内服务（比如 `open.feishu.cn`）的 TLS 连接失败。Lark 国际版、Discord、Telegram、Slack 和 GitHub 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
 
 ### 权限
 
@@ -311,6 +338,8 @@ Discord：邀请链接会申请这几项权限：查看频道、发消息、在�
 Telegram：不需要额外申请权限。bot 收到消息后会用 👀 表情回应，群里关掉了表情回应的话这一步会静默失败，不影响收发。
 
 Slack：manifest 里的 scope 依次用于：收 @bot 的消息、发消息、收私信、用 `get` 读取频道 / 私有频道 / 群聊私信里的消息、下载附件、用 👀 表情回应。
+
+钉钉：见[选钉钉时](#选钉钉时)。
 
 ## 常见问题
 
@@ -356,11 +385,12 @@ internal/channel/lark/      飞书 / Lark 适配器、应用注册流程
 internal/channel/discord/   Discord 适配器（Gateway 长连接）
 internal/channel/telegram/  Telegram 适配器（Bot API 长轮询）
 internal/channel/slack/     Slack 适配器（Socket Mode）
+internal/channel/dingtalk/  钉钉适配器（Stream 模式）
 internal/channel/github/    GitHub 适配器（REST API 轮询 issue、PR、评论和 review；close / merge / review 操作）
 internal/markdown/          各适配器共用的 Markdown 拆分
 internal/inbox/             基于文件的收件箱
 internal/config/            项目定位和凭证加载
-internal/transport/         各适配器共用的 HTTP / WebSocket 客户端、代理、限长下载、重连退避
+internal/transport/         各适配器共用的 HTTP / WebSocket 客户端、代理、WebSocket 保活、限长下载、重连退避
 internal/atomicfile/        原子写文件
 ```
 

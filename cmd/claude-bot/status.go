@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
@@ -23,6 +24,7 @@ type status struct {
 	Telegram *telegramStatus `json:"telegram,omitempty"`
 	Slack    *slackStatus    `json:"slack,omitempty"`
 	GitHub   *githubStatus   `json:"github,omitempty"`
+	DingTalk *dingtalkStatus `json:"dingtalk,omitempty"`
 }
 
 type listenerStatus struct {
@@ -60,6 +62,13 @@ type telegramStatus struct {
 // slackStatus is the Slack bot's identity, or why it could not be fetched.
 type slackStatus struct {
 	slack.Bot
+
+	Error string `json:"error,omitempty"`
+}
+
+// dingtalkStatus is the DingTalk app, or why its credentials were refused.
+type dingtalkStatus struct {
+	dingtalk.App
 
 	Error string `json:"error,omitempty"`
 }
@@ -128,6 +137,7 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 
 	s.Slack = slackIdentity(ctx, a)
 	s.GitHub = githubIdentity(ctx, a)
+	s.DingTalk = dingtalkIdentity(ctx, a)
 
 	return printJSON(s)
 }
@@ -156,6 +166,22 @@ func githubIdentity(ctx context.Context, a *app) *githubStatus {
 
 	acct, err := ch.Account(ctx)
 	s := &githubStatus{Account: acct}
+
+	if err != nil {
+		s.Error = err.Error()
+	}
+
+	return s
+}
+
+func dingtalkIdentity(ctx context.Context, a *app) *dingtalkStatus {
+	ch, ok := a.channels[dingtalk.Name].(*dingtalk.Channel)
+	if !ok {
+		return nil
+	}
+
+	app, err := ch.App(ctx)
+	s := &dingtalkStatus{App: app}
 
 	if err != nil {
 		s.Error = err.Error()

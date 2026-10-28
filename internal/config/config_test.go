@@ -18,6 +18,7 @@ func TestSaveLoad(t *testing.T) {
 	t.Setenv("DISCORD_BOT_TOKEN", "")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
 	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("DINGTALK_CLIENT_ID", "")
 
 	dir := filepath.Join(t.TempDir(), DirName)
 	want := Config{
@@ -93,11 +94,28 @@ func TestLoad_envOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_dingtalkEnv(t *testing.T) {
+	t.Setenv("DINGTALK_CLIENT_ID", "ding-env")
+	t.Setenv("DINGTALK_CLIENT_SECRET", "")
+
+	if got, err := Load(t.TempDir()); err != nil || got.DingTalk != nil {
+		t.Errorf("Load() with only the client id = %+v, %v; want no DingTalk", got.DingTalk, err)
+	}
+
+	t.Setenv("DINGTALK_CLIENT_SECRET", "ding-secret")
+
+	got, err := Load(t.TempDir())
+	if err != nil || got.DingTalk == nil || got.DingTalk.ClientID != "ding-env" || got.DingTalk.ClientSecret != "ding-secret" {
+		t.Errorf("Load() = %+v, %v", got.DingTalk, err)
+	}
+}
+
 func TestLoad_missing(t *testing.T) {
 	t.Setenv("LARK_APP_ID", "")
 	t.Setenv("DISCORD_BOT_TOKEN", "")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
 	t.Setenv("SLACK_APP_TOKEN", "")
+	t.Setenv("DINGTALK_CLIENT_ID", "")
 
 	got, err := Load(t.TempDir())
 	if err != nil || got.Lark != nil || got.Discord != nil || got.Telegram != nil || got.Slack != nil {

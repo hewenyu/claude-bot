@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
@@ -104,6 +105,32 @@ func setupSlack(ctx context.Context, cfg *config.Config, o initOptions) (setup, 
 		prompt: fmt.Sprintf("请在 Slack（%s）里给「%s」发一条私信", bot.URL, bot.Name),
 		report: func(context.Context) {
 			fmt.Printf("在要用的频道里输入 /invite @%s 把 bot 拉进去。\n", bot.Name)
+		},
+	}, nil
+}
+
+// setupDingTalk checks a DingTalk app's credentials and records them in cfg.
+func setupDingTalk(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
+	dcfg := dingtalk.Config{ClientID: o.dingtalkID, ClientSecret: o.dingtalkSecret, Proxy: o.proxy}
+
+	ch, err := dingtalk.New(dcfg, quiet)
+	if err != nil {
+		return setup{}, err
+	}
+
+	app, err := withTimeout(ctx, ch.App)
+	if err != nil {
+		return setup{}, fmt.Errorf("dingtalk credentials check failed (nothing written): %w", err)
+	}
+
+	cfg.DingTalk = &dcfg
+
+	return setup{
+		ch:     ch,
+		name:   "钉钉应用 " + app.ClientID,
+		prompt: "请在钉钉里搜索这个应用的机器人，给它发一条私聊消息",
+		report: func(context.Context) {
+			fmt.Println("把机器人加进要用的群：群设置 → 机器人 → 添加机器人，选这个应用的机器人。")
 		},
 	}, nil
 }
