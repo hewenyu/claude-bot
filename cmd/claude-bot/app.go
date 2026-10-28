@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"os"
@@ -120,34 +118,4 @@ func (a *app) channelFor(id string) (channel.Channel, string, error) {
 // names lists the configured channels in a stable order.
 func (a *app) names() []string {
 	return slices.Sorted(maps.Keys(a.channels))
-}
-
-// parseArgs parses the arguments of a command that takes no flags, so -h
-// prints help and a stray flag is a usage error rather than an id.
-func parseArgs(name string, args []string) ([]string, error) {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return nil, fmt.Errorf("%w: %w", errUsage, err)
-	}
-
-	return fs.Args(), nil
-}
-
-// textArg returns the message text from args, or stdin when args is empty or "-".
-func textArg(args []string) (string, error) {
-	if len(args) > 1 || len(args) == 1 && args[0] != "-" {
-		return strings.Join(args, " "), nil
-	}
-
-	raw, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		return "", fmt.Errorf("read stdin: %w", err)
-	}
-
-	text := strings.TrimSpace(string(raw))
-	if text == "" {
-		return "", fmt.Errorf("%w: empty message text", errUsage)
-	}
-
-	return text, nil
 }

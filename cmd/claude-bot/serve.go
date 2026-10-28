@@ -3,24 +3,20 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel"
 )
 
 const (
 	heartbeatEvery  = 15 * time.Second
 	heartbeatStale  = 45 * time.Second // three missed beats
-	heartbeatCheck  = time.Second      // how often beat looks at readiness
 	listenerStartup = 30 * time.Second
 	startupPoll     = 200 * time.Millisecond
 	ackTimeout      = 10 * time.Second
@@ -36,9 +32,8 @@ type heartbeat struct {
 }
 
 func cmdServe(ctx context.Context, project string, args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w: %w", errUsage, err)
+	if _, err := parseArgs("serve", args); err != nil {
+		return err
 	}
 
 	a, err := newApp(ctx, project)
@@ -55,22 +50,28 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// The heartbeat means "connected": it starts once every channel is ready
-	// and disappears when the listener exits.
+	// The heartbeat means "connected": it starts once every channel has
+	// connected and disappears when the listener exits.
 	defer func() { _ = os.Remove(a.path(heartbeatFile)) }()
 
-	var ready atomic.Int32
+	allReady := make(chan struct{})
 
-	go a.beat(ctx, func() bool { return int(ready.Load()) == len(a.channels) })
+	var waiting atomic.Int64
+
+	waiting.Store(int64(len(a.channels)))
 
 	errs := make(chan error, len(a.channels))
 	for _, ch := range a.channels {
-		var once sync.Once
+		ready := sync.OnceFunc(func() { // Listen calls it on every reconnect
+			if waiting.Add(-1) == 0 {
+				close(allReady)
+			}
+		})
 
-		markReady := func() { once.Do(func() { ready.Add(1) }) }
-
-		go func() { errs <- ch.Listen(ctx, a.deliverer(ctx, ch), markReady) }()
+		go func() { errs <- ch.Listen(ctx, a.deliverer(ctx, ch), ready) }()
 	}
+
+	go a.beat(ctx, allReady)
 
 	select {
 	case <-ctx.Done():
@@ -108,18 +109,23 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 	}
 }
 
-func (a *app) beat(ctx context.Context, ready func() bool) {
+// beat writes the heartbeat every heartbeatEvery once ready is closed.
+func (a *app) beat(ctx context.Context, ready <-chan struct{}) {
 	hb := heartbeat{PID: os.Getpid(), StartedAt: time.Now().UTC(), Channels: a.names()}
-	t := time.NewTicker(heartbeatCheck)
 
+	select {
+	case <-ctx.Done():
+		return
+	case <-ready:
+	}
+
+	t := time.NewTicker(heartbeatEvery)
 	defer t.Stop()
 
 	for {
-		if ready() && time.Since(hb.BeatAt) >= heartbeatEvery {
-			hb.BeatAt = time.Now().UTC()
-			if err := writeJSON(a.path(heartbeatFile), hb); err != nil {
-				a.log.Warn("write heartbeat", "err", err)
-			}
+		hb.BeatAt = time.Now().UTC()
+		if err := writeJSON(a.path(heartbeatFile), hb); err != nil {
+			a.log.Warn("write heartbeat", "err", err)
 		}
 
 		select {
@@ -221,25 +227,4 @@ func (a *app) spawnListener(logPath string) (*exec.Cmd, error) {
 	}
 
 	return cmd, nil
-}
-
-// tailFile returns the last n lines of a file, for error reports.
-func tailFile(path string, n int) string {
-	raw, err := os.ReadFile(path) //nolint:gosec // fixed file in the bot dir
-	if err != nil {
-		return "(no log: " + err.Error() + ")"
-	}
-
-	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-
-	return strings.Join(lines[max(0, len(lines)-n):], "\n")
-}
-
-func writeJSON(path string, v any) error {
-	raw, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-
-	return atomicfile.Write(path, append(raw, '\n'), privatePerm)
 }
