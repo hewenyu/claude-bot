@@ -1,8 +1,11 @@
 package lark
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -97,11 +100,7 @@ func parsePost(content string) (string, []channel.Attachment) {
 			return content, nil
 		}
 
-		for _, v := range byLocale {
-			p = v
-
-			break
-		}
+		p = pickLocale(byLocale)
 	}
 
 	var (
@@ -126,6 +125,22 @@ func parsePost(content string) (string, []channel.Attachment) {
 	}
 
 	return strings.Join(lines, "\n"), atts
+}
+
+// pickLocale returns one language of a post deterministically, preferring
+// Chinese, then English, then the first locale by name.
+func pickLocale(byLocale map[string]post) post {
+	for _, locale := range []string{"zh_cn", "en_us"} {
+		if p, ok := byLocale[locale]; ok {
+			return p
+		}
+	}
+
+	if locales := slices.Sorted(maps.Keys(byLocale)); len(locales) > 0 {
+		return byLocale[locales[0]]
+	}
+
+	return post{}
 }
 
 // renderSegment writes one post element as text and returns its attachment, if any.
@@ -157,7 +172,12 @@ func renderSegment(b *strings.Builder, seg postSegment) *channel.Attachment {
 }
 
 func replaceMentions(text string, mentions []mention) string {
-	for _, m := range mentions {
+	// Longest keys first, so "@_user_1" cannot match inside "@_user_10".
+	byKeyLen := slices.SortedFunc(slices.Values(mentions), func(a, b mention) int {
+		return cmp.Compare(len(b.Key), len(a.Key))
+	})
+
+	for _, m := range byKeyLen {
 		if m.Key == "" {
 			continue
 		}

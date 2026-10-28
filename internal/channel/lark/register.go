@@ -26,6 +26,9 @@ var Scopes = []string{
 	"im:message.reactions:write_only",
 }
 
+// maxPollFailures is how many failed polls in a row end the registration.
+const maxPollFailures = 3
+
 // Events the bot subscribes to.
 var Events = []string{"im.message.receive_v1"}
 
@@ -72,7 +75,7 @@ func NewRegistrar(proxy func(*http.Request) (*url.URL, error)) *Registrar {
 	return &Registrar{
 		HTTP: &http.Client{
 			Timeout:   20 * time.Second,
-			Transport: &http.Transport{Proxy: proxy, TLSHandshakeTimeout: 15 * time.Second},
+			Transport: newTransport(proxy),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -147,11 +150,20 @@ func (r *Registrar) Register(ctx context.Context) (Registered, error) {
 func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, error) {
 	host, domain := r.FeishuHost, DomainFeishu
 	interval := time.Duration(positive(begin.Interval, 5)) * r.IntervalUnit
+	failures := 0
 
 	for {
 		res, err := r.post(ctx, host, url.Values{"action": {"poll"}, "device_code": {begin.DeviceCode}})
 		if err != nil {
-			return Registered{}, err
+			// The user may already have confirmed in the browser, so ride out a
+			// network blip as if the answer were still pending.
+			if failures++; failures == maxPollFailures {
+				return Registered{}, err
+			}
+
+			res = regResponse{Error: "authorization_pending"}
+		} else {
+			failures = 0
 		}
 
 		// Lark (international) tenants are served by a different host.
@@ -163,11 +175,7 @@ func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, er
 		}
 
 		if res.ClientID != "" && res.ClientSecret != "" {
-			if r.AppID != "" && res.ClientID != r.AppID {
-				return Registered{}, fmt.Errorf("%w: authorized app %s, expected %s", ErrResponse, res.ClientID, r.AppID)
-			}
-
-			return Registered{AppID: res.ClientID, AppSecret: res.ClientSecret, OwnerID: res.UserInfo.OpenID, Domain: domain}, nil
+			return r.registered(res, domain)
 		}
 
 		if err := pollError(res.Error); err != nil {
@@ -188,6 +196,15 @@ func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, er
 		case <-time.After(interval):
 		}
 	}
+}
+
+// registered checks the app the user authorized against the one requested.
+func (r *Registrar) registered(res regResponse, domain string) (Registered, error) {
+	if r.AppID != "" && res.ClientID != r.AppID {
+		return Registered{}, fmt.Errorf("%w: authorized app %s, expected %s", ErrResponse, res.ClientID, r.AppID)
+	}
+
+	return Registered{AppID: res.ClientID, AppSecret: res.ClientSecret, OwnerID: res.UserInfo.OpenID, Domain: domain}, nil
 }
 
 // pollError maps a terminal device-flow error; nil means keep waiting.
