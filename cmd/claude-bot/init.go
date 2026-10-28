@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/config"
 )
@@ -41,6 +42,7 @@ type larkApp struct {
 
 type initOptions struct {
 	appID, secret, domain, proxy, name  string
+	discordToken                        string
 	reregister, noOpen, noVerify, force bool
 }
 
@@ -65,7 +67,7 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	la, err := obtainApp(ctx, cfg.Lark, o, root)
+	s, err := setupChannel(ctx, &cfg, o, root)
 	if err != nil {
 		return err
 	}
@@ -75,7 +77,6 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	cfg.Lark = &la.cfg
 	if err := config.Save(dir, cfg); err != nil {
 		return err
 	}
@@ -84,19 +85,63 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	fmt.Printf("✓ bot「%s」已接入 %s\n", la.bot.AppName, root)
-	reportScopes(ctx, la.ch)
+	fmt.Printf("✓ bot「%s」已接入 %s\n", s.name, root)
+	s.report(ctx)
 
 	if !o.noVerify {
-		if err := verifyConnection(ctx, dir, la); err != nil {
+		if err := verifyConnection(ctx, dir, s.ch, s.prompt); err != nil {
 			return err
 		}
 	}
 
 	fmt.Println("\n下一步：在这个仓库里打开 Claude Code，运行  /loop /bot")
-	fmt.Println("把 bot 拉进项目群，大家私聊它或在群里 @ 它即可。")
+	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器），大家私聊它或在群里 @ 它即可。")
 
 	return nil
+}
+
+// setup is a channel whose credentials proved to work.
+type setup struct {
+	ch     channel.Channel
+	name   string                // the bot's display name
+	prompt string                // asks the user to send the bot a direct message
+	report func(context.Context) // prints what is left to do on the platform
+}
+
+// setupChannel obtains working credentials for the channel o asks for and
+// records them in cfg.
+func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root string) (setup, error) {
+	if o.discordToken != "" {
+		dcfg := discord.Config{Token: o.discordToken, Proxy: o.proxy}
+
+		ch, bot, err := connectDiscord(ctx, dcfg)
+		if err != nil {
+			return setup{}, fmt.Errorf("discord token check failed (nothing written): %w", err)
+		}
+
+		cfg.Discord = &dcfg
+
+		return setup{
+			ch:     ch,
+			name:   bot.Name,
+			prompt: fmt.Sprintf("请用上面的链接把 bot 邀请进服务器，然后在 Discord 里给「%s」发一条私聊消息", bot.Name),
+			report: func(context.Context) { reportInvite(bot) },
+		}, nil
+	}
+
+	la, err := obtainApp(ctx, cfg.Lark, o, root)
+	if err != nil {
+		return setup{}, err
+	}
+
+	cfg.Lark = &la.cfg
+
+	return setup{
+		ch:     la.ch,
+		name:   la.bot.AppName,
+		prompt: fmt.Sprintf("请在飞书里搜索「%s」，给它发一条私聊消息", la.bot.AppName),
+		report: func(ctx context.Context) { reportScopes(ctx, la.ch) },
+	}, nil
 }
 
 func parseInitFlags(args []string) (initOptions, error) {
@@ -106,7 +151,8 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
 	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
 	fs.StringVar(&o.domain, "domain", lark.DomainFeishu, "with --app-id: feishu (China) or lark (international)")
-	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for lark)")
+	fs.StringVar(&o.discordToken, "discord-token", "", "set up a Discord bot with this bot token instead of a Lark app")
+	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for lark and discord)")
 	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
 	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
 	fs.BoolVar(&o.noOpen, "no-open", false, "print the authorization link without opening a browser")
@@ -121,7 +167,16 @@ func parseInitFlags(args []string) (initOptions, error) {
 		return o, fmt.Errorf("%w: --app-id and --app-secret go together", errUsage)
 	}
 
+	if o.discordToken != "" && o.appID != "" {
+		return o, fmt.Errorf("%w: --discord-token and --app-id set up different channels; run init once for each", errUsage)
+	}
+
 	return o, nil
+}
+
+// reportInvite prints the link that adds the Discord bot to a server.
+func reportInvite(bot discord.Bot) {
+	fmt.Printf("把 bot 邀请进 Discord 服务器（需要服务器的管理权限）：\n\n  %s\n\n", bot.InviteURL())
 }
 
 func reportScopes(ctx context.Context, ch *lark.Channel) {
@@ -260,6 +315,22 @@ func connect(ctx context.Context, cfg lark.Config) (larkApp, error) {
 	return larkApp{cfg: cfg, ch: ch, bot: bot}, err
 }
 
+// connectDiscord builds a Discord channel and fetches its bot, which proves
+// the token works.
+func connectDiscord(ctx context.Context, cfg discord.Config) (*discord.Channel, discord.Bot, error) {
+	ch, err := discord.New(cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return nil, discord.Bot{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+
+	bot, err := ch.Bot(ctx)
+
+	return ch, bot, err
+}
+
 func missingScopes(ctx context.Context, ch *lark.Channel) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
@@ -270,8 +341,8 @@ func missingScopes(ctx context.Context, ch *lark.Channel) ([]string, error) {
 // verifyConnection proves the round trip: the user sends the bot a direct
 // message, the bot answers it. Anything else that arrives meanwhile is kept
 // in the inbox.
-func verifyConnection(ctx context.Context, dir string, la larkApp) error {
-	a := assemble(dir, newLogger(), la.ch)
+func verifyConnection(ctx context.Context, dir string, ch channel.Channel, prompt string) error {
+	a := assemble(dir, newLogger(), ch)
 
 	if _, alive := readHeartbeat(a.dir); alive {
 		fmt.Println("✓ 监听进程已在运行，跳过连接验证")
@@ -283,7 +354,7 @@ func verifyConnection(ctx context.Context, dir string, la larkApp) error {
 	defer cancel()
 
 	got := make(chan channel.Message, 1)
-	store := a.deliverer(vctx, la.ch)
+	store := a.deliverer(vctx, ch)
 	deliver := func(m channel.Message) error {
 		if err := store(m); err != nil {
 			return err
@@ -300,13 +371,13 @@ func verifyConnection(ctx context.Context, dir string, la larkApp) error {
 	}
 
 	listenErr := make(chan error, 1)
-	go func() { listenErr <- la.ch.Listen(vctx, deliver, func() {}) }()
+	go func() { listenErr <- ch.Listen(vctx, deliver, func() {}) }()
 
-	fmt.Printf("\n连接验证：请在飞书里搜索「%s」，给它发一条私聊消息（%s 内）…\n", la.bot.AppName, verifyTimeout)
+	fmt.Printf("\n连接验证：%s（%s 内）…\n", prompt, verifyTimeout)
 
 	select {
 	case m := <-got:
-		if err := la.ch.Reply(vctx, m, "✅ 连接成功！在仓库里运行 `/loop /bot` 后，我就会处理发给我的消息。"); err != nil {
+		if err := ch.Reply(vctx, m, "✅ 连接成功！在仓库里运行 `/loop /bot` 后，我就会处理发给我的消息。"); err != nil {
 			return fmt.Errorf("received your message but replying failed: %w", err)
 		}
 

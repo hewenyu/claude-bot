@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
+	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 )
 
@@ -32,11 +33,13 @@ const (
 	larkAppIDEnv     = "LARK_APP_ID"
 	larkSecretEnv    = "LARK_APP_SECRET" //nolint:gosec // the variable name, not a secret
 	larkDomainEnv    = "LARK_DOMAIN"
+	discordTokenEnv  = "DISCORD_BOT_TOKEN" //nolint:gosec // the variable name, not a secret
 )
 
 // Config is .claude-bot/config.json. Each configured channel is enabled.
 type Config struct {
-	Lark *lark.Config `json:"lark,omitempty"`
+	Lark    *lark.Config    `json:"lark,omitempty"`
+	Discord *discord.Config `json:"discord,omitempty"`
 }
 
 // Dir returns <project root>/.claude-bot. The project root is, in order: the
@@ -95,8 +98,8 @@ func gitTop(ctx context.Context, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// Load reads dir/config.json and applies LARK_APP_ID, LARK_APP_SECRET and
-// LARK_DOMAIN from the environment.
+// Load reads dir/config.json and applies LARK_APP_ID, LARK_APP_SECRET,
+// LARK_DOMAIN and DISCORD_BOT_TOKEN from the environment.
 func Load(dir string) (Config, error) {
 	var cfg Config
 
@@ -113,6 +116,10 @@ func Load(dir string) (Config, error) {
 
 	if id, secret := os.Getenv(larkAppIDEnv), os.Getenv(larkSecretEnv); id != "" && secret != "" {
 		cfg.Lark = &lark.Config{AppID: id, AppSecret: secret, Domain: os.Getenv(larkDomainEnv)}
+	}
+
+	if token := os.Getenv(discordTokenEnv); token != "" {
+		cfg.Discord = &discord.Config{Token: token}
 	}
 
 	return cfg, nil

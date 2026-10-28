@@ -4,7 +4,7 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-把飞书 / Lark 机器人接到项目仓库里常驻的 Claude Code 会话上。
+把飞书 / Lark 或 Discord 机器人接到项目仓库里常驻的 Claude Code 会话上。
 
 项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它还会用 `gh` 盯仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
 
@@ -33,7 +33,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - git
 - [GitHub CLI](https://cli.github.com)（`gh`，已登录）
 - [Claude Code](https://claude.com/claude-code)
-- 飞书或 Lark 账号
+- 飞书或 Lark 账号，或者 Discord 账号
 
 ## 安装
 
@@ -64,6 +64,19 @@ claude-bot init
 2. 把凭证写入 `.claude-bot/config.json`（权限 `0600`），并把 `.claude-bot/` 加进 `.gitignore`。
 3. 生成值守流程 `.claude/commands/bot.md`（值守飞书消息和 GitHub 的 issue、PR），可以按项目约定修改。
 4. 验证连接：在飞书里给 bot 发一条私聊，收到「连接成功」的回复就说明收发都已打通。
+
+**接 Discord（可选，可以和飞书同时用）**
+
+1. 在 [Discord Developer Portal](https://discord.com/developers/applications) 新建一个应用，在 Bot 页面点 Reset Token 拿到 token。
+2. 在仓库里运行：
+
+   ```bash
+   claude-bot init --discord-token <token>
+   ```
+
+   它会验证 token，把它写进 `.claude-bot/config.json`，打印把 bot 邀请进服务器的链接（已带上所需权限），然后等你私聊 bot 来验证连接。
+
+不需要开启 Message Content 这个特权 intent：私聊和 @ 了 bot 的消息，Discord 总会给出正文，而 bot 只处理这两种。在服务器里要 @ bot 本人；@ 它的同名角色不会被投递。
 
 **2. 在 Claude Code 里挂上 loop**
 
@@ -101,6 +114,7 @@ claude-bot [-C <repo>] <command> [args]
 | 参数 | 说明 |
 |---|---|
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
+| `--discord-token` | 接入 Discord bot，而不是飞书应用 |
 | `--domain feishu\|lark` | 配合 `--app-id` 使用，指定国内版或国际版，默认 `feishu` |
 | `--proxy direct\|env\|<url>` | 网络代理，见[代理](#代理) |
 | `--name` | bot 名称，默认 `<仓库名> Bot` |
@@ -142,14 +156,15 @@ claude-bot [-C <repo>] <command> [args]
 |---|---|
 | `LARK_APP_ID`、`LARK_APP_SECRET` | 不使用 `init`，直接用环境变量提供凭证（两个都设置时覆盖 `config.json`） |
 | `LARK_DOMAIN` | 设为 `lark` 表示国际版，默认是飞书 |
+| `DISCORD_BOT_TOKEN` | 不使用 `init`，直接用环境变量提供 Discord bot token（覆盖 `config.json`） |
 
 ### 代理
 
-飞书默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到 `open.feishu.cn` 的 TLS 连接失败。Lark 国际版默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
+飞书默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到 `open.feishu.cn` 的 TLS 连接失败。Lark 国际版和 Discord 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
 
 ### 权限
 
-`init` 会为应用申请以下权限：
+飞书：`init` 会为应用申请以下权限：
 
 | 权限 | 用途 |
 |---|---|
@@ -161,6 +176,8 @@ claude-bot [-C <repo>] <command> [args]
 | `im:message.reactions:write_only` | 用表情回应"已收到" |
 
 权限需要变多时，再运行一次 `claude-bot init`，它会对同一个应用补充授权，不会新建应用。如果企业需要管理员审批，`init` 会列出尚未生效的权限。
+
+Discord：邀请链接会申请这几项权限：查看频道、发消息、在子区（thread）里发消息、读取消息历史、添加表情回应。
 
 ## 常见问题
 
@@ -195,6 +212,7 @@ make build    # bin/claude-bot
 cmd/claude-bot/          CLI 入口和各个命令
 internal/channel/        渠道协议：消息格式和 Channel 接口
 internal/channel/lark/   飞书 / Lark 适配器、应用注册流程
+internal/channel/discord/ Discord 适配器
 internal/inbox/          基于文件的收件箱
 internal/config/         项目定位和凭证加载
 internal/atomicfile/     原子写文件

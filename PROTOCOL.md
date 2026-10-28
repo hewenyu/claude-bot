@@ -18,8 +18,8 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 
 | 字段 | 说明 |
 |---|---|
-| `id` | `<渠道>:<平台消息 ID>`，比如 `lark:om_xxx`。所有命令都用这个 ID |
-| `channel` | `lark`，以后会有 `discord` 等 |
+| `id` | `<渠道>:<平台消息 ID>`，比如 `lark:om_xxx`、`discord:<频道 ID>/<消息 ID>`。所有命令都用这个 ID |
+| `channel` | `lark` 或 `discord` |
 | `chat_id` | 会话 ID。`<channel>:<chat_id>` 可以给 `send` 命令用 |
 | `chat_type` | `p2p`（私聊）或 `group`（群聊） |
 | `thread_id` | 所属话题。回复时会自动回在同一个话题里 |
@@ -37,7 +37,7 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 | 命令 | 行为 |
 |---|---|
 | `inbox [--wait D]` | 输出待处理消息，最早的在前。加 `--wait` 时会阻塞，直到有消息或者超时。如果监听进程没在运行，会自动在后台启动，起不来就把日志尾部报出来 |
-| `reply <id> [text\|-]` | 在原消息下回复，内容是 Markdown；群聊里会 @ 发送者，话题消息回在话题里。成功后把消息标记为已处理（加 `--keep` 则保留待处理）。重复调用不会重复发送：飞书会按内容哈希做 1 小时去重 |
+| `reply <id> [text\|-]` | 在原消息下回复，内容是 Markdown；群聊里会 @ 发送者，话题消息回在话题里。成功后把消息标记为已处理（加 `--keep` 则保留待处理）。飞书上重复调用不会重复发送（按内容哈希做 1 小时去重）；Discord 没有这种去重，超过 2000 字的回复会拆成多条发送 |
 | `done <id>...` | 标记为已处理，不回复 |
 | `get <id>` | 获取任意一条消息（比如 `reply_to` 指向的那条） |
 | `download <id>` | 把附件下载到 `.claude-bot/files/`，并输出文件路径 |

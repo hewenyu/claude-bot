@@ -1,4 +1,4 @@
-// Command claude-bot connects a project's chat bot (Lark / Feishu today) to a
+// Command claude-bot connects a project's chat bot (Lark / Feishu, Discord) to a
 // Claude Code session running /loop in that project's repository.
 package main
 
@@ -24,6 +24,7 @@ Setup (once per project; config stays in <repo>/.claude-bot/, git-ignored):
   claude-bot init                     create the bot app in the browser (just confirm), save credentials,
                                       generate .claude/commands/bot.md, verify with a test message
   claude-bot init --app-id cli_x --app-secret s   use an existing app instead
+  claude-bot init --discord-token t   set up a Discord bot (token from the Developer Portal) instead
 
 For Claude (inside /loop):
   claude-bot inbox [--wait 9m]        pending messages as JSON lines (starts the listener if needed)
@@ -31,7 +32,7 @@ For Claude (inside /loop):
   claude-bot done <id>...             mark handled without replying
   claude-bot get <id>                 fetch any message, e.g. the one in "reply_to"
   claude-bot download <id>            save a message's images/files, print paths
-  claude-bot send <chat-id> [text|-]  post to a chat, e.g. lark:oc_xxx
+  claude-bot send <chat-id> [text|-]  post to a chat, e.g. lark:oc_xxx or discord:123
 
 Operations:
   claude-bot serve                    run the listener in the foreground

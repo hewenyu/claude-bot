@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 )
 
@@ -15,6 +16,7 @@ type status struct {
 	Listener listenerStatus `json:"listener"`
 	Pending  int            `json:"pending"`
 	Lark     *botStatus     `json:"lark,omitempty"`
+	Discord  *discordStatus `json:"discord,omitempty"`
 }
 
 type listenerStatus struct {
@@ -28,6 +30,15 @@ type botStatus struct {
 	lark.Bot
 
 	Error string `json:"error,omitempty"`
+}
+
+// discordStatus is the Discord bot's identity and invite link, or why they
+// could not be fetched.
+type discordStatus struct {
+	discord.Bot
+
+	InviteURL string `json:"invite_url,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func cmdStatus(ctx context.Context, project string, args []string) error {
@@ -59,6 +70,17 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 
 		if err != nil {
 			s.Lark.Error = err.Error()
+		}
+	}
+
+	if ch, ok := a.channels[discord.Name].(*discord.Channel); ok {
+		bot, err := ch.Bot(ctx)
+		s.Discord = &discordStatus{Bot: bot}
+
+		if err != nil {
+			s.Discord.Error = err.Error()
+		} else {
+			s.Discord.InviteURL = bot.InviteURL()
 		}
 	}
 

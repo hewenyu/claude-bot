@@ -6,15 +6,20 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 )
 
 func TestSaveLoad(t *testing.T) {
 	t.Setenv("LARK_APP_ID", "")
 	t.Setenv("LARK_APP_SECRET", "")
+	t.Setenv("DISCORD_BOT_TOKEN", "")
 
 	dir := filepath.Join(t.TempDir(), DirName)
-	want := Config{Lark: &lark.Config{AppID: "cli_1", AppSecret: "s", Domain: "lark"}}
+	want := Config{
+		Lark:    &lark.Config{AppID: "cli_1", AppSecret: "s", Domain: "lark"},
+		Discord: &discord.Config{Token: "t", Proxy: "direct"},
+	}
 
 	if err := Save(dir, want); err != nil {
 		t.Fatal(err)
@@ -37,12 +42,17 @@ func TestSaveLoad(t *testing.T) {
 	if got.Lark == nil || *got.Lark != *want.Lark {
 		t.Errorf("Load() = %+v, want %+v", got.Lark, want.Lark)
 	}
+
+	if got.Discord == nil || *got.Discord != *want.Discord {
+		t.Errorf("Load() = %+v, want %+v", got.Discord, want.Discord)
+	}
 }
 
 func TestLoad_envOverrides(t *testing.T) {
 	t.Setenv("LARK_APP_ID", "cli_env")
 	t.Setenv("LARK_APP_SECRET", "env_secret")
 	t.Setenv("LARK_DOMAIN", "")
+	t.Setenv("DISCORD_BOT_TOKEN", "env_token")
 
 	got, err := Load(t.TempDir()) // no config.json
 	if err != nil {
@@ -52,13 +62,18 @@ func TestLoad_envOverrides(t *testing.T) {
 	if got.Lark == nil || got.Lark.AppID != "cli_env" || got.Lark.BaseURL() != lark.FeishuURL {
 		t.Errorf("Load() = %+v", got.Lark)
 	}
+
+	if got.Discord == nil || got.Discord.Token != "env_token" {
+		t.Errorf("Load() = %+v", got.Discord)
+	}
 }
 
 func TestLoad_missing(t *testing.T) {
 	t.Setenv("LARK_APP_ID", "")
+	t.Setenv("DISCORD_BOT_TOKEN", "")
 
 	got, err := Load(t.TempDir())
-	if err != nil || got.Lark != nil {
+	if err != nil || got.Lark != nil || got.Discord != nil {
 		t.Errorf("Load() on empty dir = %+v, %v", got, err)
 	}
 }
