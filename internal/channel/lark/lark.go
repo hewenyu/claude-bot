@@ -47,6 +47,31 @@ const (
 	LarkURL   = "https://open.larksuite.com"
 )
 
+// Proxy modes besides a proxy URL; see Config.Proxy.
+const (
+	ProxyDirect = "direct"
+	ProxyEnv    = "env"
+)
+
+// Open platform endpoints that have no typed SDK method.
+const (
+	botInfoPath = "/open-apis/bot/v3/info"
+	scopesPath  = "/open-apis/application/v6/scopes"
+)
+
+// Field values in Lark events and API responses.
+const (
+	senderUser   = "user"   // sender_type of a person
+	mentionedBot = "bot"    // mentioned_type of an app
+	scopeTenant  = "tenant" // scope_type of permissions granted to the app
+	scopeGranted = 1        // grant_status of an active permission
+)
+
+const (
+	dirPerm  = 0o750
+	filePerm = 0o600
+)
+
 // ackEmojis are tried in order; see the emoji_type list in the Lark docs.
 var ackEmojis = []string{"OnIt", "OK"}
 
@@ -87,22 +112,22 @@ func (c Config) BaseURL() string {
 func (c Config) ProxyFunc() (func(*http.Request) (*url.URL, error), error) {
 	mode := c.Proxy
 	if mode == "" {
-		mode = "direct"
+		mode = ProxyDirect
 		if c.Domain == DomainLark {
-			mode = "env"
+			mode = ProxyEnv
 		}
 	}
 
 	switch mode {
-	case "direct":
+	case ProxyDirect:
 		return nil, nil
-	case "env":
+	case ProxyEnv:
 		return http.ProxyFromEnvironment, nil
 	}
 
 	u, err := url.Parse(mode)
 	if err != nil || u.Host == "" {
-		return nil, fmt.Errorf("lark: invalid proxy %q: want direct, env or a URL", c.Proxy)
+		return nil, fmt.Errorf("lark: invalid proxy %q: want %s, %s or a URL", c.Proxy, ProxyDirect, ProxyEnv)
 	}
 
 	return http.ProxyURL(u), nil
@@ -196,7 +221,7 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 		return *c.bot, nil
 	}
 
-	resp, err := c.client.Get(ctx, "/open-apis/bot/v3/info", nil, larkcore.AccessTokenTypeTenant)
+	resp, err := c.client.Get(ctx, botInfoPath, nil, larkcore.AccessTokenTypeTenant)
 	if err != nil {
 		return Bot{}, fmt.Errorf("lark bot info: %w", err)
 	}
@@ -264,7 +289,7 @@ func fromEvent(ev *larkim.P2MessageReceiveV1, botOpenID string) (channel.Message
 	}
 
 	m, s := ev.Event.Message, ev.Event.Sender
-	if larkcore.StringValue(s.SenderType) != "user" || s.SenderId == nil {
+	if larkcore.StringValue(s.SenderType) != senderUser || s.SenderId == nil {
 		return channel.Message{}, false
 	}
 
@@ -310,7 +335,7 @@ func eventMentions(in []*larkim.MentionEvent, botOpenID string) []mention {
 		}
 
 		isBot := openID != "" && openID == botOpenID ||
-			botOpenID == "" && larkcore.StringValue(mm.MentionedType) == "bot"
+			botOpenID == "" && larkcore.StringValue(mm.MentionedType) == mentionedBot
 		out = append(out, mention{Key: larkcore.StringValue(mm.Key), OpenID: openID, Name: larkcore.StringValue(mm.Name), IsBot: isBot})
 	}
 
@@ -510,12 +535,12 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("lark download: read: %w", err)
 	}
 
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
 	path := filepath.Join(dir, fileName(att, resp.FileName, data))
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := os.WriteFile(path, data, filePerm); err != nil {
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
@@ -587,7 +612,7 @@ func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
 // MissingScopes returns the permissions in Scopes that are not granted yet.
 // Newly granted permissions can take a moment to show up after approval.
 func (c *Channel) MissingScopes(ctx context.Context) ([]string, error) {
-	resp, err := c.client.Get(ctx, "/open-apis/application/v6/scopes", nil, larkcore.AccessTokenTypeTenant)
+	resp, err := c.client.Get(ctx, scopesPath, nil, larkcore.AccessTokenTypeTenant)
 	if err != nil {
 		return nil, fmt.Errorf("lark scopes: %w", err)
 	}
@@ -615,7 +640,7 @@ func (c *Channel) MissingScopes(ctx context.Context) ([]string, error) {
 	granted := map[string]bool{}
 
 	for _, s := range body.Data.Scopes {
-		if s.Type == "tenant" && s.GrantStatus == 1 {
+		if s.Type == scopeTenant && s.GrantStatus == scopeGranted {
 			granted[s.Name] = true
 		}
 	}

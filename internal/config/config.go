@@ -20,6 +20,20 @@ import (
 // DirName is the per-project state directory (git-ignored).
 const DirName = ".claude-bot"
 
+const (
+	configFile  = "config.json"
+	dirPerm     = 0o750
+	privatePerm = 0o600 // the file holds app secrets
+)
+
+// Environment variables read besides ProjectEnv.
+const (
+	claudeProjectEnv = "CLAUDE_PROJECT_DIR" // set by Claude Code for its session
+	larkAppIDEnv     = "LARK_APP_ID"
+	larkSecretEnv    = "LARK_APP_SECRET" //nolint:gosec // the variable name, not a secret
+	larkDomainEnv    = "LARK_DOMAIN"
+)
+
 // Config is .claude-bot/config.json. Each configured channel is enabled.
 type Config struct {
 	Lark *lark.Config `json:"lark,omitempty"`
@@ -47,7 +61,7 @@ func Dir(ctx context.Context) (string, error) {
 		return filepath.Join(top, DirName), nil
 	}
 
-	if root := os.Getenv("CLAUDE_PROJECT_DIR"); root != "" {
+	if root := os.Getenv(claudeProjectEnv); root != "" {
 		return filepath.Join(root, DirName), nil
 	}
 
@@ -89,19 +103,19 @@ func gitTop(ctx context.Context, dir string) string {
 func Load(dir string) (Config, error) {
 	var cfg Config
 
-	raw, err := os.ReadFile(filepath.Join(dir, "config.json")) //nolint:gosec // fixed file in the project bot dir
+	raw, err := os.ReadFile(filepath.Join(dir, configFile)) //nolint:gosec // fixed file in the project bot dir
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
 		return cfg, fmt.Errorf("read config: %w", err)
 	default:
 		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return cfg, fmt.Errorf("parse %s: %w", filepath.Join(dir, "config.json"), err)
+			return cfg, fmt.Errorf("parse %s: %w", filepath.Join(dir, configFile), err)
 		}
 	}
 
-	if id, secret := os.Getenv("LARK_APP_ID"), os.Getenv("LARK_APP_SECRET"); id != "" && secret != "" {
-		cfg.Lark = &lark.Config{AppID: id, AppSecret: secret, Domain: os.Getenv("LARK_DOMAIN")}
+	if id, secret := os.Getenv(larkAppIDEnv), os.Getenv(larkSecretEnv); id != "" && secret != "" {
+		cfg.Lark = &lark.Config{AppID: id, AppSecret: secret, Domain: os.Getenv(larkDomainEnv)}
 	}
 
 	return cfg, nil
@@ -115,11 +129,11 @@ func Save(dir string, cfg Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	if err := atomicfile.Write(filepath.Join(dir, "config.json"), append(raw, '\n'), 0o600); err != nil {
+	if err := atomicfile.Write(filepath.Join(dir, configFile), append(raw, '\n'), privatePerm); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 

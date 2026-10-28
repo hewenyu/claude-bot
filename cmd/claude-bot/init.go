@@ -105,7 +105,7 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
 	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
-	fs.StringVar(&o.domain, "domain", "feishu", "with --app-id: feishu (China) or lark (international)")
+	fs.StringVar(&o.domain, "domain", lark.DomainFeishu, "with --app-id: feishu (China) or lark (international)")
 	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for lark)")
 	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
 	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
@@ -233,7 +233,7 @@ func register(ctx context.Context, o initOptions, root, upgradeAppID string) (la
 		fmt.Println("等待确认 …")
 	}
 	r.OnStatus = func(s string) {
-		if s == "lark" {
+		if s == lark.DomainLark {
 			fmt.Println("检测到 Lark 国际版租户，切换到 larksuite.com …")
 		}
 	}
@@ -365,7 +365,7 @@ func ensureLine(path, line string) error {
 
 	raw = append(raw, line+"\n"...)
 
-	if err := os.WriteFile(path, raw, 0o644); err != nil { //nolint:gosec // .gitignore is meant to be world-readable
+	if err := os.WriteFile(path, raw, sharedPerm); err != nil { //nolint:gosec // .gitignore is meant to be world-readable
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 
@@ -379,11 +379,11 @@ func writeIfAbsent(path string, content []byte, force bool) error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
 
-	if err := os.WriteFile(path, content, 0o644); err != nil { //nolint:gosec // slash command is shared with the team
+	if err := os.WriteFile(path, content, sharedPerm); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 

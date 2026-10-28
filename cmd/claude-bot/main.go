@@ -48,6 +48,13 @@ func main() {
 	os.Exit(code)
 }
 
+// Exit codes, as documented in PROTOCOL.md.
+const (
+	exitOK      = 0
+	exitFailure = 1
+	exitUsage   = 2
+)
+
 type command func(ctx context.Context, args []string) error
 
 var errUsage = errors.New("usage")
@@ -74,7 +81,7 @@ func run(ctx context.Context, args []string) int {
 		if err := os.Setenv(config.ProjectEnv, args[1]); err != nil {
 			fmt.Fprintf(os.Stderr, "claude-bot: %v\n", err)
 
-			return 1
+			return exitFailure
 		}
 
 		args = args[2:]
@@ -83,25 +90,25 @@ func run(ctx context.Context, args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		fmt.Print(usage)
 
-		return 0
+		return exitOK
 	}
 
 	cmd, ok := commands[args[0]]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "claude-bot: unknown command %q\n\n%s", args[0], usage)
 
-		return 2
+		return exitUsage
 	}
 
 	if err := cmd(ctx, args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "claude-bot %s: %v\n", args[0], err)
 
 		if errors.Is(err, errUsage) {
-			return 2
+			return exitUsage
 		}
 
-		return 1
+		return exitFailure
 	}
 
-	return 0
+	return exitOK
 }

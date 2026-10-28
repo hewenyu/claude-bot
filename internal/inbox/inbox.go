@@ -19,6 +19,14 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel"
 )
 
+// Message states, each a subdirectory of the inbox.
+const (
+	statePending = "pending"
+	stateDone    = "done"
+)
+
+const dirPerm = 0o750
+
 // ErrNotFound reports a message id that is in neither pending nor done.
 var ErrNotFound = errors.New("message not in inbox")
 
@@ -40,7 +48,7 @@ func (b *Inbox) path(state, id string) string {
 // re-delivers events that were not acknowledged in time, possibly
 // concurrently).
 func (b *Inbox) Put(m channel.Message) (bool, error) {
-	if _, err := os.Stat(b.path("done", m.ID)); err == nil {
+	if _, err := os.Stat(b.path(stateDone, m.ID)); err == nil {
 		return false, nil
 	}
 
@@ -49,8 +57,8 @@ func (b *Inbox) Put(m channel.Message) (bool, error) {
 		return false, fmt.Errorf("marshal message: %w", err)
 	}
 
-	dir := filepath.Join(b.dir, "pending")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	dir := filepath.Join(b.dir, statePending)
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return false, fmt.Errorf("create inbox: %w", err)
 	}
 
@@ -63,7 +71,7 @@ func (b *Inbox) Put(m channel.Message) (bool, error) {
 
 	// Link fails if the message is already pending, so concurrent deliveries
 	// of one event store it exactly once and readers never see a partial file.
-	if err := os.Link(tmp, b.path("pending", m.ID)); err != nil {
+	if err := os.Link(tmp, b.path(statePending, m.ID)); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return false, nil
 		}
@@ -76,7 +84,7 @@ func (b *Inbox) Put(m channel.Message) (bool, error) {
 
 // Pending returns unhandled messages, oldest first.
 func (b *Inbox) Pending() ([]channel.Message, error) {
-	entries, err := os.ReadDir(filepath.Join(b.dir, "pending"))
+	entries, err := os.ReadDir(filepath.Join(b.dir, statePending))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -92,7 +100,7 @@ func (b *Inbox) Pending() ([]channel.Message, error) {
 			continue
 		}
 
-		m, err := read(filepath.Join(b.dir, "pending", e.Name()))
+		m, err := read(filepath.Join(b.dir, statePending, e.Name()))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // marked done by another process since ReadDir
 		}
@@ -130,7 +138,7 @@ func (b *Inbox) Wait(ctx context.Context, every time.Duration) ([]channel.Messag
 
 // Find returns a message by id from pending or done.
 func (b *Inbox) Find(id string) (channel.Message, error) {
-	for _, state := range []string{"pending", "done"} {
+	for _, state := range []string{statePending, stateDone} {
 		m, err := read(b.path(state, id))
 		if err == nil {
 			return m, nil
@@ -146,15 +154,15 @@ func (b *Inbox) Find(id string) (channel.Message, error) {
 
 // Done marks a message handled. Marking an already-done message is a no-op.
 func (b *Inbox) Done(id string) error {
-	if _, err := os.Stat(b.path("done", id)); err == nil {
+	if _, err := os.Stat(b.path(stateDone, id)); err == nil {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Join(b.dir, "done"), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Join(b.dir, stateDone), dirPerm); err != nil {
 		return fmt.Errorf("create inbox: %w", err)
 	}
 
-	if err := os.Rename(b.path("pending", id), b.path("done", id)); err != nil {
+	if err := os.Rename(b.path(statePending, id), b.path(stateDone, id)); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("%w: %s", ErrNotFound, id)
 		}

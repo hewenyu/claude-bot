@@ -27,6 +27,23 @@ type app struct {
 	log      *slog.Logger
 }
 
+// Layout of the project's .claude-bot directory.
+const (
+	heartbeatFile = "serve.json"
+	listenerLock  = "serve.lock"
+	listenerLog   = "serve.log"
+	inboxDir      = "inbox"
+	filesDir      = "files"
+)
+
+// File modes: bot state stays private to the owner; files meant for the team
+// (.gitignore, the slash command) are world-readable like the rest of the repo.
+const (
+	dirPerm     = 0o750
+	privatePerm = 0o600
+	sharedPerm  = 0o644
+)
+
 var errNotConfigured = errors.New("no channel configured: run `claude-bot init` in the project, or set LARK_APP_ID and LARK_APP_SECRET")
 
 func newApp(ctx context.Context) (*app, error) {
@@ -64,7 +81,7 @@ func newApp(ctx context.Context) (*app, error) {
 func assemble(dir string, log *slog.Logger, channels ...channel.Channel) *app {
 	a := &app{
 		dir:      dir,
-		inbox:    inbox.New(filepath.Join(dir, "inbox")),
+		inbox:    inbox.New(filepath.Join(dir, inboxDir)),
 		channels: make(map[string]channel.Channel, len(channels)),
 		log:      log,
 	}
@@ -78,6 +95,11 @@ func assemble(dir string, log *slog.Logger, channels ...channel.Channel) *app {
 
 func newLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, nil))
+}
+
+// path returns a file in the .claude-bot directory.
+func (a *app) path(name string) string {
+	return filepath.Join(a.dir, name)
 }
 
 // channelFor returns the adapter that owns a protocol id.
