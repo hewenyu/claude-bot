@@ -64,16 +64,19 @@ func TestLoad_missing(t *testing.T) {
 }
 
 func TestDir_explicitProject(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv(ProjectEnv, root)
+	t.Parallel()
 
-	got, err := Dir(t.Context())
+	root := t.TempDir()
+
+	got, err := Dir(t.Context(), root)
 	if err != nil || got != filepath.Join(root, DirName) {
 		t.Errorf("Dir() = %q, %v; want %q", got, err, filepath.Join(root, DirName))
 	}
 }
 
 func TestDir_explicitSubdirResolvesToRepoRoot(t *testing.T) {
+	t.Parallel()
+
 	repo, err := filepath.EvalSymlinks(t.TempDir()) // macOS temp dirs are symlinked
 	if err != nil {
 		t.Fatal(err)
@@ -88,18 +91,16 @@ func TestDir_explicitSubdirResolvesToRepoRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv(ProjectEnv, sub)
-
-	got, err := Dir(t.Context())
+	got, err := Dir(t.Context(), sub)
 	if err != nil || got != filepath.Join(repo, DirName) {
 		t.Errorf("Dir() = %q, %v; want repo root %q", got, err, filepath.Join(repo, DirName))
 	}
 }
 
 func TestDir_explicitMissing(t *testing.T) {
-	t.Setenv(ProjectEnv, filepath.Join(t.TempDir(), "nope"))
+	t.Parallel()
 
-	if _, err := Dir(t.Context()); err == nil {
+	if _, err := Dir(t.Context(), filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Error("Dir() with a missing -C directory should fail")
 	}
 }

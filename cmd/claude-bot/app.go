@@ -46,8 +46,8 @@ const (
 
 var errNotConfigured = errors.New("no channel configured: run `claude-bot init` in the project, or set LARK_APP_ID and LARK_APP_SECRET")
 
-func newApp(ctx context.Context) (*app, error) {
-	dir, err := config.Dir(ctx)
+func newApp(ctx context.Context, project string) (*app, error) {
+	dir, err := config.Dir(ctx, project)
 	if err != nil {
 		return nil, err
 	}

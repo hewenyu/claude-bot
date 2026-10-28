@@ -18,7 +18,7 @@ import (
 // inboxPoll is how often `inbox --wait` looks for new messages.
 const inboxPoll = time.Second
 
-func cmdInbox(ctx context.Context, args []string) error {
+func cmdInbox(ctx context.Context, project string, args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	wait := fs.Duration("wait", 0, "block up to this long until a message arrives (e.g. 9m)")
 
@@ -26,7 +26,7 @@ func cmdInbox(ctx context.Context, args []string) error {
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -99,13 +99,13 @@ func parseReplyArgs(args []string) (replyArgs, error) {
 	return r, nil
 }
 
-func cmdReply(ctx context.Context, args []string) error {
+func cmdReply(ctx context.Context, project string, args []string) error {
 	r, err := parseReplyArgs(args)
 	if err != nil {
 		return err
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (a *app) lookup(ctx context.Context, ch channel.Channel, id string) (channe
 	return msg, err
 }
 
-func cmdDone(ctx context.Context, args []string) error {
+func cmdDone(ctx context.Context, project string, args []string) error {
 	ids, err := parseArgs("done", args)
 	if err != nil {
 		return err
@@ -163,7 +163,7 @@ func cmdDone(ctx context.Context, args []string) error {
 		return fmt.Errorf("%w: done <id> [<id> ...]", errUsage)
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func cmdDone(ctx context.Context, args []string) error {
 	return errors.Join(errs...)
 }
 
-func cmdGet(ctx context.Context, args []string) error {
+func cmdGet(ctx context.Context, project string, args []string) error {
 	args, err := parseArgs("get", args)
 	if err != nil {
 		return err
@@ -190,7 +190,7 @@ func cmdGet(ctx context.Context, args []string) error {
 		return fmt.Errorf("%w: get <id>", errUsage)
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func cmdGet(ctx context.Context, args []string) error {
 	return printJSON(msg)
 }
 
-func cmdDownload(ctx context.Context, args []string) error {
+func cmdDownload(ctx context.Context, project string, args []string) error {
 	args, err := parseArgs("download", args)
 	if err != nil {
 		return err
@@ -218,7 +218,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 		return fmt.Errorf("%w: download <id>", errUsage)
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -254,7 +254,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 	return nil
 }
 
-func cmdSend(ctx context.Context, args []string) error {
+func cmdSend(ctx context.Context, project string, args []string) error {
 	args, err := parseArgs("send", args)
 	if err != nil {
 		return err
@@ -264,7 +264,7 @@ func cmdSend(ctx context.Context, args []string) error {
 		return fmt.Errorf("%w: send <channel>:<chat-id> [text|-]", errUsage)
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -288,12 +288,12 @@ func cmdSend(ctx context.Context, args []string) error {
 	return nil
 }
 
-func cmdStatus(ctx context.Context, args []string) error {
+func cmdStatus(ctx context.Context, project string, args []string) error {
 	if _, err := parseArgs("status", args); err != nil {
 		return err
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}

@@ -35,13 +35,13 @@ type heartbeat struct {
 	Channels  []string  `json:"channels"`
 }
 
-func cmdServe(ctx context.Context, args []string) error {
+func cmdServe(ctx context.Context, project string, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %w", errUsage, err)
 	}
 
-	a, err := newApp(ctx)
+	a, err := newApp(ctx, project)
 	if err != nil {
 		return err
 	}

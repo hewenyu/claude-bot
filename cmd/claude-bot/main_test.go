@@ -191,7 +191,6 @@ func TestParseReplyArgs(t *testing.T) {
 
 func TestDone_continuesPastUnknownID(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("CLAUDE_BOT_PROJECT", root)
 	t.Setenv("LARK_APP_ID", "cli_test")
 	t.Setenv("LARK_APP_SECRET", "secret")
 
@@ -200,7 +199,7 @@ func TestDone_continuesPastUnknownID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := run(t.Context(), []string{"done", "lark:om_missing", "lark:om_b"}); code != 1 {
+	if code := run(t.Context(), []string{"-C", root, "done", "lark:om_missing", "lark:om_b"}); code != 1 {
 		t.Errorf("exit = %d, want 1 for the unknown id", code)
 	}
 
