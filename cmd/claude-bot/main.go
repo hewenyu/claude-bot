@@ -32,7 +32,6 @@ Setup (once per project; config stays in <repo>/.claude-bot/, git-ignored):
   claude-bot init --dingtalk-client-id id --dingtalk-client-secret s   set up a DingTalk app's robot
   claude-bot init --github-token t [--github-repo o/r]   receive the repository's issues, PRs, comments and reviews
   claude-bot init --bot-md            only overwrite .claude/commands/bot.md with this version's
-  claude-bot init --pi                only install the /loop extension for pi (then run /loop /skill:bot in pi)
 
 Listener (run these yourself, in your own terminal, so it keeps your environment):
   claude-bot start                    run the listener in the background (log: .claude-bot/serve.log)

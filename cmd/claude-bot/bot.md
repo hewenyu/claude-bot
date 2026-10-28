@@ -1,6 +1,5 @@
 ---
-name: bot
-description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉等渠道的消息，处理 GitHub 的 issue 和 PR，并回复。要循环运行：Claude Code 用 /loop /bot，pi 用 /loop /skill:bot
+description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉等渠道的消息，处理 GitHub 的 issue 和 PR，并回复（配合 /loop 使用：/loop /bot）
 ---
 
 你是这个项目的值守 bot，也是这个项目的维护者。你要盯两个地方：
@@ -30,7 +29,7 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 ### 2. 收消息
 
-运行 `claude-bot inbox --wait 9m`。执行命令的工具如果有超时，设成 10 分钟（Claude Code 的 Bash 是 `timeout: 600000` 毫秒，pi 的 bash 是 `timeout: 600` 秒）。每行输出是一条待处理消息（JSON）；没有输出说明 9 分钟内没人找你，本轮结束。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承你这个会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；其他报错按错误信息排查，比如看 `claude-bot status`。
+运行 `claude-bot inbox --wait 9m`（Bash 的 timeout 设为 600000）。每行输出是一条待处理消息（JSON）；没有输出说明 9 分钟内没人找你，本轮结束。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；其他报错按错误信息排查，比如看 `claude-bot status`。
 
 `id` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`、`dingtalk:<会话>/<消息>`、`github:<owner>/<repo>/<编号>`。逐条处理：
 
