@@ -63,6 +63,8 @@ claude-bot start       # 在后台启动监听进程（stop 停止，restart 重
 /loop /bot
 ```
 
+用 pi 的话，先 `claude-bot init --pi`，再在 pi 里运行 `/loop /skill:bot`，见[用其他 agent 值守](docs/agents.md)。
+
 把 bot 拉进项目群，之后大家私聊 bot 或在群里 @ 它就可以了。各渠道怎么建应用、拿 token 见[接入各个渠道](docs/channels.md)。
 
 ## 文档
@@ -70,6 +72,7 @@ claude-bot start       # 在后台启动监听进程（stop 停止，restart 重
 - [接入各个渠道](docs/channels.md)：飞书 / Lark、Discord、Telegram、Slack、钉钉、GitHub 的接入步骤、权限和限制
 - [工作原理](docs/how-it-works.md)：消息怎么收进来、多条消息怎么排队处理
 - [命令与配置](docs/reference.md)：全部命令和 `init` 参数、项目定位、文件、环境变量、代理
+- [用其他 agent 值守](docs/agents.md)：除了 Claude Code，也可以用 pi
 - [常见问题](docs/faq.md)：权限确认卡住、监听进程起不来、升级之后怎么办
 - [开发](docs/development.md)：构建、测试和代码结构
 - [PROTOCOL.md](PROTOCOL.md)：消息协议，以及怎么接入新渠道
