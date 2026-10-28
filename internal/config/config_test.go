@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
@@ -162,5 +164,60 @@ func TestDir_explicitMissing(t *testing.T) {
 
 	if _, err := Dir(t.Context(), filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Error("Dir() with a missing -C directory should fail")
+	}
+}
+
+func TestLoad_envKeepsSettings(t *testing.T) {
+	t.Setenv("LARK_APP_ID", "cli_env")
+	t.Setenv("LARK_APP_SECRET", "env_secret")
+	t.Setenv("LARK_DOMAIN", "")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "1:env")
+
+	dir := t.TempDir()
+	saved := Config{
+		Lark:     &lark.Config{AppID: "cli_1", AppSecret: "s", Domain: "lark", Proxy: "env"},
+		Telegram: &telegram.Config{Token: "1:file", Proxy: "http://127.0.0.1:7890"},
+	}
+
+	if err := Save(dir, saved); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := (lark.Config{AppID: "cli_env", AppSecret: "env_secret", Domain: "lark", Proxy: "env"}); got.Lark == nil || *got.Lark != want {
+		t.Errorf("Load().Lark = %+v, want %+v", got.Lark, want)
+	}
+
+	if want := (telegram.Config{Token: "1:env", Proxy: "http://127.0.0.1:7890"}); got.Telegram == nil || *got.Telegram != want {
+		t.Errorf("Load().Telegram = %+v, want %+v", got.Telegram, want)
+	}
+
+	// init rewrites config.json from Read: the environment must not leak into it.
+	file, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if *file.Lark != *saved.Lark || *file.Telegram != *saved.Telegram {
+		t.Errorf("Read() = %+v, %+v; want config.json as saved", file.Lark, file.Telegram)
+	}
+}
+
+func TestHas(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{Slack: &slack.Config{}, DingTalk: &dingtalk.Config{}}
+
+	for name, want := range map[string]bool{
+		lark.Name: false, discord.Name: false, telegram.Name: false,
+		slack.Name: true, github.Name: false, dingtalk.Name: true, "irc": false,
+	} {
+		if got := cfg.Has(name); got != want {
+			t.Errorf("Has(%q) = %v, want %v", name, got, want)
+		}
 	}
 }

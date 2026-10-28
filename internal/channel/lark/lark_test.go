@@ -226,6 +226,15 @@ func TestFileName(t *testing.T) {
 	}
 }
 
+func TestFileName_jpeg(t *testing.T) {
+	t.Parallel()
+
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0}
+	if got := fileName(channel.Attachment{Key: "img_v3_1"}, "", jpeg); got != "img_v3_1.jpg" {
+		t.Errorf("fileName() = %q, want img_v3_1.jpg", got)
+	}
+}
+
 func TestConfig_ProxyFunc(t *testing.T) {
 	t.Parallel()
 

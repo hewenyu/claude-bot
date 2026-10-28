@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
@@ -104,88 +105,52 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 		Pending:  len(pending),
 	}
 
-	if ch, ok := a.channels[lark.Name].(*lark.Channel); ok {
-		bot, err := ch.Bot(ctx)
-		s.Lark = &larkStatus{Bot: bot}
-
-		if err != nil {
-			s.Lark.Error = err.Error()
-		}
+	if bot, errText, ok := identity(ctx, a, lark.Name, (*lark.Channel).Bot); ok {
+		s.Lark = &larkStatus{Bot: bot, Error: errText}
 	}
 
-	if ch, ok := a.channels[discord.Name].(*discord.Channel); ok {
-		bot, err := ch.Bot(ctx)
-		s.Discord = &discordStatus{Bot: bot}
-
-		if err != nil {
-			s.Discord.Error = err.Error()
-		} else {
+	if bot, errText, ok := identity(ctx, a, discord.Name, (*discord.Channel).Bot); ok {
+		s.Discord = &discordStatus{Bot: bot, Error: errText}
+		if errText == "" {
 			s.Discord.InviteURL = bot.InviteURL()
 		}
 	}
 
-	if ch, ok := a.channels[telegram.Name].(*telegram.Channel); ok {
-		bot, err := ch.Bot(ctx)
-		s.Telegram = &telegramStatus{Bot: bot}
-
-		if err != nil {
-			s.Telegram.Error = err.Error()
-		} else {
+	if bot, errText, ok := identity(ctx, a, telegram.Name, (*telegram.Channel).Bot); ok {
+		s.Telegram = &telegramStatus{Bot: bot, Error: errText}
+		if errText == "" {
 			s.Telegram.Link = bot.Link()
 		}
 	}
 
-	s.Slack = slackIdentity(ctx, a)
-	s.GitHub = githubIdentity(ctx, a)
-	s.DingTalk = dingtalkIdentity(ctx, a)
+	if bot, errText, ok := identity(ctx, a, slack.Name, (*slack.Channel).Bot); ok {
+		s.Slack = &slackStatus{Bot: bot, Error: errText}
+	}
+
+	if acct, errText, ok := identity(ctx, a, github.Name, (*github.Channel).Account); ok {
+		s.GitHub = &githubStatus{Account: acct, Error: errText}
+	}
+
+	if app, errText, ok := identity(ctx, a, dingtalk.Name, (*dingtalk.Channel).App); ok {
+		s.DingTalk = &dingtalkStatus{App: app, Error: errText}
+	}
 
 	return printJSON(s)
 }
 
-func slackIdentity(ctx context.Context, a *app) *slackStatus {
-	ch, ok := a.channels[slack.Name].(*slack.Channel)
+// identity asks the channel configured under name who it is, with who.
+// errText is why it could not tell; ok is false if the channel is not
+// configured.
+func identity[C channel.Channel, I any](ctx context.Context, a *app, name string, who func(C, context.Context) (I, error)) (id I, errText string, ok bool) {
+	ch, ok := a.channels[name].(C)
 	if !ok {
-		return nil
+		return id, "", false
 	}
 
-	bot, err := ch.Bot(ctx)
-	s := &slackStatus{Bot: bot}
-
+	id, err := who(ch, ctx)
 	if err != nil {
-		s.Error = err.Error()
+		errText = err.Error()
 	}
 
-	return s
-}
-
-func githubIdentity(ctx context.Context, a *app) *githubStatus {
-	ch, ok := a.channels[github.Name].(*github.Channel)
-	if !ok {
-		return nil
-	}
-
-	acct, err := ch.Account(ctx)
-	s := &githubStatus{Account: acct}
-
-	if err != nil {
-		s.Error = err.Error()
-	}
-
-	return s
-}
-
-func dingtalkIdentity(ctx context.Context, a *app) *dingtalkStatus {
-	ch, ok := a.channels[dingtalk.Name].(*dingtalk.Channel)
-	if !ok {
-		return nil
-	}
-
-	app, err := ch.App(ctx)
-	s := &dingtalkStatus{App: app}
-
-	if err != nil {
-		s.Error = err.Error()
-	}
-
-	return s
+	return id, errText, true
 }

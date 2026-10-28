@@ -107,3 +107,29 @@ func TestSaveFile(t *testing.T) {
 		t.Errorf("saved file mode = %v, %v; want 600", info.Mode().Perm(), err)
 	}
 }
+
+func TestExtension(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{name: "png", data: []byte("\x89PNG\r\n\x1a\n0000"), want: ".png"},
+		{name: "jpeg", data: []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0}, want: ".jpg"},
+		{name: "text", data: []byte("panic: runtime error\n"), want: ".txt"},
+		{name: "pdf", data: []byte("%PDF-1.7"), want: ".pdf"},
+		{name: "unknown binary", data: []byte{0, 1, 2, 3}, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := Extension(tt.data); got != tt.want {
+				t.Errorf("Extension() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

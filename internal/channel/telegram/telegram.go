@@ -31,8 +31,7 @@ const (
 	clientTimeout = 2 * time.Minute
 	backoffStart  = 2 * time.Second // first wait after a failed poll
 	backoffCap    = time.Minute
-	maxMessageLen = 4096     // Telegram's limit per message, in characters
-	maxResponse   = 16 << 20 // bound on a decoded API answer
+	maxMessageLen = 4096 // Telegram's limit per message, in characters
 	ackEmoji      = "👀"
 	reactionEmoji = "emoji" // ReactionType of a plain emoji
 	updateMessage = "message"
@@ -271,8 +270,7 @@ func (c *Channel) post(ctx context.Context, chatID, threadID string, replyTo int
 
 		err := c.call(ctx, methodSendMessage, send, nil)
 
-		var ae *APIError
-		if errors.As(err, &ae) && ae.Code == codeBadRequest && strings.Contains(ae.Description, "parse") {
+		if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeBadRequest && strings.Contains(ae.Description, "parse") {
 			send.Text, send.ParseMode = part, ""
 			err = c.call(ctx, methodSendMessage, send, nil)
 		}

@@ -1,12 +1,14 @@
 // Package channel defines the claude-bot protocol: the message shape and the
-// interface every platform adapter (Lark, Discord, Telegram, Slack, GitHub)
-// implements. The CLI and the Claude-facing workflow depend only on this.
+// interface every platform adapter (Lark, Discord, Telegram, Slack, DingTalk,
+// GitHub) implements. The CLI and the Claude-facing workflow depend only on this.
 package channel
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,7 +124,8 @@ func SplitID(id string) (channel, platformID string, err error) {
 const scopeSep = "/"
 
 // ScopedID builds the platform id of a message that is only addressable
-// within its chat or channel (Discord, Telegram, Slack): "<chat>/<message>".
+// within its chat or channel (Discord, Telegram, Slack, DingTalk):
+// "<chat>/<message>".
 func ScopedID(chat, message string) string {
 	return chat + scopeSep + message
 }
@@ -157,6 +160,36 @@ func BaseName(name string) string {
 	default:
 		return base
 	}
+}
+
+// Extensions of the types people send most. mime's own list is the fallback,
+// but its first pick is often odd (".jfif" for JPEG, ".conf" for text).
+// Unrecognised content gets none rather than ".bin".
+var commonExtensions = map[string]string{
+	"application/octet-stream": "",
+	"image/png":                ".png",
+	"image/jpeg":               ".jpg",
+	"image/gif":                ".gif",
+	"image/webp":               ".webp",
+	"text/plain":               ".txt",
+	"application/pdf":          ".pdf",
+	"application/zip":          ".zip",
+}
+
+// Extension guesses a file extension from the content, "" if it cannot.
+// Adapters add it to downloads whose name has none.
+func Extension(data []byte) string {
+	typ, _, _ := strings.Cut(http.DetectContentType(data), ";")
+	if ext, ok := commonExtensions[typ]; ok {
+		return ext
+	}
+
+	exts, err := mime.ExtensionsByType(typ)
+	if err != nil || len(exts) == 0 {
+		return ""
+	}
+
+	return exts[0]
 }
 
 // Download files stay private to the owner.

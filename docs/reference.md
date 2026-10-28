@@ -80,6 +80,8 @@ claude-bot [-C <repo>] <command> [args]
 | `SLACK_APP_TOKEN`、`SLACK_BOT_TOKEN` | 同上，Slack 的两个 token（两个都设置时生效） |
 | `DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET` | 同上，钉钉应用的 Client ID 和 Client Secret（两个都设置时生效） |
 
+环境变量只替换凭证，`config.json` 里同一渠道的代理、域名等其他设置照样生效。`init` 只读写 `config.json`，不会把环境变量里的凭证写进去。
+
 ### 代理
 
 飞书和钉钉默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到国内服务（比如 `open.feishu.cn`）的 TLS 连接失败。Lark 国际版、Discord、Telegram、Slack 和 GitHub 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。

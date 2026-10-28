@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -206,7 +205,7 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 	}
 
 	if filepath.Ext(name) == "" {
-		name += extension(data)
+		name += channel.Extension(data)
 	}
 
 	path, err := channel.SaveFile(dir, name, data)
@@ -215,35 +214,6 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 	}
 
 	return path, nil
-}
-
-// Extensions of the types people send most; mime's list for others.
-var commonExtensions = map[string]string{
-	"image/png":       ".png",
-	"image/jpeg":      ".jpg",
-	"image/gif":       ".gif",
-	"image/webp":      ".webp",
-	"application/pdf": ".pdf",
-	"application/zip": ".zip",
-}
-
-// extension guesses a file extension from the content, "" if it cannot.
-func extension(data []byte) string {
-	typ, _, _ := strings.Cut(http.DetectContentType(data), ";")
-	if ext, ok := commonExtensions[typ]; ok {
-		return ext
-	}
-
-	if strings.HasPrefix(typ, "text/plain") {
-		return ".txt"
-	}
-
-	exts, err := mime.ExtensionsByType(typ)
-	if err != nil || len(exts) == 0 {
-		return ""
-	}
-
-	return exts[0]
 }
 
 // Ack implements channel.Channel. The OpenAPI has no reaction for robots,
