@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,6 +59,19 @@ type Config struct {
 	// direct for feishu (a domestic endpoint that local proxies often break),
 	// env for lark.
 	Proxy string `json:"proxy,omitempty"`
+}
+
+func (c Config) validate() error {
+	if c.AppID == "" || c.AppSecret == "" {
+		return errors.New("lark: app_id and app_secret are required")
+	}
+
+	switch c.Domain {
+	case "", DomainFeishu, DomainLark:
+		return nil
+	default:
+		return fmt.Errorf("lark: unknown domain %q: want %s or %s", c.Domain, DomainFeishu, DomainLark)
+	}
 }
 
 // BaseURL returns the open platform URL for the configured domain.
@@ -108,17 +122,16 @@ type Channel struct {
 	dialer *websocket.Dialer
 	log    *slog.Logger
 
-	botOnce sync.Once
-	bot     Bot
-	botErr  error
+	botMu sync.Mutex
+	bot   *Bot // cached once fetched successfully
 }
 
 var _ channel.Channel = (*Channel)(nil)
 
 // New returns a Lark channel for cfg.
 func New(cfg Config, log *slog.Logger) (*Channel, error) {
-	if cfg.AppID == "" || cfg.AppSecret == "" {
-		return nil, errors.New("lark: app_id and app_secret are required")
+	if err := cfg.validate(); err != nil {
+		return nil, err
 	}
 
 	proxy, err := cfg.ProxyFunc()
@@ -126,13 +139,7 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 		return nil, err
 	}
 
-	hc := &http.Client{Transport: &http.Transport{
-		Proxy:               proxy,
-		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: 15 * time.Second,
-		IdleConnTimeout:     90 * time.Second,
-		MaxIdleConns:        10,
-	}}
+	hc := &http.Client{Transport: newTransport(proxy)}
 
 	return &Channel{
 		cfg: cfg,
@@ -144,41 +151,73 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 	}, nil
 }
 
+// newTransport bounds every phase of a request that can hang: dial, TLS and
+// waiting for the response headers.
+func newTransport(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+	return &http.Transport{
+		Proxy:                 proxy,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          10,
+	}
+}
+
+// apiError is a call the platform received and refused with a non-zero code,
+// as opposed to a transport failure where the outcome is unknown.
+type apiError struct {
+	Code int
+	Msg  string
+}
+
+func (e *apiError) Error() string { return fmt.Sprintf("code %d: %s", e.Code, e.Msg) }
+
+// checkCode turns the platform's verdict into an error, nil on success.
+func checkCode(code int, msg string) error {
+	if code == 0 {
+		return nil
+	}
+
+	return &apiError{Code: code, Msg: msg}
+}
+
 // Name implements channel.Channel.
 func (c *Channel) Name() string { return Name }
 
-// Bot returns the bot's identity (cached). It doubles as a credentials check.
+// Bot returns the bot's identity. It doubles as a credentials check; only a
+// successful answer is cached, so a transient failure can be retried.
 func (c *Channel) Bot(ctx context.Context) (Bot, error) {
-	c.botOnce.Do(func() {
-		resp, err := c.client.Get(ctx, "/open-apis/bot/v3/info", nil, larkcore.AccessTokenTypeTenant)
-		if err != nil {
-			c.botErr = fmt.Errorf("lark bot info: %w", err)
+	c.botMu.Lock()
+	defer c.botMu.Unlock()
 
-			return
-		}
+	if c.bot != nil {
+		return *c.bot, nil
+	}
 
-		var body struct {
-			Code int    `json:"code"`
-			Msg  string `json:"msg"`
-			Bot  Bot    `json:"bot"`
-		}
+	resp, err := c.client.Get(ctx, "/open-apis/bot/v3/info", nil, larkcore.AccessTokenTypeTenant)
+	if err != nil {
+		return Bot{}, fmt.Errorf("lark bot info: %w", err)
+	}
 
-		if err := json.Unmarshal(resp.RawBody, &body); err != nil {
-			c.botErr = fmt.Errorf("lark bot info: parse: %w", err)
+	var body struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Bot  Bot    `json:"bot"`
+	}
 
-			return
-		}
+	if err := json.Unmarshal(resp.RawBody, &body); err != nil {
+		return Bot{}, fmt.Errorf("lark bot info: parse: %w", err)
+	}
 
-		if body.Code != 0 {
-			c.botErr = fmt.Errorf("lark bot info: code %d: %s", body.Code, body.Msg)
+	if err := checkCode(body.Code, body.Msg); err != nil {
+		return Bot{}, fmt.Errorf("lark bot info: %w", err)
+	}
 
-			return
-		}
+	c.bot = &body.Bot
 
-		c.bot = body.Bot
-	})
-
-	return c.bot, c.botErr
+	return body.Bot, nil
 }
 
 // Listen implements channel.Channel. It delivers direct messages and group
@@ -286,8 +325,9 @@ func prefixed(id string) string {
 	return channel.ID(Name, id)
 }
 
-// Reply implements channel.Channel. In groups the sender is @-mentioned so
-// they are notified; thread messages are answered inside the thread.
+// Reply implements channel.Channel. Outside direct chats the sender is
+// @-mentioned so they are notified (a message fetched with Get carries no chat
+// type, so it counts as a group); thread messages are answered in the thread.
 func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) error {
 	_, platformID, err := channel.SplitID(msg.ID)
 	if err != nil {
@@ -295,11 +335,11 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 	}
 
 	mentionID := ""
-	if msg.ChatType == channel.ChatGroup {
+	if msg.ChatType != channel.ChatDirect {
 		mentionID = msg.Sender.ID
 	}
 
-	return c.sendWithFallback(text, mentionID, func(msgType, content string) (*larkcore.ApiResp, *larkcore.CodeError, error) {
+	return c.sendWithFallback(text, mentionID, func(msgType, content string) error {
 		resp, err := c.client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
 			MessageId(platformID).
 			Body(larkim.NewReplyMessageReqBodyBuilder().
@@ -310,16 +350,16 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 				Build()).
 			Build())
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 
-		return resp.ApiResp, &resp.CodeError, nil
+		return checkCode(resp.Code, resp.Msg)
 	})
 }
 
 // Send implements channel.Channel.
 func (c *Channel) Send(ctx context.Context, chatID, text string) error {
-	return c.sendWithFallback(text, "", func(msgType, content string) (*larkcore.ApiResp, *larkcore.CodeError, error) {
+	return c.sendWithFallback(text, "", func(msgType, content string) error {
 		resp, err := c.client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
 			ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
 			Body(larkim.NewCreateMessageReqBodyBuilder().
@@ -330,29 +370,35 @@ func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 				Build()).
 			Build())
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 
-		return resp.ApiResp, &resp.CodeError, nil
+		return checkCode(resp.Code, resp.Msg)
 	})
 }
 
-type sendFunc func(msgType, content string) (*larkcore.ApiResp, *larkcore.CodeError, error)
+// sendFunc posts one message of the given type.
+type sendFunc func(msgType, content string) error
 
-// sendWithFallback posts Markdown as a rich-text post and falls back to plain
-// text if the platform rejects the post, so a reply always gets through.
+// sendWithFallback posts Markdown as a rich-text post. Only if the platform
+// rejects the post does it retry as plain text: after a transport error the
+// post may have gone through, and a second message would be a duplicate.
 func (c *Channel) sendWithFallback(text, mentionID string, send sendFunc) error {
 	content, err := buildPost(text, mentionID)
 	if err != nil {
 		return fmt.Errorf("build post: %w", err)
 	}
 
-	_, codeErr, err := send(larkim.MsgTypePost, content)
-	if err == nil && codeErr.Code == 0 {
+	postErr := send(larkim.MsgTypePost, content)
+
+	if _, rejected := errors.AsType[*apiError](postErr); !rejected {
+		if postErr != nil {
+			return fmt.Errorf("lark send post: %w", postErr)
+		}
+
 		return nil
 	}
 
-	postErr := describe("post", codeErr, err)
 	c.log.Warn("lark post rejected, retrying as text", "err", postErr)
 
 	content, err = buildText(text, mentionID)
@@ -360,20 +406,11 @@ func (c *Channel) sendWithFallback(text, mentionID string, send sendFunc) error 
 		return fmt.Errorf("build text: %w", err)
 	}
 
-	_, codeErr, err = send(larkim.MsgTypeText, content)
-	if err == nil && codeErr.Code == 0 {
-		return nil
+	if err := send(larkim.MsgTypeText, content); err != nil {
+		return errors.Join(fmt.Errorf("lark send post: %w", postErr), fmt.Errorf("lark send text: %w", err))
 	}
 
-	return errors.Join(postErr, describe("text", codeErr, err))
-}
-
-func describe(kind string, codeErr *larkcore.CodeError, err error) error {
-	if err != nil {
-		return fmt.Errorf("lark send %s: %w", kind, err)
-	}
-
-	return fmt.Errorf("lark send %s: code %d: %s", kind, codeErr.Code, codeErr.Msg)
+	return nil
 }
 
 // dedupeKey makes retries of the same reply idempotent (Lark dedupes a uuid for 1h).
@@ -399,8 +436,8 @@ func (c *Channel) Get(ctx context.Context, id string) (channel.Message, error) {
 		return channel.Message{}, fmt.Errorf("lark get message: %w", err)
 	}
 
-	if !resp.Success() {
-		return channel.Message{}, fmt.Errorf("lark get message: code %d: %s", resp.Code, resp.Msg)
+	if err := checkCode(resp.Code, resp.Msg); err != nil {
+		return channel.Message{}, fmt.Errorf("lark get message: %w", err)
 	}
 
 	if resp.Data == nil || len(resp.Data.Items) == 0 {
@@ -464,8 +501,8 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
-	if !resp.Success() {
-		return "", fmt.Errorf("lark download: code %d: %s", resp.Code, resp.Msg)
+	if err := checkCode(resp.Code, resp.Msg); err != nil {
+		return "", fmt.Errorf("lark download: %w", err)
 	}
 
 	data, err := io.ReadAll(resp.File)
@@ -485,13 +522,15 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 	return path, nil
 }
 
+// fileName picks a local name for a download: the attachment's own name, the
+// name the server sent, or the key, plus an extension sniffed from the data.
 func fileName(att channel.Attachment, served string, data []byte) string {
-	name := filepath.Base(att.Name)
-	if name == "." || name == "/" || name == "" {
-		name = filepath.Base(served)
+	name := baseName(att.Name)
+	if name == "" {
+		name = baseName(served)
 	}
 
-	if name == "." || name == "/" || name == "" {
+	if name == "" {
 		name = att.Key
 	}
 
@@ -502,6 +541,17 @@ func fileName(att channel.Attachment, served string, data []byte) string {
 	}
 
 	return name
+}
+
+// baseName strips any directories from a sender-chosen name; "" if nothing
+// usable is left.
+func baseName(name string) string {
+	switch base := filepath.Base(name); base {
+	case ".", "..", string(filepath.Separator):
+		return ""
+	default:
+		return base
+	}
 }
 
 // Ack implements channel.Channel with an emoji reaction.
@@ -520,15 +570,15 @@ func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
 				ReactionType(larkim.NewEmojiBuilder().EmojiType(emoji).Build()).
 				Build()).
 			Build())
+		if err == nil {
+			err = checkCode(resp.Code, resp.Msg)
+		}
 
-		switch {
-		case err != nil:
-			errs = append(errs, fmt.Errorf("lark ack %s: %w", emoji, err))
-		case !resp.Success():
-			errs = append(errs, fmt.Errorf("lark ack %s: code %d: %s", emoji, resp.Code, resp.Msg))
-		default:
+		if err == nil {
 			return nil
 		}
+
+		errs = append(errs, fmt.Errorf("lark ack %s: %w", emoji, err))
 	}
 
 	return errors.Join(errs...)
@@ -558,8 +608,8 @@ func (c *Channel) MissingScopes(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("lark scopes: parse: %w", err)
 	}
 
-	if body.Code != 0 {
-		return nil, fmt.Errorf("lark scopes: code %d: %s", body.Code, body.Msg)
+	if err := checkCode(body.Code, body.Msg); err != nil {
+		return nil, fmt.Errorf("lark scopes: %w", err)
 	}
 
 	granted := map[string]bool{}

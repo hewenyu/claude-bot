@@ -2,6 +2,8 @@ package lark
 
 import (
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -208,6 +210,7 @@ func TestFileName(t *testing.T) {
 	}{
 		{name: "attachment name wins", att: channel.Attachment{Key: "k", Name: "crash.log"}, want: "crash.log"},
 		{name: "path traversal stripped", att: channel.Attachment{Key: "k", Name: "../../etc/passwd"}, want: "passwd.png"},
+		{name: "dot-dot name falls back to key", att: channel.Attachment{Key: "k", Name: ".."}, want: "k.png"},
 		{name: "key plus sniffed extension", att: channel.Attachment{Key: "img_v3_1"}, want: "img_v3_1.png"},
 		{name: "served name", att: channel.Attachment{Key: "k"}, served: "shot.jpeg", want: "shot.jpeg"},
 	}
@@ -272,5 +275,84 @@ func TestConfig_ProxyFunc(t *testing.T) {
 				t.Errorf("proxy = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestReplaceMentions_tenOrMore(t *testing.T) {
+	t.Parallel()
+
+	mentions := []mention{
+		{Key: "@_user_1", Name: "张三"},
+		{Key: "@_user_10", Name: "李四"},
+	}
+
+	if got, want := replaceMentions("@_user_1 和 @_user_10", mentions), "@张三 和 @李四"; got != want {
+		t.Errorf("replaceMentions() = %q, want %q", got, want)
+	}
+}
+
+func TestSendWithFallback(t *testing.T) {
+	t.Parallel()
+
+	errNetwork := errors.New("connection reset")
+
+	tests := []struct {
+		name      string
+		postErr   error
+		wantTypes []string
+		wantErr   bool
+	}{
+		{name: "post accepted", wantTypes: []string{"post"}},
+		{name: "post rejected falls back to text", postErr: &apiError{Code: 230001, Msg: "bad post"}, wantTypes: []string{"post", "text"}},
+		{name: "transport error is not retried as text", postErr: errNetwork, wantTypes: []string{"post"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := &Channel{log: slog.New(slog.DiscardHandler)}
+
+			var types []string
+
+			err := c.sendWithFallback("hi", "", func(msgType, _ string) error {
+				types = append(types, msgType)
+				if msgType == larkim.MsgTypePost {
+					return tt.postErr
+				}
+
+				return nil
+			})
+
+			if (err != nil) != tt.wantErr || !reflect.DeepEqual(types, tt.wantTypes) {
+				t.Errorf("sent %v, err %v; want %v, err %v", types, err, tt.wantTypes, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPickLocale(t *testing.T) {
+	t.Parallel()
+
+	got := pickLocale(map[string]post{"ja_jp": {Title: "ja"}, "en_us": {Title: "en"}, "zh_cn": {Title: "zh"}})
+	if got.Title != "zh" {
+		t.Errorf("pickLocale() = %q, want zh", got.Title)
+	}
+
+	if got := pickLocale(map[string]post{"ja_jp": {Title: "ja"}, "de_de": {Title: "de"}}); got.Title != "de" {
+		t.Errorf("pickLocale() without zh/en = %q, want the first by name", got.Title)
+	}
+}
+
+func TestNew_validatesConfig(t *testing.T) {
+	t.Parallel()
+
+	for _, cfg := range []Config{
+		{AppSecret: "s"},
+		{AppID: "cli_1", AppSecret: "s", Domain: "Lark"},
+	} {
+		if _, err := New(cfg, slog.New(slog.DiscardHandler)); err == nil {
+			t.Errorf("New(%+v) accepted an invalid config", cfg)
+		}
 	}
 }

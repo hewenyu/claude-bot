@@ -45,6 +45,12 @@ func (f *fakeAccounts) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = map[string]any{"device_code": "dc_1", "verification_uri_complete": f.link, "expires_in": 60, "interval": 1}
 	case "poll":
 		body, f.polls = f.polls[0], f.polls[1:]
+		if status, ok := body["http_status"].(int); ok {
+			w.WriteHeader(status)
+
+			return
+		}
+
 		if _, pending := body["error"]; pending {
 			w.WriteHeader(http.StatusBadRequest) // the real endpoint reports pending as 400
 		}
@@ -237,6 +243,20 @@ func TestRegistrar_Register_upgradeKeepsClientID(t *testing.T) {
 
 	if u, _ := url.Parse(link); u.Query().Get("clientID") != "cli_mine" {
 		t.Errorf("upgrade link lacks clientID: %s", link)
+	}
+}
+
+func TestRegistrar_Register_ridesOutPollBlip(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeAccounts{polls: []map[string]any{
+		{"http_status": http.StatusBadGateway},
+		{"client_id": "cli_new", "client_secret": "sec"},
+	}}
+	r := newTestRegistrar(t, f)
+
+	if got, err := r.Register(t.Context()); err != nil || got.AppID != "cli_new" {
+		t.Errorf("Register() = %+v, %v; want success after one failed poll", got, err)
 	}
 }
 
