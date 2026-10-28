@@ -16,6 +16,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const botID = "100"
@@ -189,10 +190,6 @@ func TestConfig_ProxyFunc(t *testing.T) {
 		t.Errorf("default proxy set = %v, %v; want the environment's", p != nil, err)
 	}
 
-	if p, err := (Config{Proxy: ProxyDirect}).ProxyFunc(); err != nil || p != nil {
-		t.Errorf("direct proxy set = %v, %v; want none", p != nil, err)
-	}
-
 	if _, err := (Config{Proxy: "not a url"}).ProxyFunc(); err == nil {
 		t.Error("invalid proxy accepted")
 	}
@@ -240,7 +237,7 @@ func (r *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 func newRecorded(t *testing.T) (*Channel, *recorder) {
 	t.Helper()
 
-	c, err := New(Config{Token: "t", Proxy: ProxyDirect}, slog.New(slog.DiscardHandler))
+	c, err := New(Config{Token: "t", Proxy: transport.ProxyDirect}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,5 +303,65 @@ func TestReply_directHasNoMention(t *testing.T) {
 
 	if len(rec.reqs) != 1 || rec.reqs[0].Body["content"] != "done" {
 		t.Errorf("requests = %+v, want one message \"done\"", rec.reqs)
+	}
+}
+
+// sized serves a body of n bytes.
+type sized int
+
+func (n sized) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(io.LimitReader(zeros{}, int64(n))),
+		Request:    req,
+	}, nil
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+
+	return len(p), nil
+}
+
+func TestFetch_refusesOversizedFiles(t *testing.T) {
+	t.Parallel()
+
+	c, _ := newRecorded(t)
+
+	c.s.Client = &http.Client{Transport: sized(maxDownload)}
+	if data, err := c.fetch(t.Context(), "https://cdn.example/a"); err != nil || len(data) != maxDownload {
+		t.Fatalf("fetch at the limit = %d bytes, %v; want all of it", len(data), err)
+	}
+
+	c.s.Client = &http.Client{Transport: sized(maxDownload + 1)}
+	if _, err := c.fetch(t.Context(), "https://cdn.example/a"); err == nil {
+		t.Error("fetch over the limit succeeded; want an error, not a truncated file")
+	}
+}
+
+func TestFileName(t *testing.T) {
+	t.Parallel()
+
+	if got := fileName(&discordgo.MessageAttachment{ID: "a1", Filename: "../x/crash.log"}); got != "crash.log" {
+		t.Errorf("fileName() = %q, want crash.log", got)
+	}
+
+	if got := fileName(&discordgo.MessageAttachment{ID: "a1", Filename: ".."}); got != "a1" {
+		t.Errorf("fileName() = %q, want the id", got)
+	}
+}
+
+func TestLocate(t *testing.T) {
+	t.Parallel()
+
+	if ch, msg, err := locate("discord:42/9001"); err != nil || ch != "42" || msg != "9001" {
+		t.Errorf("locate() = %q, %q, %v", ch, msg, err)
+	}
+
+	if _, _, err := locate("42/9001"); !errors.Is(err, channel.ErrInvalidID) {
+		t.Errorf("locate() without channel prefix error = %v, want ErrInvalidID", err)
 	}
 }

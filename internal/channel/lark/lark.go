@@ -13,14 +13,11 @@ import (
 	"io"
 	"log/slog"
 	"mime"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -30,6 +27,7 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 // Name is the channel id prefix.
@@ -45,12 +43,6 @@ const (
 const (
 	FeishuURL = "https://open.feishu.cn"
 	LarkURL   = "https://open.larksuite.com"
-)
-
-// Proxy modes besides a proxy URL; see Config.Proxy.
-const (
-	ProxyDirect = "direct"
-	ProxyEnv    = "env"
 )
 
 // Open platform endpoints that have no typed SDK method.
@@ -112,28 +104,21 @@ func (c Config) BaseURL() string {
 }
 
 // ProxyFunc returns the proxy selector used for both API and WebSocket traffic.
-func (c Config) ProxyFunc() (func(*http.Request) (*url.URL, error), error) {
+func (c Config) ProxyFunc() (transport.ProxyFunc, error) {
 	mode := c.Proxy
 	if mode == "" {
-		mode = ProxyDirect
+		mode = transport.ProxyDirect
 		if c.Domain == DomainLark {
-			mode = ProxyEnv
+			mode = transport.ProxyEnv
 		}
 	}
 
-	switch mode {
-	case ProxyDirect:
-		return nil, nil
-	case ProxyEnv:
-		return http.ProxyFromEnvironment, nil
+	proxy, err := transport.Proxy(mode)
+	if err != nil {
+		return nil, fmt.Errorf("lark: %w", err)
 	}
 
-	u, err := url.Parse(mode)
-	if err != nil || u.Host == "" {
-		return nil, fmt.Errorf("lark: invalid proxy %q: want %s, %s or a URL", c.Proxy, ProxyDirect, ProxyEnv)
-	}
-
-	return http.ProxyURL(u), nil
+	return proxy, nil
 }
 
 // Bot is the identity of the app's bot.
@@ -167,30 +152,16 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 		return nil, err
 	}
 
-	hc := &http.Client{Transport: newTransport(proxy)}
+	hc := &http.Client{Transport: transport.HTTP(proxy)}
 
 	return &Channel{
 		cfg: cfg,
 		client: lark.NewClient(cfg.AppID, cfg.AppSecret,
 			lark.WithOpenBaseUrl(cfg.BaseURL()), lark.WithLogLevel(larkcore.LogLevelError), lark.WithHttpClient(hc)),
 		http:   hc,
-		dialer: &websocket.Dialer{Proxy: proxy, HandshakeTimeout: 45 * time.Second},
+		dialer: transport.WebSocket(proxy),
 		log:    log,
 	}, nil
-}
-
-// newTransport bounds every phase of a request that can hang: dial, TLS and
-// waiting for the response headers.
-func newTransport(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
-	return &http.Transport{
-		Proxy:                 proxy,
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
-		MaxIdleConns:          10,
-	}
 }
 
 // apiError is a call the platform received and refused with a non-zero code,
@@ -564,9 +535,9 @@ func resourceType(kind channel.AttachmentKind) string {
 // fileName picks a local name for a download: the attachment's own name, the
 // name the server sent, or the key, plus an extension sniffed from the data.
 func fileName(att channel.Attachment, served string, data []byte) string {
-	name := baseName(att.Name)
+	name := channel.BaseName(att.Name)
 	if name == "" {
-		name = baseName(served)
+		name = channel.BaseName(served)
 	}
 
 	if name == "" {
@@ -580,17 +551,6 @@ func fileName(att channel.Attachment, served string, data []byte) string {
 	}
 
 	return name
-}
-
-// baseName strips any directories from a sender-chosen name; "" if nothing
-// usable is left.
-func baseName(name string) string {
-	switch base := filepath.Base(name); base {
-	case ".", "..", string(filepath.Separator):
-		return ""
-	default:
-		return base
-	}
 }
 
 // Ack implements channel.Channel with an emoji reaction.

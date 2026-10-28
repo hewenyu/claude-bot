@@ -1,0 +1,69 @@
+// Package transport builds the HTTP and WebSocket clients the channel
+// adapters share, with the same proxy rules and bounded timeouts everywhere.
+package transport
+
+import (
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// Proxy modes besides a proxy URL.
+const (
+	ProxyDirect = "direct" // no proxy
+	ProxyEnv    = "env"    // HTTPS_PROXY, NO_PROXY etc.
+)
+
+// ProxyFunc selects the proxy for a request; nil means direct.
+type ProxyFunc = func(*http.Request) (*url.URL, error)
+
+// Timeouts for the phases of a connection that can hang.
+const (
+	dialTimeout      = 10 * time.Second
+	keepAlive        = 30 * time.Second
+	tlsTimeout       = 15 * time.Second
+	headerTimeout    = 30 * time.Second
+	idleTimeout      = 90 * time.Second
+	maxIdleConns     = 10
+	handshakeTimeout = 45 * time.Second // WebSocket upgrade, TLS included
+)
+
+// Proxy parses a proxy mode: ProxyDirect, ProxyEnv or a proxy URL.
+func Proxy(mode string) (ProxyFunc, error) {
+	switch mode {
+	case ProxyDirect:
+		return nil, nil
+	case ProxyEnv:
+		return http.ProxyFromEnvironment, nil
+	}
+
+	u, err := url.Parse(mode)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("invalid proxy %q: want %s, %s or a URL", mode, ProxyDirect, ProxyEnv)
+	}
+
+	return http.ProxyURL(u), nil
+}
+
+// HTTP returns a transport that bounds every phase of a request that can
+// hang: dial, TLS and waiting for the response headers.
+func HTTP(proxy ProxyFunc) *http.Transport {
+	return &http.Transport{
+		Proxy:                 proxy,
+		DialContext:           (&net.Dialer{Timeout: dialTimeout, KeepAlive: keepAlive}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   tlsTimeout,
+		ResponseHeaderTimeout: headerTimeout,
+		IdleConnTimeout:       idleTimeout,
+		MaxIdleConns:          maxIdleConns,
+	}
+}
+
+// WebSocket returns a dialer that goes through the same proxy.
+func WebSocket(proxy ProxyFunc) *websocket.Dialer {
+	return &websocket.Dialer{Proxy: proxy, HandshakeTimeout: handshakeTimeout}
+}

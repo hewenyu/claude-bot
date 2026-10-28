@@ -51,3 +51,23 @@ func TestPathSafe(t *testing.T) {
 		t.Errorf("PathSafe() = %q; separators must not survive", got)
 	}
 }
+
+func TestBaseName(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"crash.log":         "crash.log",
+		"../../etc/passwd":  "passwd",
+		"/abs/dir/shot.png": "shot.png",
+		"":                  "",
+		".":                 "",
+		"..":                "",
+		"/":                 "",
+	}
+
+	for in, want := range tests {
+		if got := BaseName(in); got != want {
+			t.Errorf("BaseName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

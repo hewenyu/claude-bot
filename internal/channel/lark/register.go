@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 // scopes the bot needs: receive DMs and group @-mentions, read and send
@@ -82,11 +84,11 @@ type Registrar struct {
 
 // NewRegistrar returns a Registrar for the official endpoints. proxy follows
 // the same rules as Config.Proxy.
-func NewRegistrar(proxy func(*http.Request) (*url.URL, error)) *Registrar {
+func NewRegistrar(proxy transport.ProxyFunc) *Registrar {
 	return &Registrar{
 		http: &http.Client{
 			Timeout:   20 * time.Second,
-			Transport: newTransport(proxy),
+			Transport: transport.HTTP(proxy),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

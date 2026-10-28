@@ -15,7 +15,7 @@ type status struct {
 	Channels []string       `json:"channels"`
 	Listener listenerStatus `json:"listener"`
 	Pending  int            `json:"pending"`
-	Lark     *botStatus     `json:"lark,omitempty"`
+	Lark     *larkStatus    `json:"lark,omitempty"`
 	Discord  *discordStatus `json:"discord,omitempty"`
 }
 
@@ -25,8 +25,8 @@ type listenerStatus struct {
 	LastBeat time.Time `json:"last_beat"`
 }
 
-// botStatus is the bot's identity, or why it could not be fetched.
-type botStatus struct {
+// larkStatus is the Lark bot's identity, or why it could not be fetched.
+type larkStatus struct {
 	lark.Bot
 
 	Error string `json:"error,omitempty"`
@@ -66,7 +66,7 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 
 	if ch, ok := a.channels[lark.Name].(*lark.Channel); ok {
 		bot, err := ch.Bot(ctx)
-		s.Lark = &botStatus{Bot: bot}
+		s.Lark = &larkStatus{Bot: bot}
 
 		if err != nil {
 			s.Lark.Error = err.Error()

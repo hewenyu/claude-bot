@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -114,4 +115,15 @@ func SplitID(id string) (channel, platformID string, err error) {
 	}
 
 	return channel, platformID, nil
+}
+
+// BaseName strips any directories from a sender-chosen file name; "" if
+// nothing usable is left. Adapters use it to name downloads.
+func BaseName(name string) string {
+	switch base := filepath.Base(name); base {
+	case ".", "..", string(filepath.Separator):
+		return ""
+	default:
+		return base
+	}
 }
