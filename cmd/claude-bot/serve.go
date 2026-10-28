@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,12 +17,13 @@ import (
 )
 
 const (
-	heartbeatEvery  = 15 * time.Second
-	heartbeatStale  = 45 * time.Second // three missed beats
-	listenerStartup = 30 * time.Second
-	startupPoll     = 200 * time.Millisecond
-	ackTimeout      = 10 * time.Second
-	logTailLines    = 10 // log lines quoted when the listener fails
+	heartbeatEvery   = 15 * time.Second
+	heartbeatStale   = 45 * time.Second // three missed beats
+	listenerStartup  = 30 * time.Second
+	listenerShutdown = 30 * time.Second
+	startupPoll      = 200 * time.Millisecond
+	ackTimeout       = 10 * time.Second
+	logTailLines     = 10 // log lines quoted when the listener fails
 )
 
 // heartbeat is written to .claude-bot/serve.json while the listener runs.
@@ -150,8 +153,8 @@ func readHeartbeat(dir string) (heartbeat, bool) {
 // ensureListener starts `claude-bot serve` in the background unless a
 // healthy one is already running, so a bare `claude-bot inbox` just works.
 func (a *app) ensureListener(ctx context.Context) error {
-	if _, alive := readHeartbeat(a.dir); alive {
-		return nil
+	if running, err := a.keepListener(ctx); running || err != nil {
+		return err
 	}
 
 	logPath := a.path(listenerLog)
@@ -198,6 +201,55 @@ func (a *app) ensureListener(ctx context.Context) error {
 
 				return nil
 			}
+		}
+	}
+}
+
+// keepListener reports whether a healthy listener is running. One started
+// before the configured channels changed (say, init added one) does not
+// serve them: it is stopped, to be replaced.
+func (a *app) keepListener(ctx context.Context) (bool, error) {
+	hb, alive := readHeartbeat(a.dir)
+	if !alive {
+		return false, nil
+	}
+
+	if slices.Equal(hb.Channels, a.names()) {
+		return true, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "claude-bot: channels changed (%s → %s), restarting listener (pid %d)\n",
+		strings.Join(hb.Channels, ", "), strings.Join(a.names(), ", "), hb.PID)
+
+	return false, a.stopListener(ctx, hb.PID)
+}
+
+// stopListener shuts the listener pid down and waits until it has released
+// the lock.
+func (a *app) stopListener(ctx context.Context, pid int) error {
+	if err := terminate(pid); err != nil {
+		return err
+	}
+
+	deadline := time.NewTimer(listenerShutdown)
+	defer deadline.Stop()
+
+	tick := time.NewTicker(startupPoll)
+	defer tick.Stop()
+
+	for {
+		if unlock, err := lockFile(a.path(listenerLock)); err == nil {
+			unlock()
+
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("listener (pid %d) did not stop within %s", pid, listenerShutdown)
+		case <-tick.C:
 		}
 	}
 }

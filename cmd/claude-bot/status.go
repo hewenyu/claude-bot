@@ -29,6 +29,7 @@ type listenerStatus struct {
 	Alive    bool      `json:"alive"`
 	PID      int       `json:"pid"`
 	LastBeat time.Time `json:"last_beat"`
+	Channels []string  `json:"channels,omitempty"` // what it serves; the next inbox restarts it if they differ from the configured ones
 }
 
 // larkStatus is the Lark bot's identity, or why it could not be fetched.
@@ -90,7 +91,7 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 	s := status{
 		Project:  filepath.Dir(a.dir),
 		Channels: a.names(),
-		Listener: listenerStatus{Alive: alive, PID: hb.PID, LastBeat: hb.BeatAt},
+		Listener: listenerStatus{Alive: alive, PID: hb.PID, LastBeat: hb.BeatAt, Channels: hb.Channels},
 		Pending:  len(pending),
 	}
 

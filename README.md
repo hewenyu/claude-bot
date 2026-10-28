@@ -37,7 +37,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 ```
 
 - **怎么连出去**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，Telegram 用长轮询，GitHub 每 30 秒轮询一次 REST API，都是从本机主动发起的。
-- **监听进程按需启动**：第一次执行 `claude-bot inbox` 时，会在后台自动拉起 `serve`。
+- **监听进程按需启动**：第一次执行 `claude-bot inbox` 时，会在后台自动拉起 `serve`。之后用 `init` 新接了渠道，下一次 `inbox` 会发现正在运行的监听进程没有监听这个渠道，自动把它重启。
 
 ### 多条消息怎么处理
 

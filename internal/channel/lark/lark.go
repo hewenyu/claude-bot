@@ -225,7 +225,11 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 			}
 
 			return deliver(msg)
-		})
+		}).
+		// Reactions, the bot's own acks included, are not messages; handling
+		// them keeps the SDK from logging each one as an error.
+		OnP2MessageReactionCreatedV1(func(context.Context, *larkim.P2MessageReactionCreatedV1) error { return nil }).
+		OnP2MessageReactionDeletedV1(func(context.Context, *larkim.P2MessageReactionDeletedV1) error { return nil })
 
 	ws := larkws.NewClient(c.cfg.AppID, c.cfg.AppSecret,
 		larkws.WithEventHandler(handler),

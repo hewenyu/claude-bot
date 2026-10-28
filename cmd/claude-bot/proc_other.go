@@ -12,3 +12,7 @@ func lockFile(string) (func(), error) {
 }
 
 func detach(*exec.Cmd) {}
+
+func terminate(int) error {
+	return errors.New("claude-bot serve is only supported on macOS and Linux")
+}
