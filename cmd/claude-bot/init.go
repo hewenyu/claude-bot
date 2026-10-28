@@ -101,7 +101,9 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		}
 	}
 
-	fmt.Println("\n下一步：在这个仓库里打开 Claude Code，运行  /loop /bot")
+	fmt.Println("\n下一步：")
+	fmt.Println("  1. 在终端里运行  claude-bot start  启动监听进程（已经在运行的话用  claude-bot restart  接上新渠道）")
+	fmt.Println("  2. 在这个仓库里打开 Claude Code，运行  /loop /bot")
 	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
 	fmt.Printf("要再接入其他渠道，运行  claude-bot init --channel <%s>\n", channelNames("|"))
 

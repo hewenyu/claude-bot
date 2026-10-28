@@ -54,6 +54,7 @@ go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
 ```bash
 cd your-project
 claude-bot init        # 选渠道、保存凭证、生成 .claude/commands/bot.md、验证收发
+claude-bot start       # 在后台启动监听进程（stop 停止，restart 重启）
 ```
 
 然后在 Claude Code 里挂上 loop：

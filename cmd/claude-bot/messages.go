@@ -30,7 +30,7 @@ func cmdInbox(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	if err := a.ensureListener(ctx); err != nil {
+	if err := a.checkListener(); err != nil {
 		return err
 	}
 
