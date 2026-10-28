@@ -275,6 +275,9 @@ func TestParseInitFlags_settlesChannel(t *testing.T) {
 		{args: []string{"--telegram-token", "1:t", "--discord-token", "d"}},
 		{args: []string{"--app-id", "cli_1", "--app-secret", "s", "--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}},
 		{args: []string{"--bot-md", "--channel", "lark"}},
+		{args: []string{"--pi"}, ok: true},
+		{args: []string{"--bot-md", "--pi"}, ok: true},
+		{args: []string{"--pi", "--telegram-token", "1:t"}},
 		{args: []string{"--github-token", "g", "--discord-token", "d"}},
 	}
 
@@ -418,7 +421,7 @@ func TestParseInterleaved(t *testing.T) {
 	}
 }
 
-func TestRewriteBotCommand(t *testing.T) {
+func TestWriteAgentFiles(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -428,12 +431,33 @@ func TestRewriteBotCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := rewriteBotCommand(root); err != nil {
+	if err := writeAgentFiles(root, initOptions{botMD: true}); err != nil {
 		t.Fatal(err)
 	}
 
 	got, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(got, botCommand) {
-		t.Errorf("bot.md after rewrite = %.40q…, %v; want the embedded command", got, err)
+		t.Errorf("bot.md after --bot-md = %.40q…, %v; want the embedded command", got, err)
+	}
+
+	// The skill is a link to the one copy, so it follows the rewrite.
+	if skill, err := os.ReadFile(botSkillPath(root)); err != nil || !bytes.Equal(skill, botCommand) {
+		t.Errorf("SKILL.md = %.40q…, %v; want the /bot command through the link", skill, err)
+	}
+
+	if target, err := os.Readlink(botSkillPath(root)); err != nil || filepath.IsAbs(target) {
+		t.Errorf("SKILL.md link = %q, %v; want a relative link, so the repository can move", target, err)
+	}
+
+	if _, err := os.Stat(piLoopPath(root)); err == nil {
+		t.Error("--bot-md installed the pi extension")
+	}
+
+	if err := writeAgentFiles(root, initOptions{pi: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if ext, err := os.ReadFile(piLoopPath(root)); err != nil || !bytes.Equal(ext, piLoop) {
+		t.Errorf("pi extension = %.40q…, %v; want the embedded one", ext, err)
 	}
 }

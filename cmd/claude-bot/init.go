@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,9 +22,6 @@ import (
 	"github.com/hewenyu/claude-bot/internal/config"
 )
 
-//go:embed bot.md
-var botCommand []byte
-
 const (
 	verifyTimeout = 3 * time.Minute
 	apiTimeout    = 15 * time.Second
@@ -43,6 +39,7 @@ type initOptions struct {
 	dingtalkID, dingtalkSecret          string
 	reregister, noOpen, noVerify, force bool
 	botMD                               bool // only rewrite the /bot command
+	pi                                  bool // only install the pi /loop extension
 }
 
 func cmdInit(ctx context.Context, project string, args []string) error {
@@ -57,8 +54,8 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 	}
 
 	root := filepath.Dir(dir)
-	if o.botMD {
-		return rewriteBotCommand(root)
+	if o.agentFilesOnly() {
+		return writeAgentFiles(root, o)
 	}
 
 	if o.name == "" {
@@ -88,7 +85,7 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	if err := writeIfAbsent(botCommandPath(root), botCommand, o.force); err != nil {
+	if err := writeWorkflow(root, o.force); err != nil {
 		return err
 	}
 
@@ -133,22 +130,6 @@ func pickChannel(o *initOptions, cfg config.Config) error {
 	}
 
 	return askTokens(o, p)
-}
-
-func botCommandPath(root string) string {
-	return filepath.Join(root, ".claude", "commands", "bot.md")
-}
-
-// rewriteBotCommand replaces the /bot command with this version's, leaving
-// the bot configuration alone.
-func rewriteBotCommand(root string) error {
-	if err := writeIfAbsent(botCommandPath(root), botCommand, true); err != nil {
-		return err
-	}
-
-	fmt.Printf("✓ 已用 %s 版本的值守流程覆盖 %s\n", Version, botCommandPath(root))
-
-	return nil
 }
 
 // setup is a channel whose credentials proved to work.
@@ -200,6 +181,7 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
 	fs.BoolVar(&o.noOpen, "no-open", false, "print the authorization link without opening a browser")
 	fs.BoolVar(&o.noVerify, "no-verify", false, "skip the send-a-message connection check")
+	fs.BoolVar(&o.pi, "pi", false, "only install the /loop extension for pi into .pi/extensions (and the /bot workflow if missing), nothing else")
 	fs.BoolVar(&o.force, "force", false, "overwrite an existing .claude/commands/bot.md")
 
 	if err := fs.Parse(args); err != nil {
@@ -240,8 +222,8 @@ func settleChannel(o *initOptions) error {
 	}
 
 	switch {
-	case o.botMD && (o.channel != "" || len(implied) > 0):
-		return fmt.Errorf("%w: --bot-md only rewrites the /bot command; run it without channel flags", errUsage)
+	case o.agentFilesOnly() && (o.channel != "" || len(implied) > 0):
+		return fmt.Errorf("%w: --bot-md and --pi only write the agent files; run them without channel flags", errUsage)
 	case len(implied) > 1:
 		return fmt.Errorf("%w: --app-id, --discord-token, --telegram-token, --slack-*-token, --dingtalk-client-* and --github-token set up different channels; run init once for each", errUsage)
 	case len(implied) == 1 && o.channel != "" && o.channel != implied[0]:
