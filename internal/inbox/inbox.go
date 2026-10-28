@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel"
 )
 
@@ -64,9 +65,10 @@ func (b *Inbox) Put(m channel.Message) (bool, error) {
 		return false, fmt.Errorf("create inbox: %w", err)
 	}
 
-	tmp, err := writeTemp(dir, append(raw, '\n'))
+	// Not *.json, so Pending never reads it.
+	tmp, err := atomicfile.WriteTemp(dir, ".put-*", append(raw, '\n'))
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("store message: %w", err)
 	}
 	defer os.Remove(tmp) //nolint:errcheck // the linked copy is what counts
 
@@ -81,28 +83,6 @@ func (b *Inbox) Put(m channel.Message) (bool, error) {
 	}
 
 	return true, nil
-}
-
-// writeTemp writes data to a new uniquely named file in dir (not *.json, so
-// Pending skips it) and returns its path.
-func writeTemp(dir string, data []byte) (string, error) {
-	f, err := os.CreateTemp(dir, ".put-*")
-	if err != nil {
-		return "", fmt.Errorf("write message: %w", err)
-	}
-
-	_, err = f.Write(data)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-
-	if err != nil {
-		_ = os.Remove(f.Name())
-
-		return "", fmt.Errorf("write message: %w", err)
-	}
-
-	return f.Name(), nil
 }
 
 // Pending returns unhandled messages, oldest first.

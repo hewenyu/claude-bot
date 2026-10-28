@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 )
 
@@ -106,7 +107,8 @@ func Load(dir string) (Config, error) {
 	return cfg, nil
 }
 
-// Save writes cfg to dir/config.json, readable only by the owner.
+// Save writes cfg to dir/config.json, readable only by the owner. The file is
+// replaced atomically, so a crash never leaves half-written credentials.
 func Save(dir string, cfg Config) error {
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -117,8 +119,8 @@ func Save(dir string, cfg Config) error {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), append(raw, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if err := atomicfile.Write(filepath.Join(dir, "config.json"), append(raw, '\n'), 0o600); err != nil {
+		return fmt.Errorf("save config: %w", err)
 	}
 
 	return nil

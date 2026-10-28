@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel"
 )
 
@@ -236,14 +237,5 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
-	}
-
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
-	}
-
-	return nil
+	return atomicfile.Write(path, append(raw, '\n'), 0o600)
 }
