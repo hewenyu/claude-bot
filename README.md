@@ -3,12 +3,25 @@
 ![Go](https://img.shields.io/badge/go-1.27+-00ADD8?logo=go)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![LINUX DO](https://img.shields.io/badge/%E7%A4%BE%E5%8C%BA-LINUX%20DO-1f7aec)](https://linux.do)
+
+**在群里 @ 一下，Claude Code 就去仓库里把活干了。**
 
 把飞书 / Lark、Discord、Telegram 或 Slack 机器人接到项目仓库里常驻的 Claude Code 会话上。
 
 项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它还会用 `gh` 盯仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
 
 claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地收件箱，并提供回复命令。理解需求、决定怎么做、怎么回复，都由 Claude 自己判断。GitHub 相关操作 Claude 直接用 `gh`。
+
+## 特性
+
+- **四个聊天渠道**：飞书 / Lark、Discord、Telegram、Slack，一个仓库里可以同时接多个。私聊和群里 @bot 都支持，回复会回在原消息下（或原话题、thread 里），群聊里会 @ 提问的人。
+- **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，家里的电脑、公司内网都能用，不用配域名、HTTPS 和回调地址。
+- **一个仓库一个 bot**：凭证、收件箱、监听进程都放在仓库自己的 `.claude-bot/` 里，多个项目可以同时值守、互不影响。
+- **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就会自动建好应用、配好权限；其他渠道粘贴 token 即可。最后发一条私聊验证收发都已打通。
+- **聊天之外还管 GitHub**：盯新开的 issue 和 PR，值得做的修复后合并、打 tag 发版，PR 要在本地实际跑过才会合并；不值得做的也会回复理由。
+- **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理。按顺序串行处理，同一时间只有一个任务在改代码。
+- **工具保持简单**：单个 Go 二进制，只负责收发消息，没有数据库，也不需要额外的服务。值守流程是一个 Markdown 文件（`.claude/commands/bot.md`），可以按项目约定修改。
 
 ## 工作原理
 
@@ -320,6 +333,12 @@ internal/atomicfile/     原子写文件
 接入新的聊天平台只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](PROTOCOL.md#3-渠道适配器)。
 
 `.claude/skills/` 下装了 Go 最佳实践相关的 skill（[samber/cc-skills-golang](https://github.com/samber/cc-skills-golang)），在这个仓库里开发时 Claude 会参照这些规范。
+
+## 社区
+
+本项目在 [LINUX DO](https://linux.do) 社区分享和推广，感谢佬友们的支持与反馈。有问题、有想法，欢迎在 LINUX DO 的帖子里或者 GitHub issue 里提。
+
+[![LINUX DO](https://img.shields.io/badge/%E7%A4%BE%E5%8C%BA-LINUX%20DO-1f7aec?style=for-the-badge)](https://linux.do)
 
 ## 许可证
 
