@@ -92,19 +92,22 @@ func parseContent(msgType, content string, mentions []mention) (string, []channe
 	return replaceMentions(text, mentions), atts
 }
 
+// postSegment is one element of a post, read from messages and written in
+// replies.
 type postSegment struct {
 	Tag      string `json:"tag"`
-	Text     string `json:"text"`
-	Href     string `json:"href"`
-	UserID   string `json:"user_id"`
-	UserName string `json:"user_name"`
-	ImageKey string `json:"image_key"`
-	FileKey  string `json:"file_key"`
-	Language string `json:"language"`
+	Text     string `json:"text,omitempty"`
+	Href     string `json:"href,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	UserName string `json:"user_name,omitempty"`
+	ImageKey string `json:"image_key,omitempty"`
+	FileKey  string `json:"file_key,omitempty"`
+	Language string `json:"language,omitempty"`
 }
 
+// post is one language of a rich-text message: paragraphs of segments.
 type post struct {
-	Title   string          `json:"title"`
+	Title   string          `json:"title,omitempty"`
 	Content [][]postSegment `json:"content"`
 }
 
@@ -235,14 +238,15 @@ func millis(s string) time.Time {
 
 // buildPost renders Markdown as a Lark post, optionally @-mentioning someone first.
 func buildPost(text, mentionOpenID string) (string, error) {
-	var paras [][]map[string]string
+	var p post
 	if mentionOpenID != "" {
-		paras = append(paras, []map[string]string{{"tag": tagAt, "user_id": mentionOpenID}})
+		p.Content = append(p.Content, []postSegment{{Tag: tagAt, UserID: mentionOpenID}})
 	}
 
-	paras = append(paras, []map[string]string{{"tag": tagMarkdown, "text": text}})
+	// Lark only accepts an md element alone in its paragraph.
+	p.Content = append(p.Content, []postSegment{{Tag: tagMarkdown, Text: text}})
 
-	return marshal(map[string]any{localeZhCN: map[string]any{"content": paras}})
+	return marshal(map[string]post{localeZhCN: p})
 }
 
 // buildText renders a plain text message, the fallback when post is rejected.

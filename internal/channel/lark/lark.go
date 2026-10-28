@@ -623,7 +623,7 @@ func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
 	return errors.Join(errs...)
 }
 
-// MissingScopes returns the permissions in Scopes that are not granted yet.
+// MissingScopes returns the permissions the bot needs that are not granted yet.
 // Newly granted permissions can take a moment to show up after approval.
 func (c *Channel) MissingScopes(ctx context.Context) ([]string, error) {
 	resp, err := c.client.Get(ctx, scopesPath, nil, larkcore.AccessTokenTypeTenant)
@@ -661,7 +661,7 @@ func (c *Channel) MissingScopes(ctx context.Context) ([]string, error) {
 
 	var missing []string
 
-	for _, s := range Scopes {
+	for _, s := range scopes {
 		if !granted[s] {
 			missing = append(missing, s)
 		}

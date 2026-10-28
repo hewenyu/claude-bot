@@ -67,9 +67,9 @@ func newTestRegistrar(t *testing.T, f *fakeAccounts) *Registrar {
 
 	host := strings.TrimPrefix(srv.URL, "https://")
 	r := NewRegistrar(nil)
-	r.HTTP = srv.Client()
-	r.FeishuHost, r.LarkHost = host, host
-	r.IntervalUnit = time.Millisecond
+	r.http = srv.Client()
+	r.feishuHost, r.larkHost = host, host
+	r.intervalUnit = time.Millisecond
 	r.Name, r.Desc = "demo Bot", "desc"
 
 	if f.link == "" {
@@ -89,26 +89,22 @@ func TestRegistrar_Register(t *testing.T) {
 	}}
 	r := newTestRegistrar(t, f)
 
-	var (
-		link     string
-		statuses []string
-	)
+	var link string
 
 	r.OnLink = func(l string, _ time.Time) { link = l }
-	r.OnStatus = func(s string) { statuses = append(statuses, s) }
 
 	got, err := r.Register(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := Registered{AppID: "cli_new", AppSecret: "sec", OwnerID: "ou_owner", Domain: "feishu"}
+	want := Registered{AppID: "cli_new", AppSecret: "sec", Domain: "feishu"}
 	if got != want {
 		t.Errorf("Register() = %+v, want %+v", got, want)
 	}
 
-	if !reflect.DeepEqual(statuses, []string{"pending", "slow_down"}) {
-		t.Errorf("statuses = %v", statuses)
+	if polls := len(f.calls) - 1; polls != 3 {
+		t.Errorf("polled %d times, want 3 (pending and slow_down keep waiting)", polls)
 	}
 
 	begin := f.calls[0]
@@ -162,7 +158,7 @@ func checkLink(t *testing.T, link string) {
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(addons.Scopes.Tenant, Scopes) || !reflect.DeepEqual(addons.Events.Items.Tenant, Events) {
+	if !reflect.DeepEqual(addons.Scopes.Tenant, scopes) || !reflect.DeepEqual(addons.Events.Items.Tenant, events) {
 		t.Errorf("addons = %s", plain)
 	}
 }
@@ -212,17 +208,17 @@ func TestRegistrar_Register_larkTenant(t *testing.T) {
 	}}
 	r := newTestRegistrar(t, f)
 
-	var switched bool
+	var switched string
 
-	r.OnStatus = func(s string) { switched = switched || s == "lark" }
+	r.OnTenantSwitch = func(domain string) { switched = domain }
 
 	got, err := r.Register(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got.Domain != "lark" || !switched {
-		t.Errorf("Register() = %+v, switched=%v; want lark domain", got, switched)
+	if got.Domain != DomainLark || switched != DomainLark {
+		t.Errorf("Register() = %+v, switched to %q; want lark domain", got, switched)
 	}
 }
 
@@ -265,10 +261,10 @@ func TestRegistrar_Register_cancelled(t *testing.T) {
 
 	f := &fakeAccounts{polls: []map[string]any{{"error": "authorization_pending"}, {"error": "authorization_pending"}}}
 	r := newTestRegistrar(t, f)
-	r.IntervalUnit = time.Second // stay in the wait so cancellation lands there
+	r.intervalUnit = time.Second // a missed cancellation would show as a slow test
 
 	ctx, cancel := context.WithCancel(t.Context())
-	r.OnStatus = func(string) { cancel() }
+	r.OnLink = func(string, time.Time) { cancel() }
 
 	_, err := r.Register(ctx)
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrExpired) {
