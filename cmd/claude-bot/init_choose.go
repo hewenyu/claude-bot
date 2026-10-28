@@ -21,11 +21,11 @@ import (
 	"github.com/hewenyu/claude-bot/internal/config"
 )
 
-// Setup guides in the README.
+// Setup guides in docs/channels.md.
 const (
-	slackGuide    = "https://github.com/hewenyu/claude-bot#选-slack-时"
-	githubGuide   = "https://github.com/hewenyu/claude-bot#选-github-时"
-	dingtalkGuide = "https://github.com/hewenyu/claude-bot#选钉钉时"
+	slackGuide    = "https://github.com/hewenyu/claude-bot/blob/master/docs/channels.md#slack"
+	githubGuide   = "https://github.com/hewenyu/claude-bot/blob/master/docs/channels.md#github"
+	dingtalkGuide = "https://github.com/hewenyu/claude-bot/blob/master/docs/channels.md#钉钉"
 )
 
 // channelChoice is one entry of the init menu.
@@ -202,7 +202,7 @@ func askTokens(o *initOptions, p *prompter) error {
 			return fmt.Errorf("%w: --channel slack needs --slack-app-token and --slack-bot-token", errUsage)
 		}
 
-		p.say("先按 README 里的 manifest 创建 Slack 应用：%s\n", slackGuide)
+		p.say("先按文档里的 manifest 创建 Slack 应用：%s\n", slackGuide)
 
 		var err error
 		if o.slackAppToken, err = p.ask("App-Level Token（xapp-…）"); err == nil {
@@ -219,7 +219,7 @@ func askTokens(o *initOptions, p *prompter) error {
 			return fmt.Errorf("%w: --channel dingtalk needs --dingtalk-client-id and --dingtalk-client-secret", errUsage)
 		}
 
-		p.say("先按 README 创建钉钉应用并开启 Stream 模式的机器人：%s\n", dingtalkGuide)
+		p.say("先按文档创建钉钉应用并开启 Stream 模式的机器人：%s\n", dingtalkGuide)
 
 		var err error
 		if o.dingtalkID, err = p.ask("Client ID（AppKey）"); err == nil {
