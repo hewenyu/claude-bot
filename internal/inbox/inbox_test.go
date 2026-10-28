@@ -156,14 +156,6 @@ func TestInbox_Done(t *testing.T) {
 	}
 }
 
-func TestFileName(t *testing.T) {
-	t.Parallel()
-
-	if got := fileName("lark:om_../../x"); got != "lark_om_.._.._x.json" {
-		t.Errorf("fileName() = %q; separators must not survive", got)
-	}
-}
-
 func ids(ms []channel.Message) []string {
 	out := make([]string, 0, len(ms))
 	for _, m := range ms {

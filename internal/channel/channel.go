@@ -82,6 +82,19 @@ func ID(channel, platformID string) string {
 	return channel + ":" + platformID
 }
 
+// PathSafe maps an id to a single safe path element: every rune outside
+// [A-Za-z0-9._-] becomes '_'. Protocol ids carry a channel prefix, so the
+// result is never "." or "..".
+func PathSafe(id string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+
+		return '_'
+	}, id)
+}
+
 // SplitID returns the channel and platform id of a protocol message id.
 func SplitID(id string) (channel, platformID string, err error) {
 	channel, platformID, ok := strings.Cut(id, ":")

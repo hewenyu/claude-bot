@@ -43,3 +43,11 @@ func TestSplitID(t *testing.T) {
 		})
 	}
 }
+
+func TestPathSafe(t *testing.T) {
+	t.Parallel()
+
+	if got := PathSafe("lark:om_../../x"); got != "lark_om_.._.._x" {
+		t.Errorf("PathSafe() = %q; separators must not survive", got)
+	}
+}

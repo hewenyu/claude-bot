@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
@@ -34,17 +33,7 @@ func New(dir string) *Inbox {
 }
 
 func (b *Inbox) path(state, id string) string {
-	return filepath.Join(b.dir, state, fileName(id))
-}
-
-func fileName(id string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
-			return r
-		}
-
-		return '_'
-	}, id) + ".json"
+	return filepath.Join(b.dir, state, channel.PathSafe(id)+".json")
 }
 
 // Put stores m as pending. It returns false if m was seen before (Lark
