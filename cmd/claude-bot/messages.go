@@ -110,19 +110,12 @@ func cmdReply(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	id := r.id
-
-	ch, _, err := a.channelFor(id)
-	if err != nil {
-		return err
-	}
-
 	text, err := textArg(r.text)
 	if err != nil {
 		return err
 	}
 
-	msg, err := a.lookup(ctx, ch, id)
+	ch, msg, err := a.lookup(ctx, r.id)
 	if err != nil {
 		return err
 	}
@@ -132,25 +125,30 @@ func cmdReply(ctx context.Context, project string, args []string) error {
 	}
 
 	if !r.keep {
-		if err := a.inbox.Done(id); err != nil && !errors.Is(err, inbox.ErrNotFound) {
+		if err := a.inbox.Done(r.id); err != nil && !errors.Is(err, inbox.ErrNotFound) {
 			return err
 		}
 	}
 
-	fmt.Println("replied to", id)
+	fmt.Println("replied to", r.id)
 
 	return nil
 }
 
-// lookup returns a message from the inbox, or from the platform when it is
-// older than the inbox.
-func (a *app) lookup(ctx context.Context, ch channel.Channel, id string) (channel.Message, error) {
-	msg, err := a.inbox.Find(id)
-	if errors.Is(err, inbox.ErrNotFound) {
-		return ch.Get(ctx, id)
+// lookup returns the channel that owns id and the message itself, from the
+// inbox or, when it is older than the inbox, from the platform.
+func (a *app) lookup(ctx context.Context, id string) (channel.Channel, channel.Message, error) {
+	ch, platformID, err := a.channelFor(id)
+	if err != nil {
+		return nil, channel.Message{}, err
 	}
 
-	return msg, err
+	msg, err := a.inbox.Find(id)
+	if errors.Is(err, inbox.ErrNotFound) {
+		msg, err = ch.Get(ctx, platformID)
+	}
+
+	return ch, msg, err
 }
 
 func cmdDone(ctx context.Context, project string, args []string) error {
@@ -195,12 +193,12 @@ func cmdGet(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	ch, _, err := a.channelFor(args[0])
+	ch, platformID, err := a.channelFor(args[0])
 	if err != nil {
 		return err
 	}
 
-	msg, err := ch.Get(ctx, args[0])
+	msg, err := ch.Get(ctx, platformID)
 	if err != nil {
 		return err
 	}
@@ -223,20 +221,13 @@ func cmdDownload(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	id := args[0]
-
-	ch, _, err := a.channelFor(id)
-	if err != nil {
-		return err
-	}
-
-	msg, err := a.lookup(ctx, ch, id)
+	ch, msg, err := a.lookup(ctx, args[0])
 	if err != nil {
 		return err
 	}
 
 	if len(msg.Attachments) == 0 {
-		return fmt.Errorf("message %s has no attachments", id)
+		return fmt.Errorf("message %s has no attachments", msg.ID)
 	}
 
 	// One directory per message: attachments of different messages often
