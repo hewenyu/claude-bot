@@ -12,7 +12,7 @@ import (
 // lockFile takes an exclusive, non-blocking flock. The kernel releases it if
 // the process dies, so a crashed listener never leaves a stale lock.
 func lockFile(path string) (func(), error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // fixed file in the bot dir
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, privatePerm) //nolint:gosec // fixed file in the bot dir
 	if err != nil {
 		return nil, fmt.Errorf("open lock: %w", err)
 	}

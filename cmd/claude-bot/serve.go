@@ -19,8 +19,12 @@ import (
 
 const (
 	heartbeatEvery  = 15 * time.Second
-	heartbeatStale  = 45 * time.Second
+	heartbeatStale  = 45 * time.Second // three missed beats
+	heartbeatCheck  = time.Second      // how often beat looks at readiness
 	listenerStartup = 30 * time.Second
+	startupPoll     = 200 * time.Millisecond
+	ackTimeout      = 10 * time.Second
+	logTailLines    = 10 // log lines quoted when the listener fails
 )
 
 // heartbeat is written to .claude-bot/serve.json while the listener runs.
@@ -42,7 +46,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return err
 	}
 
-	unlock, err := lockFile(filepath.Join(a.dir, "serve.lock"))
+	unlock, err := lockFile(a.path(listenerLock))
 	if err != nil {
 		return fmt.Errorf("listener already running for %s: %w", filepath.Dir(a.dir), err)
 	}
@@ -53,7 +57,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	// The heartbeat means "connected": it starts once every channel is ready
 	// and disappears when the listener exits.
-	defer func() { _ = os.Remove(filepath.Join(a.dir, "serve.json")) }()
+	defer func() { _ = os.Remove(a.path(heartbeatFile)) }()
 
 	var ready atomic.Int32
 
@@ -92,7 +96,7 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 		a.log.Info("message", "id", m.ID, "chat", m.ChatType, "from", m.Sender.ID)
 
 		go func() {
-			ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ackTimeout)
 			defer cancel()
 
 			if err := ch.Ack(ackCtx, m); err != nil {
@@ -106,14 +110,14 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 
 func (a *app) beat(ctx context.Context, ready func() bool) {
 	hb := heartbeat{PID: os.Getpid(), StartedAt: time.Now().UTC(), Channels: a.names()}
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(heartbeatCheck)
 
 	defer t.Stop()
 
 	for {
 		if ready() && time.Since(hb.BeatAt) >= heartbeatEvery {
 			hb.BeatAt = time.Now().UTC()
-			if err := writeJSON(filepath.Join(a.dir, "serve.json"), hb); err != nil {
+			if err := writeJSON(a.path(heartbeatFile), hb); err != nil {
 				a.log.Warn("write heartbeat", "err", err)
 			}
 		}
@@ -129,7 +133,7 @@ func (a *app) beat(ctx context.Context, ready func() bool) {
 func readHeartbeat(dir string) (heartbeat, bool) {
 	var hb heartbeat
 
-	raw, err := os.ReadFile(filepath.Join(dir, "serve.json")) //nolint:gosec // fixed file in the bot dir
+	raw, err := os.ReadFile(filepath.Join(dir, heartbeatFile)) //nolint:gosec // fixed file in the bot dir
 	if err != nil || json.Unmarshal(raw, &hb) != nil {
 		return hb, false
 	}
@@ -144,16 +148,16 @@ func (a *app) ensureListener(ctx context.Context) error {
 		return nil
 	}
 
-	logPath := filepath.Join(a.dir, "serve.log")
+	logPath := a.path(listenerLog)
 
-	if err := os.MkdirAll(a.dir, 0o750); err != nil {
+	if err := os.MkdirAll(a.dir, dirPerm); err != nil {
 		return fmt.Errorf("create %s: %w", a.dir, err)
 	}
 
 	// A listener holding the lock without a heartbeat is still connecting.
-	unlock, err := lockFile(filepath.Join(a.dir, "serve.lock"))
+	unlock, err := lockFile(a.path(listenerLock))
 	if err != nil {
-		return fmt.Errorf("listener is running but not connected yet; recent log (%s):\n%s", logPath, tailFile(logPath, 10))
+		return fmt.Errorf("listener is running but not connected yet; recent log (%s):\n%s", logPath, tailFile(logPath, logTailLines))
 	}
 
 	unlock()
@@ -171,7 +175,7 @@ func (a *app) ensureListener(ctx context.Context) error {
 	deadline := time.NewTimer(listenerStartup)
 	defer deadline.Stop()
 
-	tick := time.NewTicker(200 * time.Millisecond)
+	tick := time.NewTicker(startupPoll)
 	defer tick.Stop()
 
 	for {
@@ -179,9 +183,9 @@ func (a *app) ensureListener(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-exited:
-			return fmt.Errorf("listener exited (%w):\n%s", err, tailFile(logPath, 10))
+			return fmt.Errorf("listener exited (%w):\n%s", err, tailFile(logPath, logTailLines))
 		case <-deadline.C:
-			return fmt.Errorf("listener did not connect within %s; recent log (%s):\n%s", listenerStartup, logPath, tailFile(logPath, 10))
+			return fmt.Errorf("listener did not connect within %s; recent log (%s):\n%s", listenerStartup, logPath, tailFile(logPath, logTailLines))
 		case <-tick.C:
 			if hb, alive := readHeartbeat(a.dir); alive && hb.PID == pid {
 				fmt.Fprintf(os.Stderr, "claude-bot: started listener (pid %d), log: %s\n", pid, logPath)
@@ -200,7 +204,7 @@ func (a *app) spawnListener(logPath string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("locate own binary: %w", err)
 	}
 
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // fixed file in the bot dir
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, privatePerm) //nolint:gosec // fixed file in the bot dir
 	if err != nil {
 		return nil, fmt.Errorf("open listener log: %w", err)
 	}
@@ -237,5 +241,5 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	return atomicfile.Write(path, append(raw, '\n'), 0o600)
+	return atomicfile.Write(path, append(raw, '\n'), privatePerm)
 }

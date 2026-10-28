@@ -26,8 +26,21 @@ var Scopes = []string{
 	"im:message.reactions:write_only",
 }
 
-// maxPollFailures is how many failed polls in a row end the registration.
-const maxPollFailures = 3
+// Device-flow timing (RFC 8628), in seconds where the server sends seconds.
+const (
+	defaultExpiresIn = 600 // when the server omits expires_in
+	defaultInterval  = 5   // when the server omits interval
+	slowDownStep     = 5   // added to the interval on every slow_down
+	maxPollFailures  = 3   // failed polls in a row that end the registration
+)
+
+// Device-flow error codes.
+const (
+	codePending  = "authorization_pending"
+	codeSlowDown = "slow_down"
+	codeDenied   = "access_denied"
+	codeExpired  = "expired_token"
+)
 
 // Events the bot subscribes to.
 var Events = []string{"im.message.receive_v1"}
@@ -125,7 +138,7 @@ func (r *Registrar) Register(ctx context.Context) (Registered, error) {
 		return Registered{}, fmt.Errorf("%w: %w", ErrResponse, err)
 	}
 
-	expires := time.Now().Add(time.Duration(positive(begin.ExpiresIn, 600)) * time.Second)
+	expires := time.Now().Add(time.Duration(positive(begin.ExpiresIn, defaultExpiresIn)) * time.Second)
 
 	if r.OnLink != nil {
 		r.OnLink(link, expires)
@@ -149,7 +162,7 @@ func (r *Registrar) Register(ctx context.Context) (Registered, error) {
 // poll waits for the user's decision on the device code from begin.
 func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, error) {
 	host, domain := r.FeishuHost, DomainFeishu
-	interval := time.Duration(positive(begin.Interval, 5)) * r.IntervalUnit
+	interval := time.Duration(positive(begin.Interval, defaultInterval)) * r.IntervalUnit
 	failures := 0
 
 	for {
@@ -161,7 +174,7 @@ func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, er
 				return Registered{}, err
 			}
 
-			res = regResponse{Error: "authorization_pending"}
+			res = regResponse{Error: codePending}
 		} else {
 			failures = 0
 		}
@@ -183,9 +196,9 @@ func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, er
 		}
 
 		status := "pending"
-		if res.Error == "slow_down" {
+		if res.Error == codeSlowDown {
 			status = "slow_down"
-			interval += 5 * r.IntervalUnit
+			interval += slowDownStep * r.IntervalUnit
 		}
 
 		r.status(status)
@@ -210,11 +223,11 @@ func (r *Registrar) registered(res regResponse, domain string) (Registered, erro
 // pollError maps a terminal device-flow error; nil means keep waiting.
 func pollError(code string) error {
 	switch code {
-	case "", "authorization_pending", "slow_down":
+	case "", codePending, codeSlowDown:
 		return nil
-	case "access_denied":
+	case codeDenied:
 		return ErrDenied
-	case "expired_token":
+	case codeExpired:
 		return ErrExpired
 	default:
 		return fmt.Errorf("%w: %s", ErrRefused, code)
@@ -259,8 +272,8 @@ func (r *Registrar) link(raw string) (string, error) {
 // page expects them: base64url(gzip(json)).
 func encodeAddons() (string, error) {
 	raw, err := json.Marshal(map[string]any{
-		"scopes": map[string]any{"tenant": Scopes},
-		"events": map[string]any{"items": map[string]any{"tenant": Events}},
+		"scopes": map[string]any{scopeTenant: Scopes},
+		"events": map[string]any{"items": map[string]any{scopeTenant: Events}},
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode addons: %w", err)

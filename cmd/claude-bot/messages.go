@@ -15,6 +15,9 @@ import (
 	"github.com/hewenyu/claude-bot/internal/inbox"
 )
 
+// inboxPoll is how often `inbox --wait` looks for new messages.
+const inboxPoll = time.Second
+
 func cmdInbox(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	wait := fs.Duration("wait", 0, "block up to this long until a message arrives (e.g. 9m)")
@@ -36,7 +39,7 @@ func cmdInbox(ctx context.Context, args []string) error {
 
 	if *wait > 0 {
 		wctx, cancel := context.WithTimeout(ctx, *wait)
-		msgs, err = a.inbox.Wait(wctx, time.Second)
+		msgs, err = a.inbox.Wait(wctx, inboxPoll)
 
 		cancel()
 	} else {
@@ -238,7 +241,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 
 	// One directory per message: attachments of different messages often
 	// share a name (image.png, crash.log).
-	dir := filepath.Join(a.dir, "files", channel.PathSafe(msg.ID))
+	dir := filepath.Join(a.path(filesDir), channel.PathSafe(msg.ID))
 	for _, att := range msg.Attachments {
 		path, err := ch.Download(ctx, msg, att, dir)
 		if err != nil {

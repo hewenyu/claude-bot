@@ -23,6 +23,23 @@ type mention struct {
 	IsBot  bool // this mention is our bot
 }
 
+// Element tags of a post (rich text) message.
+const (
+	tagText      = "text"
+	tagMarkdown  = "md"
+	tagLink      = "a"
+	tagAt        = "at"
+	tagCodeBlock = "code_block"
+	tagImage     = "img"
+	tagMedia     = "media"
+)
+
+// Locales of a post; the bot writes Chinese.
+const (
+	localeZhCN = "zh_cn"
+	localeEnUS = "en_us"
+)
+
 func mentionSyntax(openID string) string {
 	return `<at user_id="` + openID + `"></at>`
 }
@@ -130,7 +147,7 @@ func parsePost(content string) (string, []channel.Attachment) {
 // pickLocale returns one language of a post deterministically, preferring
 // Chinese, then English, then the first locale by name.
 func pickLocale(byLocale map[string]post) post {
-	for _, locale := range []string{"zh_cn", "en_us"} {
+	for _, locale := range []string{localeZhCN, localeEnUS} {
 		if p, ok := byLocale[locale]; ok {
 			return p
 		}
@@ -146,23 +163,23 @@ func pickLocale(byLocale map[string]post) post {
 // renderSegment writes one post element as text and returns its attachment, if any.
 func renderSegment(b *strings.Builder, seg postSegment) *channel.Attachment {
 	switch seg.Tag {
-	case "text", "md":
+	case tagText, tagMarkdown:
 		b.WriteString(seg.Text)
-	case "a":
+	case tagLink:
 		b.WriteString(seg.Text)
 
 		if seg.Href != "" && seg.Href != seg.Text {
 			b.WriteString(" (" + seg.Href + ")")
 		}
-	case "at":
+	case tagAt:
 		b.WriteString(seg.UserID) // placeholder key, resolved by replaceMentions
-	case "code_block":
+	case tagCodeBlock:
 		b.WriteString("\n```" + seg.Language + "\n" + seg.Text + "\n```\n")
-	case "img":
+	case tagImage:
 		b.WriteString("[image]")
 
 		return &channel.Attachment{Kind: channel.AttachmentImage, Key: seg.ImageKey}
-	case "media":
+	case tagMedia:
 		b.WriteString("[media]")
 
 		return &channel.Attachment{Kind: channel.AttachmentFile, Key: seg.FileKey}
@@ -220,12 +237,12 @@ func millis(s string) time.Time {
 func buildPost(text, mentionOpenID string) (string, error) {
 	var paras [][]map[string]string
 	if mentionOpenID != "" {
-		paras = append(paras, []map[string]string{{"tag": "at", "user_id": mentionOpenID}})
+		paras = append(paras, []map[string]string{{"tag": tagAt, "user_id": mentionOpenID}})
 	}
 
-	paras = append(paras, []map[string]string{{"tag": "md", "text": text}})
+	paras = append(paras, []map[string]string{{"tag": tagMarkdown, "text": text}})
 
-	return marshal(map[string]any{"zh_cn": map[string]any{"content": paras}})
+	return marshal(map[string]any{localeZhCN: map[string]any{"content": paras}})
 }
 
 // buildText renders a plain text message, the fallback when post is rejected.
