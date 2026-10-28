@@ -1,0 +1,24 @@
+{
+  "schema": "2.0",
+  "header": {"event_id": "5e3702a84e847582be8db7fb73283c02", "event_type": "im.message.receive_v1", "create_time": "1608725989000", "token": "test-token", "app_id": "cli_test", "tenant_key": "2ca1d211f64f6438"},
+  "event": {
+    "sender": {"sender_id": {"union_id": "on_8ed6aa67826108097d9ee143816345", "user_id": "e33ggbyz", "open_id": "ou_84aad35d084aa403a838cf73ee18467"}, "sender_type": "user", "tenant_key": "736588c9260f175e"},
+    "message": {
+      "message_id": "om_5ce6d572455d361153b7cb51da133945",
+      "root_id": "om_5ce6d572455d361153b7cb5xxfsdfsdfdsf",
+      "parent_id": "om_5ce6d572455d361153b7cb5xxfsdfsdfdsf",
+      "create_time": "1609073151345",
+      "update_time": "1687343654666",
+      "chat_id": "oc_5ce6d572455d361153b7xx51da133945",
+      "thread_id": "omt_d4be107c616",
+      "chat_type": "group",
+      "message_type": "text",
+      "content": "{\"text\":\"@_user_1 登录页报 500 了，@_user_2 也遇到了\\n复现：点两次登录\"}",
+      "mentions": [
+        {"key": "@_user_1", "id": {"union_id": "on_bot", "user_id": "", "open_id": "ou_bot_open_id"}, "name": "ProjectBot", "tenant_key": "736588c9260f175e"},
+        {"key": "@_user_2", "id": {"union_id": "on_zs", "user_id": "zs", "open_id": "ou_zhangsan"}, "name": "张三", "tenant_key": "736588c9260f175e"}
+      ],
+      "user_agent": "Mozilla/5.0"
+    }
+  }
+}
