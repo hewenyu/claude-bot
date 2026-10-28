@@ -15,9 +15,9 @@ import (
 	"time"
 )
 
-// Scopes the bot needs: receive DMs and group @-mentions, read and send
+// scopes the bot needs: receive DMs and group @-mentions, read and send
 // messages, download attachments, react with an acknowledgement emoji.
-var Scopes = []string{
+var scopes = []string{
 	"im:message",
 	"im:message.p2p_msg:readonly",
 	"im:message.group_at_msg:readonly",
@@ -42,8 +42,8 @@ const (
 	codeExpired  = "expired_token"
 )
 
-// Events the bot subscribes to.
-var Events = []string{"im.message.receive_v1"}
+// events the bot subscribes to.
+var events = []string{"im.message.receive_v1"}
 
 // Registration errors the caller may want to tell apart.
 var (
@@ -57,46 +57,44 @@ var (
 type Registered struct {
 	AppID     string
 	AppSecret string
-	OwnerID   string // open_id of the person who confirmed
-	Domain    string // "feishu" or "lark"
+	Domain    string // DomainFeishu or DomainLark
 }
 
 // Registrar runs the official app registration device flow: the user opens a
 // link, logs in and confirms; the app is created with the requested
 // permissions and events, and its credentials come back to us.
 type Registrar struct {
-	HTTP *http.Client
-	// Hosts are the accounts endpoints for feishu and lark (overridable in tests).
-	FeishuHost, LarkHost string
-	// LinkHosts are hosts the authorization link may point to.
-	LinkHosts []string
 	// Name and Desc label the app in the Lark admin console.
 	Name, Desc string
 	// AppID requests more permissions for an existing app instead of creating one.
 	AppID string
 	// OnLink is called once with the URL the user must open.
 	OnLink func(link string, expires time.Time)
-	// OnStatus reports polling progress ("pending", "slow_down", "lark").
-	OnStatus func(status string)
-	// IntervalUnit scales the server-provided poll interval (seconds); tests shrink it.
-	IntervalUnit time.Duration
+	// OnTenantSwitch is called when the user turns out to belong to a tenant
+	// of the other deployment (DomainLark), whose endpoints take over.
+	OnTenantSwitch func(domain string)
+
+	http                 *http.Client
+	feishuHost, larkHost string        // accounts endpoints per deployment
+	linkHosts            []string      // hosts the authorization link may point to
+	intervalUnit         time.Duration // scales the poll interval sent in seconds
 }
 
 // NewRegistrar returns a Registrar for the official endpoints. proxy follows
 // the same rules as Config.Proxy.
 func NewRegistrar(proxy func(*http.Request) (*url.URL, error)) *Registrar {
 	return &Registrar{
-		HTTP: &http.Client{
+		http: &http.Client{
 			Timeout:   20 * time.Second,
 			Transport: newTransport(proxy),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		},
-		IntervalUnit: time.Second,
-		FeishuHost:   "accounts.feishu.cn",
-		LarkHost:     "accounts.larksuite.com",
-		LinkHosts: []string{
+		intervalUnit: time.Second,
+		feishuHost:   "accounts.feishu.cn",
+		larkHost:     "accounts.larksuite.com",
+		linkHosts: []string{
 			"accounts.feishu.cn", "accounts.larksuite.com", "open.feishu.cn",
 			"open.larksuite.com", "passport.feishu.cn", "passport.larksuite.com",
 		},
@@ -112,14 +110,13 @@ type regResponse struct {
 	ClientSecret    string `json:"client_secret"`
 	Error           string `json:"error"`
 	UserInfo        struct {
-		OpenID      string `json:"open_id"`
 		TenantBrand string `json:"tenant_brand"`
 	} `json:"user_info"`
 }
 
 // Register blocks until the user confirms, declines, or the link expires.
 func (r *Registrar) Register(ctx context.Context) (Registered, error) {
-	begin, err := r.post(ctx, r.FeishuHost, url.Values{
+	begin, err := r.post(ctx, r.feishuHost, url.Values{
 		"action":            {"begin"},
 		"archetype":         {"PersonalAgent"},
 		"auth_method":       {"client_secret"},
@@ -161,8 +158,8 @@ func (r *Registrar) Register(ctx context.Context) (Registered, error) {
 
 // poll waits for the user's decision on the device code from begin.
 func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, error) {
-	host, domain := r.FeishuHost, DomainFeishu
-	interval := time.Duration(positive(begin.Interval, defaultInterval)) * r.IntervalUnit
+	host, domain := r.feishuHost, DomainFeishu
+	interval := time.Duration(positive(begin.Interval, defaultInterval)) * r.intervalUnit
 	failures := 0
 
 	for {
@@ -181,8 +178,10 @@ func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, er
 
 		// Lark (international) tenants are served by a different host.
 		if res.UserInfo.TenantBrand == DomainLark && domain != DomainLark {
-			host, domain = r.LarkHost, DomainLark
-			r.status(DomainLark)
+			host, domain = r.larkHost, DomainLark
+			if r.OnTenantSwitch != nil {
+				r.OnTenantSwitch(domain)
+			}
 
 			continue
 		}
@@ -195,13 +194,9 @@ func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, er
 			return Registered{}, err
 		}
 
-		status := "pending"
 		if res.Error == codeSlowDown {
-			status = "slow_down"
-			interval += slowDownStep * r.IntervalUnit
+			interval += slowDownStep * r.intervalUnit
 		}
-
-		r.status(status)
 
 		select {
 		case <-ctx.Done():
@@ -217,7 +212,7 @@ func (r *Registrar) registered(res regResponse, domain string) (Registered, erro
 		return Registered{}, fmt.Errorf("%w: authorized app %s, expected %s", ErrResponse, res.ClientID, r.AppID)
 	}
 
-	return Registered{AppID: res.ClientID, AppSecret: res.ClientSecret, OwnerID: res.UserInfo.OpenID, Domain: domain}, nil
+	return Registered{AppID: res.ClientID, AppSecret: res.ClientSecret, Domain: domain}, nil
 }
 
 // pollError maps a terminal device-flow error; nil means keep waiting.
@@ -242,7 +237,7 @@ func (r *Registrar) link(raw string) (string, error) {
 		return "", fmt.Errorf("parse link: %w", err)
 	}
 
-	if u.Scheme != "https" || !slices.Contains(r.LinkHosts, u.Hostname()) {
+	if u.Scheme != "https" || !slices.Contains(r.linkHosts, u.Hostname()) {
 		return "", fmt.Errorf("link host %q is not an official Lark host", u.Hostname())
 	}
 
@@ -272,8 +267,8 @@ func (r *Registrar) link(raw string) (string, error) {
 // page expects them: base64url(gzip(json)).
 func encodeAddons() (string, error) {
 	raw, err := json.Marshal(map[string]any{
-		"scopes": map[string]any{scopeTenant: Scopes},
-		"events": map[string]any{"items": map[string]any{scopeTenant: Events}},
+		"scopes": map[string]any{scopeTenant: scopes},
+		"events": map[string]any{"items": map[string]any{scopeTenant: events}},
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode addons: %w", err)
@@ -303,7 +298,7 @@ func (r *Registrar) post(ctx context.Context, host string, form url.Values) (reg
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := r.HTTP.Do(req)
+	resp, err := r.http.Do(req)
 	if err != nil {
 		return res, fmt.Errorf("registration request: %w", err)
 	}
@@ -319,12 +314,6 @@ func (r *Registrar) post(ctx context.Context, host string, form url.Values) (reg
 	}
 
 	return res, nil
-}
-
-func (r *Registrar) status(s string) {
-	if r.OnStatus != nil {
-		r.OnStatus(s)
-	}
 }
 
 func positive(v, fallback int) int {

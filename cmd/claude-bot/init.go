@@ -232,10 +232,8 @@ func register(ctx context.Context, o initOptions, root, upgradeAppID string) (la
 
 		fmt.Println("等待确认 …")
 	}
-	r.OnStatus = func(s string) {
-		if s == lark.DomainLark {
-			fmt.Println("检测到 Lark 国际版租户，切换到 larksuite.com …")
-		}
+	r.OnTenantSwitch = func(string) {
+		fmt.Println("检测到 Lark 国际版租户，切换到 larksuite.com …")
 	}
 
 	reg, err := r.Register(ctx)
