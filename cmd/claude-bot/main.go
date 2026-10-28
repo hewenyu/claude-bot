@@ -33,8 +33,13 @@ Setup (once per project; config stays in <repo>/.claude-bot/, git-ignored):
   claude-bot init --github-token t [--github-repo o/r]   receive the repository's issues, PRs, comments and reviews
   claude-bot init --bot-md            only overwrite .claude/commands/bot.md with this version's
 
+Listener (run these yourself, in your own terminal, so it keeps your environment):
+  claude-bot start                    run the listener in the background (log: .claude-bot/serve.log)
+  claude-bot stop                     shut it down
+  claude-bot restart                  replace it, e.g. after upgrading claude-bot or adding a channel
+
 For Claude (inside /loop):
-  claude-bot inbox [--wait 9m]        pending messages as JSON lines (starts the listener if needed)
+  claude-bot inbox [--wait 9m]        pending messages as JSON lines (fails if the listener is not running)
   claude-bot reply <id> [text|-]      reply in place (Markdown; @-mentions the sender in groups); marks done
   claude-bot done <id>...             mark handled without replying
   claude-bot get <id>                 fetch any message, e.g. the one in "reply_to"
@@ -75,6 +80,9 @@ func run(ctx context.Context, args []string) int {
 	commands := map[string]command{
 		"init":     cmdInit,
 		"serve":    cmdServe,
+		"start":    cmdStart,
+		"stop":     cmdStop,
+		"restart":  cmdRestart,
 		"inbox":    cmdInbox,
 		"reply":    cmdReply,
 		"done":     cmdDone,

@@ -9,13 +9,16 @@ claude-bot [-C <repo>] <command> [args]
 | 命令 | 说明 |
 |---|---|
 | `init` | 创建或接入 bot 应用，保存凭证，生成 `/bot` 命令，验证连接 |
-| `inbox [--wait 9m]` | 以 JSON Lines 输出待处理消息；监听进程没在运行时自动启动 |
+| `inbox [--wait 9m]` | 以 JSON Lines 输出待处理消息；监听进程没在运行时报错 |
 | `reply [--keep] <id> [text\|-]` | 在原消息下回复（Markdown），并标记为已处理 |
 | `done <id>...` | 标记为已处理，不回复 |
 | `get <id>` | 获取任意一条消息，比如 `reply_to` 指向的那条 |
 | `download <id>` | 下载消息附件到 `.claude-bot/files/<消息>/`，输出文件路径 |
 | `send <channel>:<chat_id> [text\|-]` | 主动发消息到某个会话；GitHub 上是在 `github:<owner>/<repo>/<编号>` 下发评论 |
 | `github close\|merge\|review <id> …` | 关 issue 或 PR、合并 PR、提交 review，见[渠道接入 · GitHub](channels.md#github) |
+| `start` | 在后台启动监听进程，等它连上所有渠道后返回 |
+| `stop` | 停止监听进程 |
+| `restart` | 重启监听进程，升级 claude-bot 或新接了渠道之后用 |
 | `serve` | 在前台运行监听进程 |
 | `status` | 查看 bot 身份、监听进程状态和待处理消息数 |
 | `version` | 查看版本 |
@@ -66,7 +69,7 @@ claude-bot [-C <repo>] <command> [args]
   files/                     下载的附件
   serve.json                 监听进程心跳
   serve.log                  监听进程日志
-  serve.lock                 单实例锁
+  serve.lock                 单实例锁，里面是监听进程的 pid
 ```
 
 ### 环境变量

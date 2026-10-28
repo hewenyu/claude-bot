@@ -36,13 +36,14 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 
 | 命令 | 行为 |
 |---|---|
-| `inbox [--wait D]` | 输出待处理消息，最早的在前。加 `--wait` 时会阻塞，直到有消息或者超时。如果监听进程没在运行，会自动在后台启动，起不来就把日志尾部报出来 |
+| `inbox [--wait D]` | 输出待处理消息，最早的在前。加 `--wait` 时会阻塞，直到有消息或者超时。监听进程没在运行就报错；在运行但还没连上，就把日志尾部报出来 |
 | `reply <id> [text\|-]` | 在原消息下回复，内容是 Markdown；群聊里会 @ 发送者，话题消息回在话题里。成功后把消息标记为已处理（加 `--keep` 则保留待处理）。飞书上重复调用不会重复发送（按内容哈希做 1 小时去重）；Discord、Telegram、Slack、钉钉没有这种去重。超过平台长度上限的回复会拆成多条发送（Discord 2000 字，Telegram 4096 字，钉钉 4000 字，Slack 12000 字，GitHub 60000 字）。Slack 频道里的回复发在原消息的 thread 里。GitHub 上回复是一条评论，末尾带隐藏标记 `<!-- claude-bot -->` |
 | `done <id>...` | 标记为已处理，不回复 |
 | `get <id>` | 获取任意一条消息（比如 `reply_to` 指向的那条）。Telegram 和钉钉不支持 |
 | `download <id>` | 把附件下载到 `.claude-bot/files/`，并输出文件路径 |
 | `send <channel>:<chat_id> [text\|-]` | 主动发消息，比如发版通知 |
 | `github close\|merge\|review <id> …` | 只用于 GitHub：关 issue 或 PR（`--not-planned`）、合并 PR（`--method squash\|merge\|rebase`）、提交 review（`approve\|request-changes\|comment [text\|-]`）。不改变收件箱里消息的状态 |
+| `start` / `stop` / `restart` | 在后台启动、停止、重启监听进程，由用户在自己的终端里运行 |
 | `serve` / `status` | 在前台运行监听进程 / 查看状态 |
 
 数据输出到 stdout，日志和提示输出到 stderr。退出码：`0` 成功，`1` 失败，`2` 用法错误。文本参数可以直接写在命令行上，也可以写 `-` 或者不写，从 stdin 读取（适合多行内容配合 heredoc 使用）。
@@ -68,7 +69,7 @@ type Channel interface {
 - **`Sender.Mention` 必须是平台原生语法**，确保对方真的能收到通知：飞书是 `<at user_id="ou_xxx"></at>`，Discord 和 Slack 是 `<@123>`，Telegram 是 `@username`（没有用户名的人是 `[名字](tg://user?id=123)`），GitHub 是 `@login`。钉钉的开放接口发不了 @，只能写成 `@昵称` 这样的纯文本。
 - **`Reply` 在原消息下回复**，群聊里要 @ 发送者，话题消息要回在原话题里。
 - **`deliver` 必须快速返回**（平台有超时重推机制），重复投递由收件箱负责去重。
-- **`ready` 在连接建立后调用**。监听进程等所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断监听进程是否健康。心跳里记着监听的渠道，和当前配置的渠道不一致时，`inbox` 会结束旧的监听进程（SIGTERM），再拉起一个新的。
+- **`ready` 在连接建立后调用**。监听进程等所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断监听进程是否健康。心跳里记着监听的渠道和版本，跟当前配置的渠道或者 CLI 的版本对不上时，`inbox` 会提示用户运行 `claude-bot restart`。
 - `Ack` 是"已收到"的反馈（比如表情回应），尽力而为即可，失败不影响收消息。
 
 可以直接用的公共部分：
