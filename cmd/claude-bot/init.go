@@ -19,6 +19,8 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
+	"github.com/hewenyu/claude-bot/internal/channel/slack"
+	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 )
 
@@ -42,7 +44,8 @@ type larkApp struct {
 
 type initOptions struct {
 	appID, secret, domain, proxy, name  string
-	discordToken                        string
+	discordToken, telegramToken         string
+	slackAppToken, slackBotToken        string
 	reregister, noOpen, noVerify, force bool
 }
 
@@ -95,7 +98,7 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 	}
 
 	fmt.Println("\n下一步：在这个仓库里打开 Claude Code，运行  /loop /bot")
-	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器），大家私聊它或在群里 @ 它即可。")
+	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
 
 	return nil
 }
@@ -111,22 +114,13 @@ type setup struct {
 // setupChannel obtains working credentials for the channel o asks for and
 // records them in cfg.
 func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root string) (setup, error) {
-	if o.discordToken != "" {
-		dcfg := discord.Config{Token: o.discordToken, Proxy: o.proxy}
-
-		ch, bot, err := connectDiscord(ctx, dcfg)
-		if err != nil {
-			return setup{}, fmt.Errorf("discord token check failed (nothing written): %w", err)
-		}
-
-		cfg.Discord = &dcfg
-
-		return setup{
-			ch:     ch,
-			name:   bot.Name,
-			prompt: fmt.Sprintf("请用上面的链接把 bot 邀请进服务器，然后在 Discord 里给「%s」发一条私聊消息", bot.Name),
-			report: func(context.Context) { reportInvite(bot) },
-		}, nil
+	switch {
+	case o.discordToken != "":
+		return setupDiscord(ctx, cfg, o)
+	case o.telegramToken != "":
+		return setupTelegram(ctx, cfg, o)
+	case o.slackBotToken != "":
+		return setupSlack(ctx, cfg, o)
 	}
 
 	la, err := obtainApp(ctx, cfg.Lark, o, root)
@@ -144,6 +138,25 @@ func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root s
 	}, nil
 }
 
+// setupDiscord checks a Discord bot token and records it in cfg.
+func setupDiscord(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
+	dcfg := discord.Config{Token: o.discordToken, Proxy: o.proxy}
+
+	ch, bot, err := connectDiscord(ctx, dcfg)
+	if err != nil {
+		return setup{}, fmt.Errorf("discord token check failed (nothing written): %w", err)
+	}
+
+	cfg.Discord = &dcfg
+
+	return setup{
+		ch:     ch,
+		name:   bot.Name,
+		prompt: fmt.Sprintf("请用上面的链接把 bot 邀请进服务器，然后在 Discord 里给「%s」发一条私聊消息", bot.Name),
+		report: func(context.Context) { reportInvite(bot) },
+	}, nil
+}
+
 func parseInitFlags(args []string) (initOptions, error) {
 	var o initOptions
 
@@ -152,7 +165,10 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
 	fs.StringVar(&o.domain, "domain", lark.DomainFeishu, "with --app-id: feishu (China) or lark (international)")
 	fs.StringVar(&o.discordToken, "discord-token", "", "set up a Discord bot with this bot token instead of a Lark app")
-	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for lark and discord)")
+	fs.StringVar(&o.telegramToken, "telegram-token", "", "set up a Telegram bot with this token from @BotFather instead of a Lark app")
+	fs.StringVar(&o.slackAppToken, "slack-app-token", "", "set up a Slack app: its app-level token (xapp-…), with --slack-bot-token")
+	fs.StringVar(&o.slackBotToken, "slack-bot-token", "", "set up a Slack app: its bot token (xoxb-…), with --slack-app-token")
+	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for the others)")
 	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
 	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
 	fs.BoolVar(&o.noOpen, "no-open", false, "print the authorization link without opening a browser")
@@ -167,11 +183,97 @@ func parseInitFlags(args []string) (initOptions, error) {
 		return o, fmt.Errorf("%w: --app-id and --app-secret go together", errUsage)
 	}
 
-	if o.discordToken != "" && o.appID != "" {
-		return o, fmt.Errorf("%w: --discord-token and --app-id set up different channels; run init once for each", errUsage)
+	if (o.slackAppToken == "") != (o.slackBotToken == "") {
+		return o, fmt.Errorf("%w: --slack-app-token and --slack-bot-token go together", errUsage)
+	}
+
+	chosen := 0
+
+	for _, set := range []bool{o.appID != "", o.discordToken != "", o.telegramToken != "", o.slackBotToken != ""} {
+		if set {
+			chosen++
+		}
+	}
+
+	if chosen > 1 {
+		return o, fmt.Errorf("%w: --app-id, --discord-token, --telegram-token and --slack-*-token set up different channels; run init once for each", errUsage)
 	}
 
 	return o, nil
+}
+
+// setupTelegram checks a Telegram bot token and records it in cfg.
+func setupTelegram(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
+	tcfg := telegram.Config{Token: o.telegramToken, Proxy: o.proxy}
+
+	ch, err := telegram.New(tcfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return setup{}, err
+	}
+
+	bot, err := withTimeout(ctx, ch.Bot)
+	if err != nil {
+		return setup{}, fmt.Errorf("telegram token check failed (nothing written): %w", err)
+	}
+
+	cfg.Telegram = &tcfg
+
+	return setup{
+		ch:     ch,
+		name:   bot.Name,
+		prompt: fmt.Sprintf("请在 Telegram 里打开 %s，给 bot 发一条消息", bot.Link()),
+		report: func(context.Context) { reportPrivacy(bot) },
+	}, nil
+}
+
+// reportPrivacy warns that, with privacy mode on, Telegram may withhold
+// group messages that @-mention the bot.
+func reportPrivacy(bot telegram.Bot) {
+	if bot.ReadsAllGroupMessages {
+		return
+	}
+
+	fmt.Printf("! bot 开着隐私模式（privacy mode），群里 @%s 的消息可能收不到。\n", bot.Username)
+	fmt.Println("  在 @BotFather 里发 /setprivacy，选这个 bot，再选 Disable；已经在群里的话，要把 bot 移出群再拉回来才生效。")
+	fmt.Println("  关掉后 bot 仍然只处理 @ 它或回复它的消息。")
+}
+
+// setupSlack checks both Slack tokens and records them in cfg.
+func setupSlack(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
+	scfg := slack.Config{AppToken: o.slackAppToken, BotToken: o.slackBotToken, Proxy: o.proxy}
+
+	ch, err := slack.New(scfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return setup{}, err
+	}
+
+	bot, err := withTimeout(ctx, ch.Bot)
+	if err != nil {
+		return setup{}, fmt.Errorf("slack bot token check failed (nothing written): %w", err)
+	}
+
+	if _, err := withTimeout(ctx, func(ctx context.Context) (struct{}, error) { return struct{}{}, ch.CheckAppToken(ctx) }); err != nil {
+		return setup{}, fmt.Errorf("slack app token check failed (nothing written): %w", err)
+	}
+
+	cfg.Slack = &scfg
+
+	return setup{
+		ch:     ch,
+		name:   bot.Name,
+		prompt: fmt.Sprintf("请在 Slack（%s）里给「%s」发一条私信", bot.URL, bot.Name),
+		report: func(context.Context) {
+			fmt.Printf("在要用的频道里输入 /invite @%s 把 bot 拉进去。\n", bot.Name)
+		},
+	}, nil
+}
+
+// withTimeout runs an API check under apiTimeout.
+func withTimeout[T any](ctx context.Context, f func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+
+	return f(ctx)
 }
 
 // reportInvite prints the link that adds the Discord bot to a server.

@@ -1,4 +1,5 @@
-package discord
+// Package markdown holds the Markdown helpers the channel adapters share.
+package markdown
 
 import (
 	"strings"
@@ -6,15 +7,14 @@ import (
 )
 
 const (
-	maxMessageLen = 2000 // Discord's limit per message, in characters
-	fence         = "```"
-	maxFenceLen   = 100 // longest fence line repeated when a code block is cut
+	fence       = "```"
+	maxFenceLen = 100 // longest fence line repeated when a code block is cut
 )
 
-// split cuts Markdown into messages of at most limit characters, preferring
+// Split cuts Markdown into messages of at most limit characters, preferring
 // line breaks. A code block cut in two is closed at the end of one message
 // and reopened at the start of the next, so both still render as code.
-func split(text string, limit int) []string {
+func Split(text string, limit int) []string {
 	budget := limit - len("\n"+fence) // room kept for closing a cut code block
 
 	var (

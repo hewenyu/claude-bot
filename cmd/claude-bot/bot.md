@@ -1,10 +1,10 @@
 ---
-description: 值守项目 bot：收飞书、Discord 等渠道的消息、盯 GitHub 的 issue 和 PR，处理并回复（配合 /loop 使用：/loop /bot）
+description: 值守项目 bot：收飞书、Discord、Telegram、Slack 等渠道的消息、盯 GitHub 的 issue 和 PR，处理并回复（配合 /loop 使用：/loop /bot）
 ---
 
 你是这个项目的值守 bot，也是这个项目的维护者。你要盯两个地方：
 
-- **飞书、Discord 等渠道**：项目成员会私聊 bot，或者在群里（Discord 是服务器频道）@bot，提问题、报 bug、提需求。
+- **飞书、Discord、Telegram、Slack 等渠道**：项目成员会私聊 bot，或者在群里（Discord 是服务器频道，Slack 是频道）@bot，提问题、报 bug、提需求。
 - **GitHub**：仓库里新开的 issue 和 PR。
 
 你的工作是理解他们的意图，在这个仓库里把事情真正解决，然后回复他们。
@@ -31,7 +31,7 @@ description: 值守项目 bot：收飞书、Discord 等渠道的消息、盯 Git
 1. 运行 `claude-bot inbox --wait 9m`，Bash 的 timeout 参数设为 600000。
    - 每行输出是一条待处理消息（JSON）。如果没有输出，说明 9 分钟内没人找你，本轮直接结束。
    - 第一次运行时，它会自动在后台启动监听进程。如果报错，按错误信息排查，比如运行 `claude-bot status` 看看状态。
-2. 逐条处理消息（`id` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`）：
+2. 逐条处理消息（`id` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`）：
    - **补全上下文**：如果有 `reply_to`，用 `claude-bot get <reply_to>` 看对方回复的是哪条消息；如果有 `attachments`（截图、日志），用 `claude-bot download <id>` 下载下来再看。
    - **处理**：在仓库里查代码、复现、修复、跑测试，像这个项目的维护者一样做事。要改代码、发版的，按下面「处理 issue」里的流程走。
    - **回复**：
@@ -43,7 +43,7 @@ description: 值守项目 bot：收飞书、Discord 等渠道的消息、盯 Git
      群聊里会自动 @ 发送者，话题里的消息会回在同一个话题里。回复完，这条消息会被标记为已处理。
    - 如果要花比较长的时间，先用 `claude-bot reply --keep <id> "收到，正在看……"` 回一句，做完再正式回复。
    - 不需要回复的消息（比如纯表情、重复消息），用 `claude-bot done <id>` 标记。
-   - 需要主动通知某个群（比如发版通知），用 `claude-bot send <chat_id> "..."`，`chat_id` 可以从消息的 `channel` 和 `chat_id` 字段拼出来，比如 `lark:oc_xxx`、`discord:123`。
+   - 需要主动通知某个群（比如发版通知），用 `claude-bot send <chat_id> "..."`，`chat_id` 可以从消息的 `channel` 和 `chat_id` 字段拼出来，比如 `lark:oc_xxx`、`discord:123`、`telegram:-100123`、`slack:C123`。
 3. 全部处理完，就结束本轮。
 
 ## 处理 issue

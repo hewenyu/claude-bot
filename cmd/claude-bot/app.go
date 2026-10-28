@@ -14,6 +14,8 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
+	"github.com/hewenyu/claude-bot/internal/channel/slack"
+	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 )
@@ -43,7 +45,7 @@ const (
 	sharedPerm  = 0o644
 )
 
-var errNotConfigured = errors.New("no channel configured: run `claude-bot init` (Lark) or `claude-bot init --discord-token <token>` in the project, or set LARK_APP_ID and LARK_APP_SECRET, or DISCORD_BOT_TOKEN")
+var errNotConfigured = errors.New("no channel configured: run `claude-bot init` (Lark), or init with --discord-token, --telegram-token or --slack-app-token and --slack-bot-token in the project; or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, or SLACK_APP_TOKEN and SLACK_BOT_TOKEN")
 
 func newApp(ctx context.Context, project string) (*app, error) {
 	dir, err := config.Dir(ctx, project)
@@ -71,6 +73,24 @@ func newApp(ctx context.Context, project string) (*app, error) {
 
 	if cfg.Discord != nil {
 		ch, err := discord.New(*cfg.Discord, log)
+		if err != nil {
+			return nil, err
+		}
+
+		channels = append(channels, ch)
+	}
+
+	if cfg.Telegram != nil {
+		ch, err := telegram.New(*cfg.Telegram, log)
+		if err != nil {
+			return nil, err
+		}
+
+		channels = append(channels, ch)
+	}
+
+	if cfg.Slack != nil {
+		ch, err := slack.New(*cfg.Slack, log)
 		if err != nil {
 			return nil, err
 		}

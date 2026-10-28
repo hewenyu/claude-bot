@@ -20,6 +20,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/markdown"
 	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
@@ -40,13 +41,14 @@ const Permissions = discordgo.PermissionViewChannel |
 	discordgo.PermissionAddReactions
 
 const (
-	inviteURL   = "https://discord.com/oauth2/authorize?client_id=%s&scope=bot&permissions=%d"
-	tokenPrefix = "Bot " // Authorization scheme of bot tokens
-	self        = "@me"  // the authenticated user or application in REST paths
-	ackEmoji    = "👀"
-	dirPerm     = 0o750
-	filePerm    = 0o600
-	maxDownload = 512 << 20 // well above Discord's upload limits
+	inviteURL     = "https://discord.com/oauth2/authorize?client_id=%s&scope=bot&permissions=%d"
+	tokenPrefix   = "Bot " // Authorization scheme of bot tokens
+	self          = "@me"  // the authenticated user or application in REST paths
+	ackEmoji      = "👀"
+	dirPerm       = 0o750
+	filePerm      = 0o600
+	maxDownload   = 512 << 20 // well above Discord's upload limits
+	maxMessageLen = 2000      // Discord's limit per message, in characters
 )
 
 // Config holds the bot token of the project's Discord application.
@@ -236,7 +238,7 @@ func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 // needs; only the first one references ref. Mentions of users notify them,
 // @everyone, @here and roles never do: the text may quote what anyone wrote.
 func (c *Channel) post(ctx context.Context, channelID, text string, ref *discordgo.MessageReference) error {
-	for i, part := range split(text, maxMessageLen) {
+	for i, part := range markdown.Split(text, maxMessageLen) {
 		send := &discordgo.MessageSend{
 			Content:         part,
 			AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers}},

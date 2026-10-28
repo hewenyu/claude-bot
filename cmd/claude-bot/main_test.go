@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -239,4 +240,31 @@ func TestBeat_waitsForReady(t *testing.T) {
 	}
 
 	t.Error("no heartbeat after ready")
+}
+
+func TestParseInitFlags_oneChannelAtATime(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		args []string
+		ok   bool
+	}{
+		{args: nil, ok: true},
+		{args: []string{"--telegram-token", "1:t"}, ok: true},
+		{args: []string{"--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}, ok: true},
+		{args: []string{"--slack-bot-token", "xoxb-1"}},
+		{args: []string{"--telegram-token", "1:t", "--discord-token", "d"}},
+		{args: []string{"--app-id", "cli_1", "--app-secret", "s", "--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}},
+	}
+
+	for _, tt := range tests {
+		_, err := parseInitFlags(tt.args)
+		if (err == nil) != tt.ok {
+			t.Errorf("parseInitFlags(%q) error = %v, want ok %v", tt.args, err, tt.ok)
+		}
+
+		if err != nil && !errors.Is(err, errUsage) {
+			t.Errorf("parseInitFlags(%q) error = %v, want a usage error", tt.args, err)
+		}
+	}
 }

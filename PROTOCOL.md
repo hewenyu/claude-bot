@@ -18,12 +18,12 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 
 | 字段 | 说明 |
 |---|---|
-| `id` | `<渠道>:<平台消息 ID>`，比如 `lark:om_xxx`、`discord:<频道 ID>/<消息 ID>`。所有命令都用这个 ID |
-| `channel` | `lark` 或 `discord` |
+| `id` | `<渠道>:<平台消息 ID>`，比如 `lark:om_xxx`、`discord:<频道 ID>/<消息 ID>`、`telegram:<会话 ID>/<消息 ID>`、`slack:<频道 ID>/<ts>`。所有命令都用这个 ID |
+| `channel` | `lark`、`discord`、`telegram` 或 `slack` |
 | `chat_id` | 会话 ID。`<channel>:<chat_id>` 可以给 `send` 命令用 |
 | `chat_type` | `p2p`（私聊）或 `group`（群聊） |
 | `thread_id` | 所属话题。回复时会自动回在同一个话题里 |
-| `reply_to` | 被回复消息的 `id`，可以用 `claude-bot get` 查看 |
+| `reply_to` | 被回复消息的 `id`，可以用 `claude-bot get` 查看。Slack 上是 thread 的第一条消息。Telegram 上没有这个字段（Bot API 读不了历史消息），被回复的内容以 `> 名字: …` 引用的形式放在 `text` 开头 |
 | `sender` | `{id, name?, mention}`。`mention` 是平台原生的 @ 语法 |
 | `text` | 正文。@bot 的部分已经去掉，@其他人会显示为 `@名字` |
 | `mentions` | 消息里 @ 到的其他人（`{id, name, mention}`） |
@@ -37,9 +37,9 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 | 命令 | 行为 |
 |---|---|
 | `inbox [--wait D]` | 输出待处理消息，最早的在前。加 `--wait` 时会阻塞，直到有消息或者超时。如果监听进程没在运行，会自动在后台启动，起不来就把日志尾部报出来 |
-| `reply <id> [text\|-]` | 在原消息下回复，内容是 Markdown；群聊里会 @ 发送者，话题消息回在话题里。成功后把消息标记为已处理（加 `--keep` 则保留待处理）。飞书上重复调用不会重复发送（按内容哈希做 1 小时去重）；Discord 没有这种去重，超过 2000 字的回复会拆成多条发送 |
+| `reply <id> [text\|-]` | 在原消息下回复，内容是 Markdown；群聊里会 @ 发送者，话题消息回在话题里。成功后把消息标记为已处理（加 `--keep` 则保留待处理）。飞书上重复调用不会重复发送（按内容哈希做 1 小时去重）；Discord、Telegram、Slack 没有这种去重。超过平台长度上限的回复会拆成多条发送（Discord 2000 字，Telegram 4096 字，Slack 12000 字）。Slack 频道里的回复发在原消息的 thread 里 |
 | `done <id>...` | 标记为已处理，不回复 |
-| `get <id>` | 获取任意一条消息（比如 `reply_to` 指向的那条） |
+| `get <id>` | 获取任意一条消息（比如 `reply_to` 指向的那条）。Telegram 不支持 |
 | `download <id>` | 把附件下载到 `.claude-bot/files/`，并输出文件路径 |
 | `send <channel>:<chat_id> [text\|-]` | 主动发消息，比如发版通知 |
 | `serve` / `status` | 在前台运行监听进程 / 查看状态 |
@@ -64,7 +64,7 @@ type Channel interface {
 
 实现时必须满足这些要求：
 - **只投递发给 bot 的消息**：私聊，或者群里 @ 了 bot 的消息。忽略其他 bot 发的消息。
-- **`Sender.Mention` 必须是平台原生语法**，确保对方真的能收到通知：飞书是 `<at user_id="ou_xxx"></at>`，Discord 是 `<@123>`。
+- **`Sender.Mention` 必须是平台原生语法**，确保对方真的能收到通知：飞书是 `<at user_id="ou_xxx"></at>`，Discord 和 Slack 是 `<@123>`，Telegram 是 `@username`（没有用户名的人是 `[名字](tg://user?id=123)`）。
 - **`Reply` 在原消息下回复**，群聊里要 @ 发送者，话题消息要回在原话题里。
 - **`deliver` 必须快速返回**（平台有超时重推机制），重复投递由收件箱负责去重。
 - **`ready` 在连接建立后调用**。监听进程等所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断监听进程是否健康。
@@ -79,7 +79,7 @@ type Channel interface {
 ```
 .claude/commands/bot.md        值守流程（init 生成，可以按项目修改）
 .claude-bot/                   已加入 .gitignore
-  config.json                  各平台 bot 的凭证（权限 0600），比如 {"lark": {...}, "discord": {...}}
+  config.json                  各平台 bot 的凭证（权限 0600），比如 {"lark": {...}, "discord": {...}, "telegram": {...}, "slack": {...}}
   inbox/pending/  inbox/done/  收件箱，每条消息一个 JSON 文件
   files/                       下载的附件
   serve.json  serve.log  serve.lock   监听进程的心跳、日志、单实例锁

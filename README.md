@@ -4,7 +4,7 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-把飞书 / Lark 或 Discord 机器人接到项目仓库里常驻的 Claude Code 会话上。
+把飞书 / Lark、Discord、Telegram 或 Slack 机器人接到项目仓库里常驻的 Claude Code 会话上。
 
 项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它还会用 `gh` 盯仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
 
@@ -33,7 +33,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - git
 - [GitHub CLI](https://cli.github.com)（`gh`，已登录）
 - [Claude Code](https://claude.com/claude-code)
-- 飞书或 Lark 账号，或者 Discord 账号
+- 飞书 / Lark、Discord、Telegram 或 Slack 中任意一个的账号
 
 ## 安装
 
@@ -78,6 +78,65 @@ claude-bot init
 
 不需要开启 Message Content 这个特权 intent：私聊和 @ 了 bot 的消息，Discord 总会给出正文，而 bot 只处理这两种。在服务器里要 @ bot 本人；@ 它的同名角色不会被投递。
 
+**接 Telegram（可选）**
+
+1. 在 Telegram 里找 [@BotFather](https://t.me/BotFather)，发 `/newbot` 建一个 bot，拿到 token。每个项目建一个。
+2. 建议关掉隐私模式：给 @BotFather 发 `/setprivacy`，选这个 bot，再选 `Disable`。开着隐私模式时，群里 @bot 的普通消息可能收不到。关掉后 bot 也只处理 @ 它或回复它的消息。如果 bot 已经在群里，要移出群再拉回来才生效。
+3. 在仓库里运行：
+
+   ```bash
+   claude-bot init --telegram-token <token>
+   ```
+
+   它会验证 token，写进 `.claude-bot/config.json`，然后等你私聊 bot 来验证连接。之后把 bot 拉进群即可，话题（topic）群也支持。
+
+Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram 上不可用。作为替代，回复某条消息时，被回复的内容会以引用（`> 名字: …`）的形式放在 `text` 开头。国内访问 Telegram 需要代理，默认使用环境变量里的代理，见[代理](#代理)。
+
+**接 Slack（可选）**
+
+1. 在 [Slack API](https://api.slack.com/apps) 点 Create New App → From a manifest，选工作区，粘贴下面的 manifest（把名字改成项目名）。它会开启 Socket Mode，所以同样不需要公网地址：
+
+   ```yaml
+   display_information:
+     name: myproject Bot
+   features:
+     app_home:
+       messages_tab_enabled: true
+       messages_tab_read_only_enabled: false
+     bot_user:
+       display_name: myproject Bot
+       always_online: true
+   oauth_config:
+     scopes:
+       bot:
+         - app_mentions:read
+         - chat:write
+         - im:history
+         - channels:history
+         - groups:history
+         - mpim:history
+         - files:read
+         - reactions:write
+   settings:
+     event_subscriptions:
+       bot_events:
+         - app_mention
+         - message.im
+     socket_mode_enabled: true
+     token_rotation_enabled: false
+   ```
+
+2. 在 Basic Information → App-Level Tokens 里生成一个带 `connections:write` 的 token（`xapp-` 开头）；在 Install App 里装到工作区，拿到 Bot User OAuth Token（`xoxb-` 开头）。
+3. 在仓库里运行：
+
+   ```bash
+   claude-bot init --slack-app-token xapp-… --slack-bot-token xoxb-…
+   ```
+
+   它会验证两个 token，写进 `.claude-bot/config.json`，然后等你私信 bot 来验证连接。之后在频道里 `/invite @bot`。
+
+在频道里 @bot 的消息，回复会发在这条消息的 thread 里，并 @ 提问的人；私信里直接回复。回复里的 `<!channel>`、`<!here>` 这类全员提醒不会生效。
+
 **2. 在 Claude Code 里挂上 loop**
 
 ```
@@ -115,6 +174,8 @@ claude-bot [-C <repo>] <command> [args]
 |---|---|
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
 | `--discord-token` | 接入 Discord bot，而不是飞书应用 |
+| `--telegram-token` | 接入 Telegram bot |
+| `--slack-app-token`、`--slack-bot-token` | 接入 Slack 应用，两个一起用 |
 | `--domain feishu\|lark` | 配合 `--app-id` 使用，指定国内版或国际版，默认 `feishu` |
 | `--proxy direct\|env\|<url>` | 网络代理，见[代理](#代理) |
 | `--name` | bot 名称，默认 `<仓库名> Bot` |
@@ -157,10 +218,12 @@ claude-bot [-C <repo>] <command> [args]
 | `LARK_APP_ID`、`LARK_APP_SECRET` | 不使用 `init`，直接用环境变量提供凭证（两个都设置时覆盖 `config.json`） |
 | `LARK_DOMAIN` | 设为 `lark` 表示国际版，默认是飞书 |
 | `DISCORD_BOT_TOKEN` | 不使用 `init`，直接用环境变量提供 Discord bot token（覆盖 `config.json`） |
+| `TELEGRAM_BOT_TOKEN` | 同上，Telegram bot token |
+| `SLACK_APP_TOKEN`、`SLACK_BOT_TOKEN` | 同上，Slack 的两个 token（两个都设置时生效） |
 
 ### 代理
 
-飞书默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到 `open.feishu.cn` 的 TLS 连接失败。Lark 国际版和 Discord 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
+飞书默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到 `open.feishu.cn` 的 TLS 连接失败。Lark 国际版、Discord、Telegram 和 Slack 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
 
 ### 权限
 
@@ -178,6 +241,10 @@ claude-bot [-C <repo>] <command> [args]
 权限需要变多时，再运行一次 `claude-bot init`，它会对同一个应用补充授权，不会新建应用。如果企业需要管理员审批，`init` 会列出尚未生效的权限。
 
 Discord：邀请链接会申请这几项权限：查看频道、发消息、在子区（thread）里发消息、读取消息历史、添加表情回应。
+
+Telegram：不需要额外申请权限。bot 收到消息后会用 👀 表情回应，群里关掉了表情回应的话这一步会静默失败，不影响收发。
+
+Slack：manifest 里的 scope 依次用于：收 @bot 的消息、发消息、收私信、用 `get` 读取频道 / 私有频道 / 群聊私信里的消息、下载附件、用 👀 表情回应。
 
 ## 常见问题
 
@@ -213,12 +280,15 @@ cmd/claude-bot/          CLI 入口和各个命令
 internal/channel/        渠道协议：消息格式和 Channel 接口
 internal/channel/lark/   飞书 / Lark 适配器、应用注册流程
 internal/channel/discord/ Discord 适配器
+internal/channel/telegram/ Telegram 适配器（Bot API 长轮询）
+internal/channel/slack/  Slack 适配器（Socket Mode）
+internal/markdown/       各适配器共用的 Markdown 拆分
 internal/inbox/          基于文件的收件箱
 internal/config/         项目定位和凭证加载
 internal/atomicfile/     原子写文件
 ```
 
-接入新的聊天平台（比如 Discord）只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](PROTOCOL.md#3-渠道适配器)。
+接入新的聊天平台只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](PROTOCOL.md#3-渠道适配器)。
 
 `.claude/skills/` 下装了 Go 最佳实践相关的 skill（[samber/cc-skills-golang](https://github.com/samber/cc-skills-golang)），在这个仓库里开发时 Claude 会参照这些规范。
 

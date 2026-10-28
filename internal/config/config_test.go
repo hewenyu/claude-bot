@@ -8,17 +8,23 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
+	"github.com/hewenyu/claude-bot/internal/channel/slack"
+	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 )
 
 func TestSaveLoad(t *testing.T) {
 	t.Setenv("LARK_APP_ID", "")
 	t.Setenv("LARK_APP_SECRET", "")
 	t.Setenv("DISCORD_BOT_TOKEN", "")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("SLACK_APP_TOKEN", "")
 
 	dir := filepath.Join(t.TempDir(), DirName)
 	want := Config{
-		Lark:    &lark.Config{AppID: "cli_1", AppSecret: "s", Domain: "lark"},
-		Discord: &discord.Config{Token: "t", Proxy: "direct"},
+		Lark:     &lark.Config{AppID: "cli_1", AppSecret: "s", Domain: "lark"},
+		Discord:  &discord.Config{Token: "t", Proxy: "direct"},
+		Telegram: &telegram.Config{Token: "1:t"},
+		Slack:    &slack.Config{AppToken: "xapp-1", BotToken: "xoxb-1", Proxy: "env"},
 	}
 
 	if err := Save(dir, want); err != nil {
@@ -46,6 +52,14 @@ func TestSaveLoad(t *testing.T) {
 	if got.Discord == nil || *got.Discord != *want.Discord {
 		t.Errorf("Load() = %+v, want %+v", got.Discord, want.Discord)
 	}
+
+	if got.Telegram == nil || *got.Telegram != *want.Telegram {
+		t.Errorf("Load() = %+v, want %+v", got.Telegram, want.Telegram)
+	}
+
+	if got.Slack == nil || *got.Slack != *want.Slack {
+		t.Errorf("Load() = %+v, want %+v", got.Slack, want.Slack)
+	}
 }
 
 func TestLoad_envOverrides(t *testing.T) {
@@ -53,6 +67,9 @@ func TestLoad_envOverrides(t *testing.T) {
 	t.Setenv("LARK_APP_SECRET", "env_secret")
 	t.Setenv("LARK_DOMAIN", "")
 	t.Setenv("DISCORD_BOT_TOKEN", "env_token")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "1:env")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-env")
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-env")
 
 	got, err := Load(t.TempDir()) // no config.json
 	if err != nil {
@@ -66,14 +83,24 @@ func TestLoad_envOverrides(t *testing.T) {
 	if got.Discord == nil || got.Discord.Token != "env_token" {
 		t.Errorf("Load() = %+v", got.Discord)
 	}
+
+	if got.Telegram == nil || got.Telegram.Token != "1:env" {
+		t.Errorf("Load() = %+v", got.Telegram)
+	}
+
+	if got.Slack == nil || got.Slack.AppToken != "xapp-env" || got.Slack.BotToken != "xoxb-env" {
+		t.Errorf("Load() = %+v", got.Slack)
+	}
 }
 
 func TestLoad_missing(t *testing.T) {
 	t.Setenv("LARK_APP_ID", "")
 	t.Setenv("DISCORD_BOT_TOKEN", "")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("SLACK_APP_TOKEN", "")
 
 	got, err := Load(t.TempDir())
-	if err != nil || got.Lark != nil || got.Discord != nil {
+	if err != nil || got.Lark != nil || got.Discord != nil || got.Telegram != nil || got.Slack != nil {
 		t.Errorf("Load() on empty dir = %+v, %v", got, err)
 	}
 }

@@ -16,6 +16,8 @@ import (
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
+	"github.com/hewenyu/claude-bot/internal/channel/slack"
+	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 )
 
 // DirName is the per-project state directory (git-ignored).
@@ -33,13 +35,18 @@ const (
 	larkAppIDEnv     = "LARK_APP_ID"
 	larkSecretEnv    = "LARK_APP_SECRET" //nolint:gosec // the variable name, not a secret
 	larkDomainEnv    = "LARK_DOMAIN"
-	discordTokenEnv  = "DISCORD_BOT_TOKEN" //nolint:gosec // the variable name, not a secret
+	discordTokenEnv  = "DISCORD_BOT_TOKEN"  //nolint:gosec // the variable name, not a secret
+	telegramTokenEnv = "TELEGRAM_BOT_TOKEN" //nolint:gosec // the variable name, not a secret
+	slackAppTokenEnv = "SLACK_APP_TOKEN"    //nolint:gosec // the variable name, not a secret
+	slackBotTokenEnv = "SLACK_BOT_TOKEN"    //nolint:gosec // the variable name, not a secret
 )
 
 // Config is .claude-bot/config.json. Each configured channel is enabled.
 type Config struct {
-	Lark    *lark.Config    `json:"lark,omitempty"`
-	Discord *discord.Config `json:"discord,omitempty"`
+	Lark     *lark.Config     `json:"lark,omitempty"`
+	Discord  *discord.Config  `json:"discord,omitempty"`
+	Telegram *telegram.Config `json:"telegram,omitempty"`
+	Slack    *slack.Config    `json:"slack,omitempty"`
 }
 
 // Dir returns <project root>/.claude-bot. The project root is, in order: the
@@ -99,7 +106,8 @@ func gitTop(ctx context.Context, dir string) string {
 }
 
 // Load reads dir/config.json and applies LARK_APP_ID, LARK_APP_SECRET,
-// LARK_DOMAIN and DISCORD_BOT_TOKEN from the environment.
+// LARK_DOMAIN, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN and
+// SLACK_BOT_TOKEN from the environment.
 func Load(dir string) (Config, error) {
 	var cfg Config
 
@@ -120,6 +128,14 @@ func Load(dir string) (Config, error) {
 
 	if token := os.Getenv(discordTokenEnv); token != "" {
 		cfg.Discord = &discord.Config{Token: token}
+	}
+
+	if token := os.Getenv(telegramTokenEnv); token != "" {
+		cfg.Telegram = &telegram.Config{Token: token}
+	}
+
+	if app, bot := os.Getenv(slackAppTokenEnv), os.Getenv(slackBotTokenEnv); app != "" && bot != "" {
+		cfg.Slack = &slack.Config{AppToken: app, BotToken: bot}
 	}
 
 	return cfg, nil
