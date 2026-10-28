@@ -3,6 +3,8 @@ package inbox
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,4 +171,39 @@ func ids(ms []channel.Message) []string {
 	}
 
 	return out
+}
+
+func TestInbox_Put_concurrentRedelivery(t *testing.T) {
+	t.Parallel()
+
+	b := New(t.TempDir())
+	m := msg("lark:om_1", time.Now())
+
+	var (
+		wg    sync.WaitGroup
+		fresh atomic.Int32
+	)
+
+	for range 8 {
+		wg.Go(func() {
+			ok, err := b.Put(m)
+			if err != nil {
+				t.Error(err)
+			}
+
+			if ok {
+				fresh.Add(1)
+			}
+		})
+	}
+
+	wg.Wait()
+
+	if n := fresh.Load(); n != 1 {
+		t.Errorf("%d deliveries reported fresh, want exactly 1", n)
+	}
+
+	if got, err := b.Pending(); err != nil || len(got) != 1 {
+		t.Errorf("Pending() = %v, %v; want the one message", ids(got), err)
+	}
 }
