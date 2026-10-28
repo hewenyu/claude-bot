@@ -31,7 +31,6 @@ claude-bot [-C <repo>] <command> [args]
 |---|---|
 | `--channel lark\|discord\|telegram\|slack\|github\|dingtalk` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
 | `--bot-md` | 只用当前版本覆盖 `.claude/commands/bot.md`，不动任何配置。升级 claude-bot 后用它更新值守流程 |
-| `--pi` | 只安装 pi 的 `/loop` 扩展（`.pi/extensions/claude-bot-loop.ts`），不动任何配置，见[用其他 agent 值守](agents.md#pi) |
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
 | `--discord-token` | 接入 Discord bot |
 | `--telegram-token` | 接入 Telegram bot |
@@ -63,8 +62,6 @@ claude-bot [-C <repo>] <command> [args]
 
 ```
 .claude/commands/bot.md      值守流程（init 生成，提交进仓库，团队共享）
-.agents/skills/bot/SKILL.md  指向 bot.md 的符号链接，给读 Agent Skills 的 agent（比如 pi）用
-.pi/extensions/              pi 的 /loop 扩展（init --pi 安装）
 .claude-bot/                 已加入 .gitignore
   config.json                凭证，0600
   inbox/pending/             待处理消息，每条一个 JSON 文件
