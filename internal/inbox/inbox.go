@@ -1,6 +1,7 @@
 // Package inbox is a file-backed queue between the listener (serve) and
 // Claude. Each message is one JSON file in pending/ until it is moved to
-// done/. Renames are atomic, so no locking is needed.
+// done/. Files appear by link and move by rename, both atomic, so no locking
+// is needed.
 package inbox
 
 import (
@@ -46,12 +47,11 @@ func fileName(id string) string {
 }
 
 // Put stores m as pending. It returns false if m was seen before (Lark
-// re-delivers events that were not acknowledged in time).
+// re-delivers events that were not acknowledged in time, possibly
+// concurrently).
 func (b *Inbox) Put(m channel.Message) (bool, error) {
-	for _, state := range []string{"pending", "done"} {
-		if _, err := os.Stat(b.path(state, m.ID)); err == nil {
-			return false, nil
-		}
+	if _, err := os.Stat(b.path("done", m.ID)); err == nil {
+		return false, nil
 	}
 
 	raw, err := json.MarshalIndent(m, "", "  ")
@@ -59,22 +59,50 @@ func (b *Inbox) Put(m channel.Message) (bool, error) {
 		return false, fmt.Errorf("marshal message: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Join(b.dir, "pending"), 0o750); err != nil {
+	dir := filepath.Join(b.dir, "pending")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return false, fmt.Errorf("create inbox: %w", err)
 	}
 
-	final := b.path("pending", m.ID)
-	tmp := final + ".tmp"
-
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
-		return false, fmt.Errorf("write message: %w", err)
+	tmp, err := writeTemp(dir, append(raw, '\n'))
+	if err != nil {
+		return false, err
 	}
+	defer os.Remove(tmp) //nolint:errcheck // the linked copy is what counts
 
-	if err := os.Rename(tmp, final); err != nil {
+	// Link fails if the message is already pending, so concurrent deliveries
+	// of one event store it exactly once and readers never see a partial file.
+	if err := os.Link(tmp, b.path("pending", m.ID)); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return false, nil
+		}
+
 		return false, fmt.Errorf("commit message: %w", err)
 	}
 
 	return true, nil
+}
+
+// writeTemp writes data to a new uniquely named file in dir (not *.json, so
+// Pending skips it) and returns its path.
+func writeTemp(dir string, data []byte) (string, error) {
+	f, err := os.CreateTemp(dir, ".put-*")
+	if err != nil {
+		return "", fmt.Errorf("write message: %w", err)
+	}
+
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+
+	if err != nil {
+		_ = os.Remove(f.Name())
+
+		return "", fmt.Errorf("write message: %w", err)
+	}
+
+	return f.Name(), nil
 }
 
 // Pending returns unhandled messages, oldest first.
@@ -96,6 +124,10 @@ func (b *Inbox) Pending() ([]channel.Message, error) {
 		}
 
 		m, err := read(filepath.Join(b.dir, "pending", e.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // marked done by another process since ReadDir
+		}
+
 		if err != nil {
 			return nil, err
 		}
