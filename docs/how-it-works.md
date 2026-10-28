@@ -14,6 +14,7 @@
 
 - **怎么连出去**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，钉钉用 Stream 模式，Telegram 用长轮询，GitHub 每 30 秒轮询一次 REST API，都是从本机主动发起的。
 - **监听进程由你启停**：在自己的终端里运行 `claude-bot start`，它会在后台启动 `serve`，等所有渠道都连上后返回；`claude-bot stop` 停止，`claude-bot restart` 重启。这样监听进程用的是你终端里的环境变量（比如代理设置），不会继承 Claude Code 会话里的。`inbox` 不会自己启动监听进程：监听进程没在运行时直接报错；正在运行的监听进程版本比当前命令旧，或者没有监听新接的渠道时，`inbox` 会提示你 `claude-bot restart`。
+- **空闲时不花 token**：每一轮处理完，Claude 在后台运行 `claude-bot inbox --wait 55m`，然后停下来。来了消息它马上退出，Claude Code 随即把会话叫醒处理，延迟在几秒内；一直没消息，大约每小时醒一次，看看监听进程是否正常。
 
 ## 多条消息怎么处理
 

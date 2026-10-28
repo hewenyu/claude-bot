@@ -39,7 +39,7 @@ Listener (run these yourself, in your own terminal, so it keeps your environment
   claude-bot restart                  replace it, e.g. after upgrading claude-bot or adding a channel
 
 For Claude (inside /loop):
-  claude-bot inbox [--wait 9m]        pending messages as JSON lines (fails if the listener is not running)
+  claude-bot inbox [--wait 55m]       pending messages as JSON lines (fails if the listener is not running)
   claude-bot reply <id> [text|-]      reply in place (Markdown; @-mentions the sender in groups); marks done
   claude-bot done <id>...             mark handled without replying
   claude-bot get <id>                 fetch any message, e.g. the one in "reply_to"

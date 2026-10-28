@@ -19,7 +19,7 @@ const inboxPoll = time.Second
 
 func cmdInbox(ctx context.Context, project string, args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
-	wait := fs.Duration("wait", 0, "block up to this long until a message arrives (e.g. 9m)")
+	wait := fs.Duration("wait", 0, "block up to this long until a message arrives (e.g. 55m)")
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("%w: %w", errUsage, err)
