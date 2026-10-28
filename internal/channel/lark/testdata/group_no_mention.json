@@ -1,0 +1,1 @@
+{"schema":"2.0","header":{"event_type":"im.message.receive_v1"},"event":{"sender":{"sender_id":{"open_id":"ou_x"},"sender_type":"user"},"message":{"message_id":"om_chatter","create_time":"1609073151345","chat_id":"oc_1","chat_type":"group","message_type":"text","content":"{\"text\":\"中午吃什么\"}"}}}
