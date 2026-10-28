@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -160,5 +161,50 @@ func TestBotCommandEmbedded(t *testing.T) {
 
 	if len(botCommand) == 0 {
 		t.Fatal("bot.md slash command not embedded")
+	}
+}
+
+func TestParseReplyArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want replyArgs
+	}{
+		{name: "flag first", args: []string{"--keep", "lark:om_1", "on it"}, want: replyArgs{id: "lark:om_1", text: []string{"on it"}, keep: true}},
+		{name: "flag after id", args: []string{"lark:om_1", "--keep", "on it"}, want: replyArgs{id: "lark:om_1", text: []string{"on it"}, keep: true}},
+		{name: "markdown list is text", args: []string{"lark:om_1", "- fixed"}, want: replyArgs{id: "lark:om_1", text: []string{"- fixed"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseReplyArgs(tt.args)
+			if err != nil || !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parseReplyArgs(%q) = %+v, %v; want %+v", tt.args, got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDone_continuesPastUnknownID(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CLAUDE_BOT_PROJECT", root)
+	t.Setenv("LARK_APP_ID", "cli_test")
+	t.Setenv("LARK_APP_SECRET", "secret")
+
+	b := inbox.New(filepath.Join(root, ".claude-bot", "inbox"))
+	if _, err := b.Put(channel.Message{ID: "lark:om_b", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := run(t.Context(), []string{"done", "lark:om_missing", "lark:om_b"}); code != 1 {
+		t.Errorf("exit = %d, want 1 for the unknown id", code)
+	}
+
+	if pending, err := b.Pending(); err != nil || len(pending) != 0 {
+		t.Errorf("pending = %d, %v; the known id must still be marked done", len(pending), err)
 	}
 }

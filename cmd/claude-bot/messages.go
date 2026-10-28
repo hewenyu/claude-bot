@@ -65,16 +65,41 @@ func cmdInbox(ctx context.Context, args []string) error {
 	return nil
 }
 
-func cmdReply(ctx context.Context, args []string) error {
+// replyArgs is a parsed `reply [--keep] <id> [text|-]`.
+type replyArgs struct {
+	id   string
+	text []string
+	keep bool
+}
+
+func parseReplyArgs(args []string) (replyArgs, error) {
+	var r replyArgs
+
 	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
-	keep := fs.Bool("keep", false, "leave the message pending (e.g. for an interim \"looking into it\" reply)")
+	fs.BoolVar(&r.keep, "keep", false, "leave the message pending (e.g. for an interim \"looking into it\" reply)")
 
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w: %w", errUsage, err)
+		return r, fmt.Errorf("%w: %w", errUsage, err)
 	}
 
 	if fs.NArg() < 1 {
-		return fmt.Errorf("%w: reply <id> [text|-]", errUsage)
+		return r, fmt.Errorf("%w: reply <id> [text|-]", errUsage)
+	}
+
+	r.id, r.text = fs.Arg(0), fs.Args()[1:]
+
+	// The flag package stops at the id; don't send a misplaced flag as text.
+	if len(r.text) > 0 && (r.text[0] == "--keep" || r.text[0] == "-keep") {
+		r.keep, r.text = true, r.text[1:]
+	}
+
+	return r, nil
+}
+
+func cmdReply(ctx context.Context, args []string) error {
+	r, err := parseReplyArgs(args)
+	if err != nil {
+		return err
 	}
 
 	a, err := newApp(ctx)
@@ -82,23 +107,19 @@ func cmdReply(ctx context.Context, args []string) error {
 		return err
 	}
 
-	id := fs.Arg(0)
+	id := r.id
 
 	ch, _, err := a.channelFor(id)
 	if err != nil {
 		return err
 	}
 
-	text, err := textArg(fs.Args()[1:])
+	text, err := textArg(r.text)
 	if err != nil {
 		return err
 	}
 
-	msg, err := a.inbox.Find(id)
-	if errors.Is(err, inbox.ErrNotFound) {
-		msg, err = ch.Get(ctx, id) // replying to something older than the inbox
-	}
-
+	msg, err := a.lookup(ctx, ch, id)
 	if err != nil {
 		return err
 	}
@@ -107,7 +128,7 @@ func cmdReply(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if !*keep {
+	if !r.keep {
 		if err := a.inbox.Done(id); err != nil && !errors.Is(err, inbox.ErrNotFound) {
 			return err
 		}
@@ -118,8 +139,24 @@ func cmdReply(ctx context.Context, args []string) error {
 	return nil
 }
 
+// lookup returns a message from the inbox, or from the platform when it is
+// older than the inbox.
+func (a *app) lookup(ctx context.Context, ch channel.Channel, id string) (channel.Message, error) {
+	msg, err := a.inbox.Find(id)
+	if errors.Is(err, inbox.ErrNotFound) {
+		return ch.Get(ctx, id)
+	}
+
+	return msg, err
+}
+
 func cmdDone(ctx context.Context, args []string) error {
-	if len(args) == 0 {
+	ids, err := parseArgs("done", args)
+	if err != nil {
+		return err
+	}
+
+	if len(ids) == 0 {
 		return fmt.Errorf("%w: done <id> [<id> ...]", errUsage)
 	}
 
@@ -128,16 +165,24 @@ func cmdDone(ctx context.Context, args []string) error {
 		return err
 	}
 
-	for _, id := range args {
+	// One unknown id must not leave the rest pending.
+	var errs []error
+
+	for _, id := range ids {
 		if err := a.inbox.Done(id); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func cmdGet(ctx context.Context, args []string) error {
+	args, err := parseArgs("get", args)
+	if err != nil {
+		return err
+	}
+
 	if len(args) != 1 {
 		return fmt.Errorf("%w: get <id>", errUsage)
 	}
@@ -161,6 +206,11 @@ func cmdGet(ctx context.Context, args []string) error {
 }
 
 func cmdDownload(ctx context.Context, args []string) error {
+	args, err := parseArgs("download", args)
+	if err != nil {
+		return err
+	}
+
 	if len(args) != 1 {
 		return fmt.Errorf("%w: download <id>", errUsage)
 	}
@@ -177,11 +227,7 @@ func cmdDownload(ctx context.Context, args []string) error {
 		return err
 	}
 
-	msg, err := a.inbox.Find(id)
-	if errors.Is(err, inbox.ErrNotFound) {
-		msg, err = ch.Get(ctx, id)
-	}
-
+	msg, err := a.lookup(ctx, ch, id)
 	if err != nil {
 		return err
 	}
@@ -190,7 +236,9 @@ func cmdDownload(ctx context.Context, args []string) error {
 		return fmt.Errorf("message %s has no attachments", id)
 	}
 
-	dir := filepath.Join(a.dir, "files")
+	// One directory per message: attachments of different messages often
+	// share a name (image.png, crash.log).
+	dir := filepath.Join(a.dir, "files", channel.PathSafe(msg.ID))
 	for _, att := range msg.Attachments {
 		path, err := ch.Download(ctx, msg, att, dir)
 		if err != nil {
@@ -204,6 +252,11 @@ func cmdDownload(ctx context.Context, args []string) error {
 }
 
 func cmdSend(ctx context.Context, args []string) error {
+	args, err := parseArgs("send", args)
+	if err != nil {
+		return err
+	}
+
 	if len(args) < 1 {
 		return fmt.Errorf("%w: send <channel>:<chat-id> [text|-]", errUsage)
 	}
@@ -232,7 +285,11 @@ func cmdSend(ctx context.Context, args []string) error {
 	return nil
 }
 
-func cmdStatus(ctx context.Context, _ []string) error {
+func cmdStatus(ctx context.Context, args []string) error {
+	if _, err := parseArgs("status", args); err != nil {
+		return err
+	}
+
 	a, err := newApp(ctx)
 	if err != nil {
 		return err

@@ -24,7 +24,20 @@ import (
 //go:embed bot.md
 var botCommand []byte
 
-const verifyTimeout = 3 * time.Minute
+const (
+	verifyTimeout = 3 * time.Minute
+	apiTimeout    = 15 * time.Second
+	// A freshly registered app can take a few seconds before its token works.
+	registerChecks = 5
+	registerDelay  = 2 * time.Second // grows linearly between checks
+)
+
+// larkApp is a set of credentials proven to work, with the bot they belong to.
+type larkApp struct {
+	cfg lark.Config
+	ch  *lark.Channel
+	bot lark.Bot
+}
 
 type initOptions struct {
 	appID, secret, domain, proxy, name  string
@@ -32,25 +45,9 @@ type initOptions struct {
 }
 
 func cmdInit(ctx context.Context, args []string) error {
-	var o initOptions
-
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
-	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
-	fs.StringVar(&o.domain, "domain", "feishu", "with --app-id: feishu (China) or lark (international)")
-	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for lark)")
-	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
-	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
-	fs.BoolVar(&o.noOpen, "no-open", false, "print the authorization link without opening a browser")
-	fs.BoolVar(&o.noVerify, "no-verify", false, "skip the send-a-message connection check")
-	fs.BoolVar(&o.force, "force", false, "overwrite an existing .claude/commands/bot.md")
-
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w: %w", errUsage, err)
-	}
-
-	if (o.appID == "") != (o.secret == "") {
-		return fmt.Errorf("%w: --app-id and --app-secret go together", errUsage)
+	o, err := parseInitFlags(args)
+	if err != nil {
+		return err
 	}
 
 	dir, err := config.Dir(ctx)
@@ -68,17 +65,18 @@ func cmdInit(ctx context.Context, args []string) error {
 		return err
 	}
 
-	lc, bot, err := obtainApp(ctx, cfg.Lark, o, root)
+	la, err := obtainApp(ctx, cfg.Lark, o, root)
 	if err != nil {
 		return err
 	}
 
-	cfg.Lark = &lc
-	if err := config.Save(dir, cfg); err != nil {
+	// Ignore the directory before the secret is written into it.
+	if err := ensureLine(filepath.Join(root, ".gitignore"), config.DirName+"/"); err != nil {
 		return err
 	}
 
-	if err := ensureLine(filepath.Join(root, ".gitignore"), config.DirName+"/"); err != nil {
+	cfg.Lark = &la.cfg
+	if err := config.Save(dir, cfg); err != nil {
 		return err
 	}
 
@@ -86,14 +84,11 @@ func cmdInit(ctx context.Context, args []string) error {
 		return err
 	}
 
-	fmt.Printf("✓ bot「%s」已接入 %s\n", bot.AppName, root)
-
-	if missing := missingScopes(ctx, lc); len(missing) > 0 {
-		fmt.Printf("! 以下权限尚未生效（如果企业需要管理员审批，请在飞书里通过）：%s\n", strings.Join(missing, ", "))
-	}
+	fmt.Printf("✓ bot「%s」已接入 %s\n", la.bot.AppName, root)
+	reportScopes(ctx, la.ch)
 
 	if !o.noVerify {
-		if err := verifyConnection(ctx, bot); err != nil {
+		if err := verifyConnection(ctx, dir, la); err != nil {
 			return err
 		}
 	}
@@ -104,50 +99,113 @@ func cmdInit(ctx context.Context, args []string) error {
 	return nil
 }
 
+func parseInitFlags(args []string) (initOptions, error) {
+	var o initOptions
+
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
+	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
+	fs.StringVar(&o.domain, "domain", "feishu", "with --app-id: feishu (China) or lark (international)")
+	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for lark)")
+	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
+	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
+	fs.BoolVar(&o.noOpen, "no-open", false, "print the authorization link without opening a browser")
+	fs.BoolVar(&o.noVerify, "no-verify", false, "skip the send-a-message connection check")
+	fs.BoolVar(&o.force, "force", false, "overwrite an existing .claude/commands/bot.md")
+
+	if err := fs.Parse(args); err != nil {
+		return o, fmt.Errorf("%w: %w", errUsage, err)
+	}
+
+	if (o.appID == "") != (o.secret == "") {
+		return o, fmt.Errorf("%w: --app-id and --app-secret go together", errUsage)
+	}
+
+	return o, nil
+}
+
+func reportScopes(ctx context.Context, ch *lark.Channel) {
+	switch missing, err := missingScopes(ctx, ch); {
+	case err != nil:
+		fmt.Printf("! 无法查询权限状态：%v\n", err)
+	case len(missing) > 0:
+		fmt.Printf("! 以下权限尚未生效（如果企业需要管理员审批，请在飞书里通过）：%s\n", strings.Join(missing, ", "))
+	}
+}
+
 // obtainApp returns working credentials: from flags, from the existing
 // config, or by registering a new app through the browser.
-func obtainApp(ctx context.Context, existing *lark.Config, o initOptions, root string) (lark.Config, lark.Bot, error) {
+func obtainApp(ctx context.Context, existing *lark.Config, o initOptions, root string) (larkApp, error) {
 	if o.appID != "" {
-		lc := lark.Config{AppID: o.appID, AppSecret: o.secret, Domain: o.domain, Proxy: o.proxy}
-
-		bot, err := checkLark(ctx, lc)
+		la, err := connect(ctx, lark.Config{AppID: o.appID, AppSecret: o.secret, Domain: o.domain, Proxy: o.proxy})
 		if err != nil {
-			return lc, bot, fmt.Errorf("credentials check failed (nothing written): %w", err)
+			return la, fmt.Errorf("credentials check failed (nothing written): %w", err)
 		}
 
-		return lc, bot, nil
+		return la, nil
 	}
 
 	var upgrade string // existing app that only lacks permissions
 
 	if existing != nil && !o.reregister {
-		if bot, err := checkLark(ctx, *existing); err == nil {
-			if len(missingScopes(ctx, *existing)) == 0 {
-				fmt.Printf("✓ 已配置 bot「%s」，跳过注册（重新创建请加 --reregister）\n", bot.AppName)
+		la, ready, err := checkExisting(ctx, *existing)
+		if ready {
+			fmt.Printf("✓ 已配置 bot「%s」，跳过注册（重新创建请加 --reregister）\n", la.bot.AppName)
 
-				return *existing, bot, nil
-			}
+			return la, nil
+		}
 
+		if err == nil {
 			upgrade = existing.AppID
 		}
 	}
 
 	lc, err := register(ctx, o, root, upgrade)
 	if err != nil {
-		return lc, lark.Bot{}, err
+		return larkApp{}, err
 	}
 
-	// A freshly created app can take a few seconds before its token works.
-	var bot lark.Bot
-	for attempt := range 5 {
-		if bot, err = checkLark(ctx, lc); err == nil {
-			return lc, bot, nil
+	return connectRegistered(ctx, lc)
+}
+
+// checkExisting reports whether the configured app is ready to use. A nil
+// error with ready false means it works but lacks permissions.
+func checkExisting(ctx context.Context, cfg lark.Config) (la larkApp, ready bool, err error) {
+	la, err = connect(ctx, cfg)
+	if err != nil {
+		return la, false, err
+	}
+
+	return la, !lacksScopes(ctx, la.ch), nil
+}
+
+// lacksScopes reports whether ch is known to miss permissions. When the
+// scopes cannot be queried it says no, rather than sending the user through
+// the browser again for a working app.
+func lacksScopes(ctx context.Context, ch *lark.Channel) bool {
+	missing, err := missingScopes(ctx, ch)
+
+	return err == nil && len(missing) > 0
+}
+
+// connectRegistered waits for a freshly registered app's credentials to work.
+func connectRegistered(ctx context.Context, cfg lark.Config) (larkApp, error) {
+	for check := 1; ; check++ {
+		la, err := connect(ctx, cfg)
+		if err == nil {
+			return la, nil
 		}
 
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
-	}
+		if check == registerChecks {
+			return la, fmt.Errorf("app registered (%s) but credentials check failed: %w", cfg.AppID, err)
+		}
 
-	return lc, bot, fmt.Errorf("app registered (%s) but credentials check failed: %w", lc.AppID, err)
+		select {
+		case <-ctx.Done():
+			return la, fmt.Errorf("app registered (%s), credentials not saved: %w", cfg.AppID, ctx.Err())
+		case <-time.After(time.Duration(check) * registerDelay):
+		}
+	}
 }
 
 func register(ctx context.Context, o initOptions, root, upgradeAppID string) (lark.Config, error) {
@@ -188,43 +246,34 @@ func register(ctx context.Context, o initOptions, root, upgradeAppID string) (la
 	return lark.Config{AppID: reg.AppID, AppSecret: reg.AppSecret, Domain: reg.Domain, Proxy: o.proxy}, nil
 }
 
-func checkLark(ctx context.Context, cfg lark.Config) (lark.Bot, error) {
+// connect builds a channel for cfg and fetches its bot, which proves the
+// credentials work.
+func connect(ctx context.Context, cfg lark.Config) (larkApp, error) {
 	ch, err := lark.New(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
-		return lark.Bot{}, err
+		return larkApp{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	return ch.Bot(ctx)
+	bot, err := ch.Bot(ctx)
+
+	return larkApp{cfg: cfg, ch: ch, bot: bot}, err
 }
 
-func missingScopes(ctx context.Context, cfg lark.Config) []string {
-	ch, err := lark.New(cfg, slog.New(slog.DiscardHandler))
-	if err != nil {
-		return lark.Scopes
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+func missingScopes(ctx context.Context, ch *lark.Channel) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	missing, err := ch.MissingScopes(ctx)
-	if err != nil {
-		return []string{"(无法查询: " + err.Error() + ")"}
-	}
-
-	return missing
+	return ch.MissingScopes(ctx)
 }
 
 // verifyConnection proves the round trip: the user sends the bot a direct
 // message, the bot answers it. Anything else that arrives meanwhile is kept
 // in the inbox.
-func verifyConnection(ctx context.Context, bot lark.Bot) error {
-	a, err := newApp(ctx)
-	if err != nil {
-		return err
-	}
+func verifyConnection(ctx context.Context, dir string, la larkApp) error {
+	a := assemble(dir, newLogger(), la.ch)
 
 	if _, alive := readHeartbeat(a.dir); alive {
 		fmt.Println("✓ 监听进程已在运行，跳过连接验证")
@@ -232,13 +281,11 @@ func verifyConnection(ctx context.Context, bot lark.Bot) error {
 		return nil
 	}
 
-	ch := a.channels[lark.Name]
-
-	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	vctx, cancel := context.WithTimeout(ctx, verifyTimeout)
 	defer cancel()
 
 	got := make(chan channel.Message, 1)
-	store := a.deliverer(ctx, ch)
+	store := a.deliverer(vctx, la.ch)
 	deliver := func(m channel.Message) error {
 		if err := store(m); err != nil {
 			return err
@@ -255,13 +302,13 @@ func verifyConnection(ctx context.Context, bot lark.Bot) error {
 	}
 
 	listenErr := make(chan error, 1)
-	go func() { listenErr <- ch.Listen(ctx, deliver, func() {}) }()
+	go func() { listenErr <- la.ch.Listen(vctx, deliver, func() {}) }()
 
-	fmt.Printf("\n连接验证：请在飞书里搜索「%s」，给它发一条私聊消息（%s 内）…\n", bot.AppName, verifyTimeout)
+	fmt.Printf("\n连接验证：请在飞书里搜索「%s」，给它发一条私聊消息（%s 内）…\n", la.bot.AppName, verifyTimeout)
 
 	select {
 	case m := <-got:
-		if err := ch.Reply(ctx, m, "✅ 连接成功！在仓库里运行 `/loop /bot` 后，我就会处理发给我的消息。"); err != nil {
+		if err := la.ch.Reply(vctx, m, "✅ 连接成功！在仓库里运行 `/loop /bot` 后，我就会处理发给我的消息。"); err != nil {
 			return fmt.Errorf("received your message but replying failed: %w", err)
 		}
 
@@ -274,7 +321,11 @@ func verifyConnection(ctx context.Context, bot lark.Bot) error {
 		return nil
 	case err := <-listenErr:
 		return fmt.Errorf("connection check: %w", err)
-	case <-ctx.Done():
+	case <-vctx.Done():
+		if err := ctx.Err(); err != nil {
+			return err // interrupted, not timed out
+		}
+
 		fmt.Println("! 没有收到消息，跳过验证。可以稍后运行 `claude-bot status` 检查，或重新运行 init。")
 
 		return nil

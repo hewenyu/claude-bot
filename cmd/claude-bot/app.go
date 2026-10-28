@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -37,8 +40,9 @@ func newApp(ctx context.Context) (*app, error) {
 		return nil, err
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	a := &app{dir: dir, inbox: inbox.New(filepath.Join(dir, "inbox")), channels: map[string]channel.Channel{}, log: log}
+	log := newLogger()
+
+	var channels []channel.Channel
 
 	if cfg.Lark != nil {
 		ch, err := lark.New(*cfg.Lark, log)
@@ -46,14 +50,34 @@ func newApp(ctx context.Context) (*app, error) {
 			return nil, err
 		}
 
-		a.channels[ch.Name()] = ch
+		channels = append(channels, ch)
 	}
 
-	if len(a.channels) == 0 {
+	if len(channels) == 0 {
 		return nil, errNotConfigured
 	}
 
-	return a, nil
+	return assemble(dir, log, channels...), nil
+}
+
+// assemble builds an app over already constructed channels.
+func assemble(dir string, log *slog.Logger, channels ...channel.Channel) *app {
+	a := &app{
+		dir:      dir,
+		inbox:    inbox.New(filepath.Join(dir, "inbox")),
+		channels: make(map[string]channel.Channel, len(channels)),
+		log:      log,
+	}
+
+	for _, ch := range channels {
+		a.channels[ch.Name()] = ch
+	}
+
+	return a
+}
+
+func newLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
 
 // channelFor returns the adapter that owns a protocol id.
@@ -71,13 +95,20 @@ func (a *app) channelFor(id string) (channel.Channel, string, error) {
 	return ch, platformID, nil
 }
 
+// names lists the configured channels in a stable order.
 func (a *app) names() []string {
-	out := make([]string, 0, len(a.channels))
-	for n := range a.channels {
-		out = append(out, n)
+	return slices.Sorted(maps.Keys(a.channels))
+}
+
+// parseArgs parses the arguments of a command that takes no flags, so -h
+// prints help and a stray flag is a usage error rather than an id.
+func parseArgs(name string, args []string) ([]string, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return nil, fmt.Errorf("%w: %w", errUsage, err)
 	}
 
-	return out
+	return fs.Args(), nil
 }
 
 // textArg returns the message text from args, or stdin when args is empty or "-".
