@@ -22,12 +22,14 @@ Usage: claude-bot [-C <repo>] <command> [args]
   -C <repo>   act on that repository (default: the git repo of the current directory)
 
 Setup (once per project; config stays in <repo>/.claude-bot/, git-ignored):
-  claude-bot init                     create the bot app in the browser (just confirm), save credentials,
+  claude-bot init                     pick a channel (on a terminal; Lark otherwise), set it up, save credentials,
                                       generate .claude/commands/bot.md, verify with a test message
-  claude-bot init --app-id cli_x --app-secret s   use an existing app instead
-  claude-bot init --discord-token t   set up a Discord bot (token from the Developer Portal) instead
-  claude-bot init --telegram-token t  set up a Telegram bot (token from @BotFather) instead
-  claude-bot init --slack-app-token xapp-… --slack-bot-token xoxb-…   set up a Slack app instead
+  claude-bot init --channel <name>    set up lark, discord, telegram or slack, asking for its tokens
+  claude-bot init --app-id cli_x --app-secret s   use an existing Lark app
+  claude-bot init --discord-token t   set up a Discord bot (token from the Developer Portal)
+  claude-bot init --telegram-token t  set up a Telegram bot (token from @BotFather)
+  claude-bot init --slack-app-token xapp-… --slack-bot-token xoxb-…   set up a Slack app
+  claude-bot init --bot-md            only overwrite .claude/commands/bot.md with this version's
 
 For Claude (inside /loop):
   claude-bot inbox [--wait 9m]        pending messages as JSON lines (starts the listener if needed)

@@ -1,17 +1,23 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/channel/telegram"
+	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 )
 
@@ -242,29 +248,153 @@ func TestBeat_waitsForReady(t *testing.T) {
 	t.Error("no heartbeat after ready")
 }
 
-func TestParseInitFlags_oneChannelAtATime(t *testing.T) {
+func TestParseInitFlags_settlesChannel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		args []string
-		ok   bool
+		args    []string
+		channel string // "" with ok: chosen later (menu or Lark)
+		ok      bool
 	}{
 		{args: nil, ok: true},
-		{args: []string{"--telegram-token", "1:t"}, ok: true},
-		{args: []string{"--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}, ok: true},
+		{args: []string{"--channel", "slack"}, channel: "slack", ok: true},
+		{args: []string{"--telegram-token", "1:t"}, channel: "telegram", ok: true},
+		{args: []string{"--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}, channel: "slack", ok: true},
+		{args: []string{"--app-id", "cli_1", "--app-secret", "s"}, channel: "lark", ok: true},
+		{args: []string{"--channel", "telegram", "--telegram-token", "1:t"}, channel: "telegram", ok: true},
+		{args: []string{"--bot-md"}, ok: true},
+		{args: []string{"--channel", "wechat"}},
+		{args: []string{"--channel", "discord", "--telegram-token", "1:t"}},
 		{args: []string{"--slack-bot-token", "xoxb-1"}},
 		{args: []string{"--telegram-token", "1:t", "--discord-token", "d"}},
 		{args: []string{"--app-id", "cli_1", "--app-secret", "s", "--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}},
+		{args: []string{"--bot-md", "--channel", "lark"}},
 	}
 
 	for _, tt := range tests {
-		_, err := parseInitFlags(tt.args)
+		o, err := parseInitFlags(tt.args)
 		if (err == nil) != tt.ok {
 			t.Errorf("parseInitFlags(%q) error = %v, want ok %v", tt.args, err, tt.ok)
+
+			continue
 		}
 
 		if err != nil && !errors.Is(err, errUsage) {
 			t.Errorf("parseInitFlags(%q) error = %v, want a usage error", tt.args, err)
 		}
+
+		if err == nil && o.channel != tt.channel {
+			t.Errorf("parseInitFlags(%q) channel = %q, want %q", tt.args, o.channel, tt.channel)
+		}
+	}
+}
+
+func testPrompter(input string, secrets ...string) (*prompter, *strings.Builder) {
+	out := &strings.Builder{}
+
+	return &prompter{
+		in:  bufio.NewReader(strings.NewReader(input)),
+		out: out,
+		secret: func() (string, error) {
+			if len(secrets) == 0 {
+				return "", io.EOF
+			}
+
+			s := secrets[0]
+			secrets = secrets[1:]
+
+			return s, nil
+		},
+	}, out
+}
+
+func TestChooseChannel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input, want string
+	}{
+		{input: "\n", want: "lark"},
+		{input: "3\n", want: "telegram"},
+		{input: "4", want: "slack"}, // no trailing newline
+		{input: "x\n9\n2\n", want: "discord"},
+	}
+
+	for _, tt := range tests {
+		p, _ := testPrompter(tt.input)
+
+		got, err := p.chooseChannel(config.Config{})
+		if err != nil || got != tt.want {
+			t.Errorf("chooseChannel(%q) = %q, %v; want %q", tt.input, got, err, tt.want)
+		}
+	}
+
+	p, _ := testPrompter("x\n")
+	if _, err := p.chooseChannel(config.Config{}); !errors.Is(err, errNoInput) {
+		t.Errorf("chooseChannel at end of input = %v, want errNoInput", err)
+	}
+}
+
+func TestChooseChannel_marksConfigured(t *testing.T) {
+	t.Parallel()
+
+	p, out := testPrompter("\n")
+	if _, err := p.chooseChannel(config.Config{Telegram: &telegram.Config{Token: "t"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		if strings.Contains(line, "Telegram") != strings.Contains(line, "已配置") {
+			t.Errorf("menu line %q: only Telegram should be marked configured", line)
+		}
+	}
+}
+
+func TestAskTokens(t *testing.T) {
+	t.Parallel()
+
+	p, _ := testPrompter("", " xapp-1 ", "xoxb-1")
+
+	o := initOptions{channel: "slack"}
+	if err := askTokens(&o, p); err != nil {
+		t.Fatal(err)
+	}
+
+	if o.slackAppToken != "xapp-1" || o.slackBotToken != "xoxb-1" {
+		t.Errorf("tokens = %q, %q", o.slackAppToken, o.slackBotToken)
+	}
+
+	given := initOptions{channel: "telegram", telegramToken: "1:t"}
+	if err := askTokens(&given, nil); err != nil || given.telegramToken != "1:t" {
+		t.Errorf("askTokens with the flag given = %v, %q", err, given.telegramToken)
+	}
+
+	if err := askTokens(&initOptions{channel: "discord"}, nil); !errors.Is(err, errUsage) {
+		t.Errorf("askTokens without terminal or flag = %v, want a usage error naming the flag", err)
+	}
+
+	empty, _ := testPrompter("", "  ")
+	if err := askTokens(&initOptions{channel: "telegram"}, empty); !errors.Is(err, errUsage) {
+		t.Errorf("askTokens with an empty answer = %v, want a usage error", err)
+	}
+}
+
+func TestRewriteBotCommand(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path := botCommandPath(root)
+
+	if err := writeIfAbsent(path, []byte("edited by hand"), false); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rewriteBotCommand(root); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, botCommand) {
+		t.Errorf("bot.md after rewrite = %.40q…, %v; want the embedded command", got, err)
 	}
 }

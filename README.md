@@ -58,7 +58,9 @@ cd your-project
 claude-bot init
 ```
 
-`init` 会：
+`init` 会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram 或 Slack 时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
+
+选飞书时，`init` 会：
 
 1. 打开浏览器，走飞书官方的应用注册授权流程。登录后点「确认」，就会创建好应用，并配置好机器人能力、[权限](#权限)和事件订阅（长连接），不用去开放平台手动配置。
 2. 把凭证写入 `.claude-bot/config.json`（权限 `0600`），并把 `.claude-bot/` 加进 `.gitignore`。
@@ -172,8 +174,10 @@ claude-bot [-C <repo>] <command> [args]
 
 | 参数 | 说明 |
 |---|---|
+| `--channel lark\|discord\|telegram\|slack` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
+| `--bot-md` | 只用当前版本覆盖 `.claude/commands/bot.md`，不动任何配置。升级 claude-bot 后用它更新值守流程 |
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
-| `--discord-token` | 接入 Discord bot，而不是飞书应用 |
+| `--discord-token` | 接入 Discord bot |
 | `--telegram-token` | 接入 Telegram bot |
 | `--slack-app-token`、`--slack-bot-token` | 接入 Slack 应用，两个一起用 |
 | `--domain feishu\|lark` | 配合 `--app-id` 使用，指定国内版或国际版，默认 `feishu` |
@@ -182,7 +186,7 @@ claude-bot [-C <repo>] <command> [args]
 | `--reregister` | 即使已经配置过，也重新创建应用 |
 | `--no-open` | 只打印授权链接，不自动打开浏览器 |
 | `--no-verify` | 跳过发消息的连接验证 |
-| `--force` | 覆盖已有的 `.claude/commands/bot.md` |
+| `--force` | 接入渠道的同时覆盖已有的 `.claude/commands/bot.md` |
 
 ## 配置
 

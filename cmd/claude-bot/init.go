@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
+	"github.com/hewenyu/claude-bot/internal/channel/slack"
+	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 )
 
@@ -30,10 +33,12 @@ const (
 var quiet = slog.New(slog.DiscardHandler)
 
 type initOptions struct {
+	channel                             string // lark, discord, telegram or slack
 	appID, secret, domain, proxy, name  string
 	discordToken, telegramToken         string
 	slackAppToken, slackBotToken        string
 	reregister, noOpen, noVerify, force bool
+	botMD                               bool // only rewrite the /bot command
 }
 
 func cmdInit(ctx context.Context, project string, args []string) error {
@@ -48,12 +53,20 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 	}
 
 	root := filepath.Dir(dir)
+	if o.botMD {
+		return rewriteBotCommand(root)
+	}
+
 	if o.name == "" {
 		o.name = filepath.Base(root) + " Bot"
 	}
 
 	cfg, err := config.Load(dir)
 	if err != nil {
+		return err
+	}
+
+	if err := pickChannel(&o, cfg); err != nil {
 		return err
 	}
 
@@ -71,7 +84,7 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	if err := writeIfAbsent(filepath.Join(root, ".claude", "commands", "bot.md"), botCommand, o.force); err != nil {
+	if err := writeIfAbsent(botCommandPath(root), botCommand, o.force); err != nil {
 		return err
 	}
 
@@ -86,6 +99,48 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 
 	fmt.Println("\n下一步：在这个仓库里打开 Claude Code，运行  /loop /bot")
 	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
+	fmt.Println("要再接入其他渠道，运行  claude-bot init --channel <lark|discord|telegram|slack>")
+
+	return nil
+}
+
+// pickChannel settles which channel to set up and asks for its tokens. With
+// no choice made by flags it shows a menu on a terminal; elsewhere (scripts,
+// Claude Code) it keeps the old default, Lark.
+func pickChannel(o *initOptions, cfg config.Config) error {
+	p, interactive := terminalPrompter()
+	if !interactive {
+		p = nil
+	}
+
+	if o.channel == "" {
+		o.channel = lark.Name
+
+		if p != nil {
+			name, err := p.chooseChannel(cfg)
+			if err != nil {
+				return err
+			}
+
+			o.channel = name
+		}
+	}
+
+	return askTokens(o, p)
+}
+
+func botCommandPath(root string) string {
+	return filepath.Join(root, ".claude", "commands", "bot.md")
+}
+
+// rewriteBotCommand replaces the /bot command with this version's, leaving
+// the bot configuration alone.
+func rewriteBotCommand(root string) error {
+	if err := writeIfAbsent(botCommandPath(root), botCommand, true); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ 已用 %s 版本的值守流程覆盖 %s\n", Version, botCommandPath(root))
 
 	return nil
 }
@@ -98,15 +153,15 @@ type setup struct {
 	report func(context.Context) // prints what is left to do on the platform
 }
 
-// setupChannel obtains working credentials for the channel o asks for and
-// records them in cfg.
+// setupChannel obtains working credentials for o.channel and records them
+// in cfg.
 func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root string) (setup, error) {
-	switch {
-	case o.discordToken != "":
+	switch o.channel {
+	case discord.Name:
 		return setupDiscord(ctx, cfg, o)
-	case o.telegramToken != "":
+	case telegram.Name:
 		return setupTelegram(ctx, cfg, o)
-	case o.slackBotToken != "":
+	case slack.Name:
 		return setupSlack(ctx, cfg, o)
 	}
 
@@ -117,6 +172,8 @@ func parseInitFlags(args []string) (initOptions, error) {
 	var o initOptions
 
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.StringVar(&o.channel, "channel", "", "lark, discord, telegram or slack (default: ask on a terminal, else lark)")
+	fs.BoolVar(&o.botMD, "bot-md", false, "only rewrite .claude/commands/bot.md with this version's (overwrites it), nothing else")
 	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
 	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
 	fs.StringVar(&o.domain, "domain", lark.DomainFeishu, "with --app-id: feishu (China) or lark (international)")
@@ -143,19 +200,39 @@ func parseInitFlags(args []string) (initOptions, error) {
 		return o, fmt.Errorf("%w: --slack-app-token and --slack-bot-token go together", errUsage)
 	}
 
-	chosen := 0
+	return o, settleChannel(&o)
+}
 
-	for _, set := range []bool{o.appID != "", o.discordToken != "", o.telegramToken != "", o.slackBotToken != ""} {
+// settleChannel derives o.channel from the credential flags and rejects
+// flags that ask for different channels.
+func settleChannel(o *initOptions) error {
+	var implied []string
+
+	for name, set := range map[string]bool{
+		lark.Name:     o.appID != "",
+		discord.Name:  o.discordToken != "",
+		telegram.Name: o.telegramToken != "",
+		slack.Name:    o.slackBotToken != "",
+	} {
 		if set {
-			chosen++
+			implied = append(implied, name)
 		}
 	}
 
-	if chosen > 1 {
-		return o, fmt.Errorf("%w: --app-id, --discord-token, --telegram-token and --slack-*-token set up different channels; run init once for each", errUsage)
+	switch {
+	case o.botMD && (o.channel != "" || len(implied) > 0):
+		return fmt.Errorf("%w: --bot-md only rewrites the /bot command; run it without channel flags", errUsage)
+	case len(implied) > 1:
+		return fmt.Errorf("%w: --app-id, --discord-token, --telegram-token and --slack-*-token set up different channels; run init once for each", errUsage)
+	case len(implied) == 1 && o.channel != "" && o.channel != implied[0]:
+		return fmt.Errorf("%w: --channel %s does not match the %s credentials given", errUsage, o.channel, implied[0])
+	case len(implied) == 1:
+		o.channel = implied[0]
+	case o.channel != "" && !knownChannel(o.channel):
+		return fmt.Errorf("%w: unknown --channel %q: want lark, discord, telegram or slack", errUsage, o.channel)
 	}
 
-	return o, nil
+	return nil
 }
 
 // withTimeout runs an API check under apiTimeout.
