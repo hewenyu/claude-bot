@@ -31,9 +31,8 @@ const (
 	appTokenPrefix = "xapp-"
 	botTokenPrefix = "xoxb-"
 	clientTimeout  = 2 * time.Minute
-	maxResponse    = 16 << 20 // bound on an API answer
-	maxMarkdownLen = 12000    // Slack's limit for markdown blocks per message
-	maxFallbackLen = 4000     // notification text Slack recommends at most
+	maxMarkdownLen = 12000 // Slack's limit for markdown blocks per message
+	maxFallbackLen = 4000  // notification text Slack recommends at most
 	ackEmoji       = "eyes"
 )
 

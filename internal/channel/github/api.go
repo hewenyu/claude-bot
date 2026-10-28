@@ -11,16 +11,17 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const (
-	defaultAPI  = "https://api.github.com"
-	apiVersion  = "2022-11-28"
-	mediaType   = "application/vnd.github+json"
-	userAgent   = "claude-bot"
-	maxResponse = 16 << 20 // bound on a decoded API answer
-	perPage     = 100      // the most GitHub returns per page
-	maxPages    = 10       // pages read per listing, so a huge backlog cannot stall the listener
+	defaultAPI = "https://api.github.com"
+	apiVersion = "2022-11-28"
+	mediaType  = "application/vnd.github+json"
+	userAgent  = "claude-bot"
+	perPage    = 100 // the most GitHub returns per page
+	maxPages   = 10  // pages read per listing, so a huge backlog cannot stall the listener
 )
 
 // APIError is an error answer of the REST API.
@@ -112,7 +113,7 @@ func (c *Channel) call(ctx context.Context, r request, out any) (response, error
 		return res, nil
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(out); err != nil {
 		return res, fmt.Errorf("github %s %s: decode: %w", r.method, r.path, err)
 	}
 
@@ -124,7 +125,7 @@ func apiError(r request, resp *http.Response) error {
 		Message string `json:"message"`
 	}
 
-	_ = json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(&e)
+	_ = json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(&e)
 
 	if e.Message == "" {
 		e.Message = http.StatusText(resp.StatusCode)

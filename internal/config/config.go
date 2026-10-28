@@ -111,11 +111,29 @@ func gitTop(ctx context.Context, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// Load reads dir/config.json and applies LARK_APP_ID, LARK_APP_SECRET,
-// LARK_DOMAIN, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN,
-// SLACK_BOT_TOKEN, DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET from the
-// environment.
-func Load(dir string) (Config, error) {
+// Has reports whether c sets up the channel of that name.
+func (c Config) Has(name string) bool {
+	switch name {
+	case lark.Name:
+		return c.Lark != nil
+	case discord.Name:
+		return c.Discord != nil
+	case telegram.Name:
+		return c.Telegram != nil
+	case slack.Name:
+		return c.Slack != nil
+	case github.Name:
+		return c.GitHub != nil
+	case dingtalk.Name:
+		return c.DingTalk != nil
+	}
+
+	return false
+}
+
+// Read reads dir/config.json alone, without the environment: what init
+// rewrites, so credentials given through the environment are not saved.
+func Read(dir string) (Config, error) {
 	var cfg Config
 
 	raw, err := os.ReadFile(filepath.Join(dir, configFile)) //nolint:gosec // fixed file in the project bot dir
@@ -129,27 +147,56 @@ func Load(dir string) (Config, error) {
 		}
 	}
 
+	return cfg, nil
+}
+
+// Load reads dir/config.json and applies LARK_APP_ID, LARK_APP_SECRET,
+// LARK_DOMAIN, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN,
+// SLACK_BOT_TOKEN, DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET from the
+// environment. They replace the credentials of config.json; its other
+// settings (proxy, domain) stay.
+func Load(dir string) (Config, error) {
+	cfg, err := Read(dir)
+	if err != nil {
+		return cfg, err
+	}
+
 	if id, secret := os.Getenv(larkAppIDEnv), os.Getenv(larkSecretEnv); id != "" && secret != "" {
-		cfg.Lark = &lark.Config{AppID: id, AppSecret: secret, Domain: os.Getenv(larkDomainEnv)}
+		override(&cfg.Lark, func(c *lark.Config) {
+			c.AppID, c.AppSecret = id, secret
+			if domain := os.Getenv(larkDomainEnv); domain != "" {
+				c.Domain = domain
+			}
+		})
 	}
 
 	if token := os.Getenv(discordTokenEnv); token != "" {
-		cfg.Discord = &discord.Config{Token: token}
+		override(&cfg.Discord, func(c *discord.Config) { c.Token = token })
 	}
 
 	if token := os.Getenv(telegramTokenEnv); token != "" {
-		cfg.Telegram = &telegram.Config{Token: token}
+		override(&cfg.Telegram, func(c *telegram.Config) { c.Token = token })
 	}
 
 	if app, bot := os.Getenv(slackAppTokenEnv), os.Getenv(slackBotTokenEnv); app != "" && bot != "" {
-		cfg.Slack = &slack.Config{AppToken: app, BotToken: bot}
+		override(&cfg.Slack, func(c *slack.Config) { c.AppToken, c.BotToken = app, bot })
 	}
 
 	if id, secret := os.Getenv(dingtalkIDEnv), os.Getenv(dingtalkSecretEnv); id != "" && secret != "" {
-		cfg.DingTalk = &dingtalk.Config{ClientID: id, ClientSecret: secret}
+		override(&cfg.DingTalk, func(c *dingtalk.Config) { c.ClientID, c.ClientSecret = id, secret })
 	}
 
 	return cfg, nil
+}
+
+// override applies set to the channel config *c points at, creating it if
+// config.json has none.
+func override[C any](c **C, set func(*C)) {
+	if *c == nil {
+		*c = new(C)
+	}
+
+	set(*c)
 }
 
 // Save writes cfg to dir/config.json, readable only by the owner. The file is

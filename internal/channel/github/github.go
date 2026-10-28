@@ -338,7 +338,7 @@ func (c *Channel) latestComments(ctx context.Context, i issue, n int) ([]comment
 // files of private repositories need it there, and Go drops it on a redirect
 // to another host.
 func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.Attachment, dir string) (string, error) {
-	if !attachmentURL.MatchString(att.Key) || attachmentURL.FindString(att.Key) != att.Key {
+	if att.Key == "" || attachmentURL.FindString(att.Key) != att.Key {
 		return "", fmt.Errorf("github download: not a GitHub attachment URL: %q", att.Key)
 	}
 

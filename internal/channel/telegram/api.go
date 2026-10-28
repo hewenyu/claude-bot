@@ -44,8 +44,8 @@ const (
 // fatal reports errors that retrying cannot fix: a bad token, or a webhook
 // that keeps getUpdates from working.
 func fatal(err error) bool {
-	var ae *APIError
-	if !errors.As(err, &ae) {
+	ae, ok := errors.AsType[*APIError](err)
+	if !ok {
 		return false
 	}
 
@@ -74,8 +74,7 @@ type response struct {
 func (c *Channel) call(ctx context.Context, method string, params, out any) error {
 	err := c.callOnce(ctx, method, params, out)
 
-	var ae *APIError
-	if errors.As(err, &ae) && ae.Code == codeTooMany && ae.RetryAfter <= maxRetryAfter {
+	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeTooMany && ae.RetryAfter <= maxRetryAfter {
 		if !transport.Sleep(ctx, ae.RetryAfter) {
 			return ctx.Err()
 		}
@@ -106,7 +105,7 @@ func (c *Channel) callOnce(ctx context.Context, method string, params, out any) 
 	defer resp.Body.Close() //nolint:errcheck // read-only body
 
 	var r response
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(&r); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(&r); err != nil {
 		return fmt.Errorf("telegram %s: %s: %w", method, resp.Status, err)
 	}
 

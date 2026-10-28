@@ -65,7 +65,7 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		o.name = filepath.Base(root) + " Bot"
 	}
 
-	cfg, err := config.Load(dir)
+	cfg, err := config.Read(dir)
 	if err != nil {
 		return err
 	}

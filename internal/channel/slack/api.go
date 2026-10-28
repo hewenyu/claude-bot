@@ -50,9 +50,9 @@ const (
 
 // fatal reports errors that retrying cannot fix: a bad or revoked token.
 func fatal(err error) bool {
-	var ae *APIError
+	ae, ok := errors.AsType[*APIError](err)
 
-	return errors.As(err, &ae) && fatalCodes[ae.Code]
+	return ok && fatalCodes[ae.Code]
 }
 
 // call invokes a Web API method with form params, authenticated by token,
@@ -60,8 +60,7 @@ func fatal(err error) bool {
 func (c *Channel) call(ctx context.Context, token, method string, params url.Values, out any) error {
 	err := c.callOnce(ctx, token, method, params, out)
 
-	var ae *APIError
-	if errors.As(err, &ae) && ae.Code == codeRateLimited && ae.RetryAfter <= maxRetryAfter {
+	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeRateLimited && ae.RetryAfter <= maxRetryAfter {
 		if !transport.Sleep(ctx, ae.RetryAfter) {
 			return ctx.Err()
 		}
@@ -93,7 +92,7 @@ func (c *Channel) callOnce(ctx context.Context, token, method string, params url
 		return &APIError{Method: method, Code: codeRateLimited, RetryAfter: time.Duration(secs) * time.Second}
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, transport.MaxResponse))
 	if err != nil {
 		return fmt.Errorf("slack %s: %w", method, err)
 	}

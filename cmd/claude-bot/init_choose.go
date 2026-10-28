@@ -58,26 +58,6 @@ func channelNames(sep string) string {
 	return strings.Join(names, sep)
 }
 
-// configured reports whether cfg already sets up the channel.
-func configured(cfg config.Config, name string) bool {
-	switch name {
-	case lark.Name:
-		return cfg.Lark != nil
-	case discord.Name:
-		return cfg.Discord != nil
-	case telegram.Name:
-		return cfg.Telegram != nil
-	case slack.Name:
-		return cfg.Slack != nil
-	case github.Name:
-		return cfg.GitHub != nil
-	case dingtalk.Name:
-		return cfg.DingTalk != nil
-	}
-
-	return false
-}
-
 var errNoInput = errors.New("no answer (stdin closed)")
 
 // prompter asks the person running init; secret reads without echo.
@@ -138,7 +118,7 @@ func (p *prompter) chooseChannel(cfg config.Config) (string, error) {
 
 	for i, c := range channelChoices {
 		mark := ""
-		if configured(cfg, c.name) {
+		if cfg.Has(c.name) {
 			mark = "  [已配置]"
 		}
 

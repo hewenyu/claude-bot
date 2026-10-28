@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"mime"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -535,9 +534,7 @@ func fileName(att channel.Attachment, served string, data []byte) string {
 	}
 
 	if filepath.Ext(name) == "" {
-		if exts, _ := mime.ExtensionsByType(http.DetectContentType(data)); len(exts) > 0 {
-			name += exts[len(exts)-1]
-		}
+		name += channel.Extension(data)
 	}
 
 	return name

@@ -9,11 +9,12 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const (
 	defaultAPI  = "https://api.dingtalk.com"
-	maxResponse = 16 << 20                      // bound on an API answer
 	tokenHeader = "x-acs-dingtalk-access-token" //nolint:gosec // the header name, not a token
 	tokenMargin = 5 * time.Minute               // renew the access token this long before it expires
 )
@@ -79,7 +80,7 @@ func (c *Channel) call(ctx context.Context, path string, body, out any) error {
 	}
 	defer resp.Body.Close() //nolint:errcheck // read-only body
 
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, transport.MaxResponse))
 	if err != nil {
 		return fmt.Errorf("dingtalk %s: %w", path, err)
 	}

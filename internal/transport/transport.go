@@ -33,6 +33,9 @@ const (
 	handshakeTimeout = 45 * time.Second // WebSocket upgrade, TLS included
 )
 
+// MaxResponse bounds an API answer read into memory.
+const MaxResponse = 16 << 20
+
 // Proxy parses a proxy mode: ProxyDirect, ProxyEnv or a proxy URL.
 func Proxy(mode string) (ProxyFunc, error) {
 	switch mode {
