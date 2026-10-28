@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -106,4 +107,15 @@ func run(ctx context.Context, args []string) int {
 	}
 
 	return exitOK
+}
+
+// parseArgs parses the arguments of a command that takes no flags, so -h
+// prints help and a stray flag is a usage error rather than an id.
+func parseArgs(name string, args []string) ([]string, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return nil, fmt.Errorf("%w: %w", errUsage, err)
+	}
+
+	return fs.Args(), nil
 }

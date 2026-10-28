@@ -207,3 +207,36 @@ func TestDone_continuesPastUnknownID(t *testing.T) {
 		t.Errorf("pending = %d, %v; the known id must still be marked done", len(pending), err)
 	}
 }
+
+func TestBeat_waitsForReady(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	a := assemble(dir, slog.New(slog.DiscardHandler), &fakeChannel{})
+	ready := make(chan struct{})
+
+	go a.beat(t.Context(), ready)
+
+	time.Sleep(20 * time.Millisecond)
+
+	if _, alive := readHeartbeat(dir); alive {
+		t.Fatal("heartbeat written before every channel was ready")
+	}
+
+	close(ready)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hb, alive := readHeartbeat(dir); alive {
+			if !reflect.DeepEqual(hb.Channels, []string{"fake"}) {
+				t.Errorf("heartbeat channels = %v", hb.Channels)
+			}
+
+			return
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Error("no heartbeat after ready")
+}

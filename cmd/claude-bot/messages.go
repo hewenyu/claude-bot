@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
-	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 )
 
@@ -275,53 +274,6 @@ func cmdSend(ctx context.Context, project string, args []string) error {
 	}
 
 	fmt.Println("sent to", args[0])
-
-	return nil
-}
-
-func cmdStatus(ctx context.Context, project string, args []string) error {
-	if _, err := parseArgs("status", args); err != nil {
-		return err
-	}
-
-	a, err := newApp(ctx, project)
-	if err != nil {
-		return err
-	}
-
-	pending, err := a.inbox.Pending()
-	if err != nil {
-		return err
-	}
-
-	hb, alive := readHeartbeat(a.dir)
-	status := map[string]any{
-		"project":  filepath.Dir(a.dir),
-		"channels": a.names(),
-		"listener": map[string]any{"alive": alive, "pid": hb.PID, "last_beat": hb.BeatAt},
-		"pending":  len(pending),
-	}
-
-	if ch, ok := a.channels[lark.Name].(*lark.Channel); ok {
-		bot, err := ch.Bot(ctx)
-		if err != nil {
-			status["lark"] = map[string]any{"error": err.Error()}
-		} else {
-			status["lark"] = bot
-		}
-	}
-
-	return printJSON(status)
-}
-
-func printJSON(v any) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-
-	if err := enc.Encode(v); err != nil {
-		return fmt.Errorf("write output: %w", err)
-	}
 
 	return nil
 }
