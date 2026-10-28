@@ -6,7 +6,7 @@
 
 把飞书 / Lark 机器人接到项目仓库里常驻的 Claude Code 会话上。
 
-项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。
+项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它还会用 `gh` 盯仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
 
 claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地收件箱，并提供回复命令。理解需求、决定怎么做、怎么回复，都由 Claude 自己判断。GitHub 相关操作 Claude 直接用 `gh`。
 
@@ -31,6 +31,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - macOS 或 Linux
 - Go 1.27+（用于安装）
 - git
+- [GitHub CLI](https://cli.github.com)（`gh`，已登录）
 - [Claude Code](https://claude.com/claude-code)
 - 飞书或 Lark 账号
 
@@ -61,7 +62,7 @@ claude-bot init
 
 1. 打开浏览器，走飞书官方的应用注册授权流程。登录后点「确认」，就会创建好应用，并配置好机器人能力、[权限](#权限)和事件订阅（长连接），不用去开放平台手动配置。
 2. 把凭证写入 `.claude-bot/config.json`（权限 `0600`），并把 `.claude-bot/` 加进 `.gitignore`。
-3. 生成值守流程 `.claude/commands/bot.md`，可以按项目约定修改。
+3. 生成值守流程 `.claude/commands/bot.md`（值守飞书消息和 GitHub 的 issue、PR），可以按项目约定修改。
 4. 验证连接：在飞书里给 bot 发一条私聊，收到「连接成功」的回复就说明收发都已打通。
 
 **2. 在 Claude Code 里挂上 loop**
