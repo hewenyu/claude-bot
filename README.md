@@ -2,6 +2,7 @@
 
 ![Go](https://img.shields.io/badge/go-1.27+-00ADD8?logo=go)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 把飞书 / Lark 机器人接到项目仓库里常驻的 Claude Code 会话上。
 
@@ -201,3 +202,7 @@ internal/atomicfile/     原子写文件
 接入新的聊天平台（比如 Discord）只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](PROTOCOL.md#3-渠道适配器)。
 
 `.claude/skills/` 下装了 Go 最佳实践相关的 skill（[samber/cc-skills-golang](https://github.com/samber/cc-skills-golang)），在这个仓库里开发时 Claude 会参照这些规范。
+
+## 许可证
+
+[MIT](LICENSE)。`.claude/skills/` 下的 skill 来自 [samber/cc-skills-golang](https://github.com/samber/cc-skills-golang)，沿用其各自声明的 MIT 许可。
