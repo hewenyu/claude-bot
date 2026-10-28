@@ -12,13 +12,18 @@ import (
 	"golang.org/x/term"
 
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 )
 
-const slackGuide = "https://github.com/hewenyu/claude-bot#接-slack可选"
+// Setup guides in the README.
+const (
+	slackGuide  = "https://github.com/hewenyu/claude-bot#选-slack-时"
+	githubGuide = "https://github.com/hewenyu/claude-bot#选-github-时"
+)
 
 // channelChoice is one entry of the init menu.
 type channelChoice struct {
@@ -32,6 +37,7 @@ var channelChoices = []channelChoice{
 	{name: discord.Name, label: "Discord（需要 bot token）"},
 	{name: telegram.Name, label: "Telegram（需要 @BotFather 给的 token）"},
 	{name: slack.Name, label: "Slack（需要 app token 和 bot token）"},
+	{name: github.Name, label: "GitHub（仓库的 issue、PR 和评论，需要 token）"},
 }
 
 func knownChannel(name string) bool {
@@ -55,6 +61,8 @@ func configured(cfg config.Config, name string) bool {
 		return cfg.Telegram != nil
 	case slack.Name:
 		return cfg.Slack != nil
+	case github.Name:
+		return cfg.GitHub != nil
 	}
 
 	return false
@@ -167,38 +175,54 @@ func (p *prompter) ask(what string) (string, error) {
 // askTokens fills in the tokens the chosen channel needs and the flags did
 // not give. Without a prompter it names the missing flag instead.
 func askTokens(o *initOptions, p *prompter) error {
-	var err error
-
 	switch o.channel {
 	case discord.Name:
-		if o.discordToken == "" {
-			if p == nil {
-				return fmt.Errorf("%w: --channel discord needs --discord-token", errUsage)
-			}
-
-			o.discordToken, err = p.ask("Discord bot token（Developer Portal → Bot → Reset Token）")
-		}
+		return askToken(p, o.channel, "--discord-token", "", "Discord bot token（Developer Portal → Bot → Reset Token）", &o.discordToken)
 	case telegram.Name:
-		if o.telegramToken == "" {
-			if p == nil {
-				return fmt.Errorf("%w: --channel telegram needs --telegram-token", errUsage)
-			}
-
-			o.telegramToken, err = p.ask("Telegram bot token（@BotFather → /newbot）")
-		}
+		return askToken(p, o.channel, "--telegram-token", "", "Telegram bot token（@BotFather → /newbot）", &o.telegramToken)
+	case github.Name:
+		return askToken(p, o.channel, "--github-token", "token 的获取和权限见："+githubGuide,
+			"GitHub token（Settings → Developer settings → Personal access tokens）", &o.githubToken)
 	case slack.Name:
-		if o.slackBotToken == "" {
-			if p == nil {
-				return fmt.Errorf("%w: --channel slack needs --slack-app-token and --slack-bot-token", errUsage)
-			}
-
-			p.say("先按 README 里的 manifest 创建 Slack 应用：%s\n", slackGuide)
-
-			if o.slackAppToken, err = p.ask("App-Level Token（xapp-…）"); err == nil {
-				o.slackBotToken, err = p.ask("Bot User OAuth Token（xoxb-…）")
-			}
+		if o.slackBotToken != "" {
+			return nil
 		}
+
+		if p == nil {
+			return fmt.Errorf("%w: --channel slack needs --slack-app-token and --slack-bot-token", errUsage)
+		}
+
+		p.say("先按 README 里的 manifest 创建 Slack 应用：%s\n", slackGuide)
+
+		var err error
+		if o.slackAppToken, err = p.ask("App-Level Token（xapp-…）"); err == nil {
+			o.slackBotToken, err = p.ask("Bot User OAuth Token（xoxb-…）")
+		}
+
+		return err
 	}
+
+	return nil
+}
+
+// askToken asks for one token unless its flag gave it; hint, if any, is
+// shown first.
+func askToken(p *prompter, name, flagName, hint, what string, token *string) error {
+	if *token != "" {
+		return nil
+	}
+
+	if p == nil {
+		return fmt.Errorf("%w: --channel %s needs %s", errUsage, name, flagName)
+	}
+
+	if hint != "" {
+		p.say("%s\n", hint)
+	}
+
+	var err error
+
+	*token, err = p.ask(what)
 
 	return err
 }

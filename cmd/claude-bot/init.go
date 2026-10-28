@@ -15,6 +15,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
@@ -33,10 +34,11 @@ const (
 var quiet = slog.New(slog.DiscardHandler)
 
 type initOptions struct {
-	channel                             string // lark, discord, telegram or slack
+	channel                             string // lark, discord, telegram, slack or github
 	appID, secret, domain, proxy, name  string
 	discordToken, telegramToken         string
 	slackAppToken, slackBotToken        string
+	githubToken, githubRepo             string
 	reregister, noOpen, noVerify, force bool
 	botMD                               bool // only rewrite the /bot command
 }
@@ -99,7 +101,7 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 
 	fmt.Println("\n下一步：在这个仓库里打开 Claude Code，运行  /loop /bot")
 	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
-	fmt.Println("要再接入其他渠道，运行  claude-bot init --channel <lark|discord|telegram|slack>")
+	fmt.Println("要再接入其他渠道，运行  claude-bot init --channel <lark|discord|telegram|slack|github>")
 
 	return nil
 }
@@ -149,7 +151,7 @@ func rewriteBotCommand(root string) error {
 type setup struct {
 	ch     channel.Channel
 	name   string                // the bot's display name
-	prompt string                // asks the user to send the bot a direct message
+	prompt string                // asks the user to send the bot a direct message; "" skips the check
 	report func(context.Context) // prints what is left to do on the platform
 }
 
@@ -163,6 +165,8 @@ func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root s
 		return setupTelegram(ctx, cfg, o)
 	case slack.Name:
 		return setupSlack(ctx, cfg, o)
+	case github.Name:
+		return setupGitHub(ctx, cfg, o, root)
 	}
 
 	return setupLark(ctx, cfg, o, root)
@@ -172,7 +176,7 @@ func parseInitFlags(args []string) (initOptions, error) {
 	var o initOptions
 
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.StringVar(&o.channel, "channel", "", "lark, discord, telegram or slack (default: ask on a terminal, else lark)")
+	fs.StringVar(&o.channel, "channel", "", "lark, discord, telegram, slack or github (default: ask on a terminal, else lark)")
 	fs.BoolVar(&o.botMD, "bot-md", false, "only rewrite .claude/commands/bot.md with this version's (overwrites it), nothing else")
 	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
 	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
@@ -181,6 +185,8 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.StringVar(&o.telegramToken, "telegram-token", "", "set up a Telegram bot with this token from @BotFather instead of a Lark app")
 	fs.StringVar(&o.slackAppToken, "slack-app-token", "", "set up a Slack app: its app-level token (xapp-…), with --slack-bot-token")
 	fs.StringVar(&o.slackBotToken, "slack-bot-token", "", "set up a Slack app: its bot token (xoxb-…), with --slack-app-token")
+	fs.StringVar(&o.githubToken, "github-token", "", "set up the GitHub channel with this token (issues, PRs, comments and reviews of the repository)")
+	fs.StringVar(&o.githubRepo, "github-repo", "", "with --github-token: <owner>/<name> (default: from the origin remote)")
 	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu, env for the others)")
 	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
 	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
@@ -213,6 +219,7 @@ func settleChannel(o *initOptions) error {
 		discord.Name:  o.discordToken != "",
 		telegram.Name: o.telegramToken != "",
 		slack.Name:    o.slackBotToken != "",
+		github.Name:   o.githubToken != "",
 	} {
 		if set {
 			implied = append(implied, name)
@@ -223,13 +230,13 @@ func settleChannel(o *initOptions) error {
 	case o.botMD && (o.channel != "" || len(implied) > 0):
 		return fmt.Errorf("%w: --bot-md only rewrites the /bot command; run it without channel flags", errUsage)
 	case len(implied) > 1:
-		return fmt.Errorf("%w: --app-id, --discord-token, --telegram-token and --slack-*-token set up different channels; run init once for each", errUsage)
+		return fmt.Errorf("%w: --app-id, --discord-token, --telegram-token, --slack-*-token and --github-token set up different channels; run init once for each", errUsage)
 	case len(implied) == 1 && o.channel != "" && o.channel != implied[0]:
 		return fmt.Errorf("%w: --channel %s does not match the %s credentials given", errUsage, o.channel, implied[0])
 	case len(implied) == 1:
 		o.channel = implied[0]
 	case o.channel != "" && !knownChannel(o.channel):
-		return fmt.Errorf("%w: unknown --channel %q: want lark, discord, telegram or slack", errUsage, o.channel)
+		return fmt.Errorf("%w: unknown --channel %q: want lark, discord, telegram, slack or github", errUsage, o.channel)
 	}
 
 	return nil
@@ -245,8 +252,13 @@ func withTimeout[T any](ctx context.Context, f func(context.Context) (T, error))
 
 // verifyConnection proves the round trip: the user sends the bot a direct
 // message, the bot answers it. Anything else that arrives meanwhile is kept
-// in the inbox.
+// in the inbox. Without a prompt (no direct messages, as on GitHub) there is
+// nothing to check.
 func verifyConnection(ctx context.Context, dir string, ch channel.Channel, prompt string) error {
+	if prompt == "" {
+		return nil
+	}
+
 	a := assemble(dir, newLogger(), ch)
 
 	if _, alive := readHeartbeat(a.dir); alive {

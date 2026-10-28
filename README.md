@@ -7,7 +7,7 @@
 
 **在群里 @ 一下，Claude Code 就去仓库里把活干了。**
 
-把飞书 / Lark、Discord、Telegram 或 Slack 机器人接到项目仓库里常驻的 Claude Code 会话上。
+把飞书 / Lark、Discord、Telegram 或 Slack 机器人接到项目仓库里常驻的 Claude Code 会话上，GitHub 的 issue 和 PR 也可以作为一个渠道接进来。
 
 项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它还会用 `gh` 盯仓库的 issue 和 PR：值得做的就修复、实现或在本地验证后合并，然后打 tag 发版；不值得做的也会回复说明理由。
 
@@ -19,7 +19,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，家里的电脑、公司内网都能用，不用配域名、HTTPS 和回调地址。
 - **一个仓库一个 bot**：凭证、收件箱、监听进程都放在仓库自己的 `.claude-bot/` 里，多个项目可以同时值守、互不影响。
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就会自动建好应用、配好权限；其他渠道粘贴 token 即可。最后发一条私聊验证收发都已打通。
-- **聊天之外还管 GitHub**：盯新开的 issue 和 PR，值得做的修复后合并、打 tag 发版，PR 要在本地实际跑过才会合并；不值得做的也会回复理由。
+- **聊天之外还管 GitHub**：盯新开的 issue 和 PR，值得做的修复后合并、打 tag 发版，PR 要在本地实际跑过才会合并；不值得做的也会回复理由。默认由 Claude 用 `gh` 每轮扫一遍；也可以把 GitHub 接成渠道，用 token 把 issue、PR、评论和 review 直接收进收件箱，和聊天消息一起排队处理。
 - **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理。按顺序串行处理，同一时间只有一个任务在改代码。
 - **工具保持简单**：单个 Go 二进制，只负责收发消息，没有数据库，也不需要额外的服务。值守流程是一个 Markdown 文件（`.claude/commands/bot.md`），可以按项目约定修改。
 
@@ -86,17 +86,17 @@ cd your-project
 claude-bot init
 ```
 
-`init` 会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram 或 Slack 时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
+`init` 会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack、GitHub）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram、Slack 或 GitHub 时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
 
-不管选哪个渠道，`init` 都会把凭证写入 `.claude-bot/config.json`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通。
+不管选哪个渠道，`init` 都会把凭证写入 `.claude-bot/config.json`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通（GitHub 没有私聊，只检查 token 能不能访问仓库）。
 
-**选飞书时**
+#### 选飞书时
 
 `init` 会打开浏览器，走飞书官方的应用注册授权流程。登录后点「确认」，就会创建好应用，并配置好机器人能力、[权限](#权限)和事件订阅（长连接），不用去开放平台手动配置。已经有应用的话，用 `--app-id` 和 `--app-secret` 接入。
 
 `.claude/commands/bot.md` 是值守流程（处理聊天消息和 GitHub 的 issue、PR），可以按项目约定修改。
 
-**选 Discord 时**
+#### 选 Discord 时
 
 1. 在 [Discord Developer Portal](https://discord.com/developers/applications) 新建一个应用，在 Bot 页面点 Reset Token 拿到 token。
 2. 在 `init` 的菜单里选 Discord 后粘贴 token，或者直接运行：
@@ -109,7 +109,7 @@ claude-bot init
 
 不需要开启 Message Content 这个特权 intent：私聊和 @ 了 bot 的消息，Discord 总会给出正文，而 bot 只处理这两种。在服务器里要 @ bot 本人；@ 它的同名角色不会被投递。
 
-**选 Telegram 时**
+#### 选 Telegram 时
 
 1. 在 Telegram 里找 [@BotFather](https://t.me/BotFather)，发 `/newbot` 建一个 bot，拿到 token。每个项目建一个。
 2. 建议关掉隐私模式：给 @BotFather 发 `/setprivacy`，选这个 bot，再选 `Disable`。开着隐私模式时，群里 @bot 的普通消息可能收不到。关掉后 bot 也只处理 @ 它或回复它的消息。如果 bot 已经在群里，要移出群再拉回来才生效。
@@ -123,7 +123,7 @@ claude-bot init
 
 Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram 上不可用。作为替代，回复某条消息时，被回复的内容会以引用（`> 名字: …`）的形式放在 `text` 开头。国内访问 Telegram 需要代理，默认使用环境变量里的代理，见[代理](#代理)。
 
-**选 Slack 时**
+#### 选 Slack 时
 
 1. 在 [Slack API](https://api.slack.com/apps) 点 Create New App → From a manifest，选工作区，粘贴下面的 manifest（把名字改成项目名）。它会开启 Socket Mode，所以同样不需要公网地址：
 
@@ -168,6 +168,37 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
 
 在频道里 @bot 的消息，回复会发在这条消息的 thread 里，并 @ 提问的人；私信里直接回复。回复里的 `<!channel>`、`<!here>` 这类全员提醒不会生效。
 
+#### 选 GitHub 时
+
+接了 GitHub 渠道之后，Claude 不用每轮跑 `gh` 去扫仓库：新开的 issue 和 PR、issue 和 PR 下的评论、PR 的 review 和行内 review 评论，都会进收件箱（只收人发的，Actions、Dependabot 这类 bot 的不收）。Claude 回复时会在原 issue 或 PR 下发评论并 @ 对方，行内 review 评论回在同一个讨论串里。同样不需要公网地址和 webhook：监听进程每 30 秒轮询一次 REST API，没有新动态时 GitHub 返回 304，不占限流额度。
+
+1. 建一个 token。推荐 [fine-grained token](https://github.com/settings/personal-access-tokens/new)，只选这个仓库，权限：
+   - Issues：读写
+   - Pull requests：读写
+   - Contents：读写（合并 PR 要用，只回复的话可以只读）
+   - Metadata：只读（默认就有）
+2. 在 `init` 的菜单里选 GitHub 后粘贴 token，或者直接运行：
+
+   ```bash
+   claude-bot init --github-token <token>
+   ```
+
+   仓库默认从 `origin` 远程地址读出来，不是 GitHub 地址时用 `--github-repo <owner>/<name>` 指定。它会检查 token 能不能访问这个仓库、有没有写权限。
+
+用谁的 token，回复就显示成谁发的。可以单独注册一个机器人账号，也可以直接用自己的。用自己的也没关系：bot 发的评论末尾都带一个隐藏标记 `<!-- claude-bot -->`，只有带标记的才会被跳过，你自己手写的评论照样会进收件箱。
+
+监听进程第一次启动时，会把还开着、而且最后一条评论不是 bot 回复的 issue 和 PR 放进收件箱；已经处理过（回复过或者 `done` 过）的不会再进来。
+
+回复之外的操作用 `claude-bot github`：
+
+```bash
+claude-bot github close <id> [--not-planned]               # 关 issue 或 PR
+claude-bot github merge <id> [--method squash|merge|rebase] # 合并 PR，默认 squash
+claude-bot github review <id> approve|request-changes|comment [text|-]
+```
+
+`<id>` 是收件箱里的 `github:<owner>/<repo>/<编号>`，带 `#c…`（评论）、`#r…`（行内 review 评论）、`#v…`（review）后缀的也可以，会作用在所属的 issue 或 PR 上。
+
 **2. 在 Claude Code 里挂上 loop**
 
 ```
@@ -192,7 +223,8 @@ claude-bot [-C <repo>] <command> [args]
 | `done <id>...` | 标记为已处理，不回复 |
 | `get <id>` | 获取任意一条消息，比如 `reply_to` 指向的那条 |
 | `download <id>` | 下载消息附件到 `.claude-bot/files/<消息>/`，输出文件路径 |
-| `send <channel>:<chat_id> [text\|-]` | 主动发消息到某个会话 |
+| `send <channel>:<chat_id> [text\|-]` | 主动发消息到某个会话；GitHub 上是在 `github:<owner>/<repo>/<编号>` 下发评论 |
+| `github close\|merge\|review <id> …` | 关 issue 或 PR、合并 PR、提交 review，见[选 GitHub 时](#选-github-时) |
 | `serve` | 在前台运行监听进程 |
 | `status` | 查看 bot 身份、监听进程状态和待处理消息数 |
 | `version` | 查看版本 |
@@ -203,12 +235,13 @@ claude-bot [-C <repo>] <command> [args]
 
 | 参数 | 说明 |
 |---|---|
-| `--channel lark\|discord\|telegram\|slack` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
+| `--channel lark\|discord\|telegram\|slack\|github` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
 | `--bot-md` | 只用当前版本覆盖 `.claude/commands/bot.md`，不动任何配置。升级 claude-bot 后用它更新值守流程 |
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
 | `--discord-token` | 接入 Discord bot |
 | `--telegram-token` | 接入 Telegram bot |
 | `--slack-app-token`、`--slack-bot-token` | 接入 Slack 应用，两个一起用 |
+| `--github-token`、`--github-repo` | 接入 GitHub 渠道；仓库默认取 `origin` |
 | `--domain feishu\|lark` | 配合 `--app-id` 使用，指定国内版或国际版，默认 `feishu` |
 | `--proxy direct\|env\|<url>` | 网络代理，见[代理](#代理) |
 | `--name` | bot 名称，默认 `<仓库名> Bot` |
@@ -256,7 +289,7 @@ claude-bot [-C <repo>] <command> [args]
 
 ### 代理
 
-飞书默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到 `open.feishu.cn` 的 TLS 连接失败。Lark 国际版、Discord、Telegram 和 Slack 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
+飞书默认直连，不读取 `HTTPS_PROXY`，因为很多本地代理会让到 `open.feishu.cn` 的 TLS 连接失败。Lark 国际版、Discord、Telegram、Slack 和 GitHub 默认使用环境变量里的代理。可以用 `init --proxy env` 或 `--proxy http://host:port` 修改。
 
 ### 权限
 
@@ -323,6 +356,7 @@ internal/channel/lark/   飞书 / Lark 适配器、应用注册流程
 internal/channel/discord/ Discord 适配器
 internal/channel/telegram/ Telegram 适配器（Bot API 长轮询）
 internal/channel/slack/  Slack 适配器（Socket Mode）
+internal/channel/github/ GitHub 适配器（REST API 轮询 issue、PR、评论和 review）
 internal/markdown/       各适配器共用的 Markdown 拆分
 internal/inbox/          基于文件的收件箱
 internal/config/         项目定位和凭证加载

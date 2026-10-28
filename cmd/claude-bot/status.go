@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
@@ -21,6 +22,7 @@ type status struct {
 	Discord  *discordStatus  `json:"discord,omitempty"`
 	Telegram *telegramStatus `json:"telegram,omitempty"`
 	Slack    *slackStatus    `json:"slack,omitempty"`
+	GitHub   *githubStatus   `json:"github,omitempty"`
 }
 
 type listenerStatus struct {
@@ -57,6 +59,14 @@ type telegramStatus struct {
 // slackStatus is the Slack bot's identity, or why it could not be fetched.
 type slackStatus struct {
 	slack.Bot
+
+	Error string `json:"error,omitempty"`
+}
+
+// githubStatus is the account the GitHub token acts as, or why it could not
+// be checked.
+type githubStatus struct {
+	github.Account
 
 	Error string `json:"error,omitempty"`
 }
@@ -115,14 +125,40 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 		}
 	}
 
-	if ch, ok := a.channels[slack.Name].(*slack.Channel); ok {
-		bot, err := ch.Bot(ctx)
-		s.Slack = &slackStatus{Bot: bot}
-
-		if err != nil {
-			s.Slack.Error = err.Error()
-		}
-	}
+	s.Slack = slackIdentity(ctx, a)
+	s.GitHub = githubIdentity(ctx, a)
 
 	return printJSON(s)
+}
+
+func slackIdentity(ctx context.Context, a *app) *slackStatus {
+	ch, ok := a.channels[slack.Name].(*slack.Channel)
+	if !ok {
+		return nil
+	}
+
+	bot, err := ch.Bot(ctx)
+	s := &slackStatus{Bot: bot}
+
+	if err != nil {
+		s.Error = err.Error()
+	}
+
+	return s
+}
+
+func githubIdentity(ctx context.Context, a *app) *githubStatus {
+	ch, ok := a.channels[github.Name].(*github.Channel)
+	if !ok {
+		return nil
+	}
+
+	acct, err := ch.Account(ctx)
+	s := &githubStatus{Account: acct}
+
+	if err != nil {
+		s.Error = err.Error()
+	}
+
+	return s
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"log/slog"
 	"os"
@@ -263,12 +264,15 @@ func TestParseInitFlags_settlesChannel(t *testing.T) {
 		{args: []string{"--app-id", "cli_1", "--app-secret", "s"}, channel: "lark", ok: true},
 		{args: []string{"--channel", "telegram", "--telegram-token", "1:t"}, channel: "telegram", ok: true},
 		{args: []string{"--bot-md"}, ok: true},
+		{args: []string{"--github-token", "g", "--github-repo", "o/r"}, channel: "github", ok: true},
+		{args: []string{"--channel", "github"}, channel: "github", ok: true},
 		{args: []string{"--channel", "wechat"}},
 		{args: []string{"--channel", "discord", "--telegram-token", "1:t"}},
 		{args: []string{"--slack-bot-token", "xoxb-1"}},
 		{args: []string{"--telegram-token", "1:t", "--discord-token", "d"}},
 		{args: []string{"--app-id", "cli_1", "--app-secret", "s", "--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}},
 		{args: []string{"--bot-md", "--channel", "lark"}},
+		{args: []string{"--github-token", "g", "--discord-token", "d"}},
 	}
 
 	for _, tt := range tests {
@@ -318,6 +322,7 @@ func TestChooseChannel(t *testing.T) {
 		{input: "3\n", want: "telegram"},
 		{input: "4", want: "slack"}, // no trailing newline
 		{input: "x\n9\n2\n", want: "discord"},
+		{input: "5\n", want: "github"},
 	}
 
 	for _, tt := range tests {
@@ -373,9 +378,39 @@ func TestAskTokens(t *testing.T) {
 		t.Errorf("askTokens without terminal or flag = %v, want a usage error naming the flag", err)
 	}
 
+	gh, out := testPrompter("", "ghp_1")
+	o = initOptions{channel: "github"}
+
+	if err := askTokens(&o, gh); err != nil || o.githubToken != "ghp_1" || !strings.Contains(out.String(), githubGuide) {
+		t.Errorf("askTokens(github) = %v, token %q, said %q", err, o.githubToken, out.String())
+	}
+
+	if err := askTokens(&initOptions{channel: "github"}, nil); !errors.Is(err, errUsage) {
+		t.Errorf("askTokens(github) without terminal or flag = %v, want a usage error", err)
+	}
+
 	empty, _ := testPrompter("", "  ")
 	if err := askTokens(&initOptions{channel: "telegram"}, empty); !errors.Is(err, errUsage) {
 		t.Errorf("askTokens with an empty answer = %v, want a usage error", err)
+	}
+}
+
+func TestParseInterleaved(t *testing.T) {
+	t.Parallel()
+
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	notPlanned := fs.Bool("not-planned", false, "")
+	method := fs.String("method", "squash", "")
+
+	pos, err := parseInterleaved(fs, []string{"github:o/r/1", "--not-planned", "-", "--method", "rebase", "x"})
+	if err != nil || !*notPlanned || *method != "rebase" || !reflect.DeepEqual(pos, []string{"github:o/r/1", "-", "x"}) {
+		t.Errorf("parseInterleaved = %q, %v; not-planned %v, method %q", pos, err, *notPlanned, *method)
+	}
+
+	if _, err := parseInterleaved(fs, []string{"id", "--bogus"}); !errors.Is(err, errUsage) {
+		t.Errorf("parseInterleaved with an unknown flag = %v, want a usage error", err)
 	}
 }
 

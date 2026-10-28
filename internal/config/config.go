@@ -15,6 +15,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
@@ -47,6 +48,7 @@ type Config struct {
 	Discord  *discord.Config  `json:"discord,omitempty"`
 	Telegram *telegram.Config `json:"telegram,omitempty"`
 	Slack    *slack.Config    `json:"slack,omitempty"`
+	GitHub   *github.Config   `json:"github,omitempty"`
 }
 
 // Dir returns <project root>/.claude-bot. The project root is, in order: the

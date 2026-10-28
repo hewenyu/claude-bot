@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"strings"
 
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
@@ -103,4 +106,64 @@ func setupSlack(ctx context.Context, cfg *config.Config, o initOptions) (setup, 
 			fmt.Printf("在要用的频道里输入 /invite @%s 把 bot 拉进去。\n", bot.Name)
 		},
 	}, nil
+}
+
+// setupGitHub checks a GitHub token against the repository and records it
+// in cfg. GitHub has no direct messages, so there is no round-trip check.
+func setupGitHub(ctx context.Context, cfg *config.Config, o initOptions, root string) (setup, error) {
+	repo := o.githubRepo
+	if repo == "" {
+		var err error
+		if repo, err = originRepo(ctx, root); err != nil {
+			return setup{}, err
+		}
+	}
+
+	gcfg := github.Config{Token: o.githubToken, Repo: repo, Proxy: o.proxy}
+
+	ch, err := github.New(gcfg, quiet)
+	if err != nil {
+		return setup{}, err
+	}
+
+	acct, err := withTimeout(ctx, ch.Account)
+	if err != nil {
+		return setup{}, fmt.Errorf("github token check failed (nothing written): %w", err)
+	}
+
+	cfg.GitHub = &gcfg
+
+	return setup{
+		ch:     ch,
+		name:   acct.Login + " @ " + acct.Repo,
+		report: func(context.Context) { reportGitHub(acct) },
+	}, nil
+}
+
+// originRepo reads <owner>/<name> from the repository's origin remote.
+func originRepo(ctx context.Context, root string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = root
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("%w: no origin remote to take the repository from; pass --github-repo <owner>/<name>", errUsage)
+	}
+
+	repo, ok := github.RepoFromRemote(string(out))
+	if !ok {
+		return "", fmt.Errorf("%w: origin %s is not on github.com; pass --github-repo <owner>/<name>", errUsage, strings.TrimSpace(string(out)))
+	}
+
+	return repo, nil
+}
+
+func reportGitHub(acct github.Account) {
+	fmt.Printf("bot 用 %s 的身份回复；它发的评论末尾带隐藏标记 %s，靠这个和你手写的评论区分。\n", acct.Login, github.Marker)
+
+	if !acct.CanPush {
+		fmt.Println("! 这个 token 在仓库里没有写权限：能收消息、发评论，但 close / merge 会失败。")
+	}
+
+	fmt.Println("监听进程第一次启动时，会把还开着、最后一条不是 bot 回复的 issue 和 PR 放进 inbox。")
 }

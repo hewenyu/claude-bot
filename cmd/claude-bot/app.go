@@ -13,6 +13,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
@@ -45,7 +46,7 @@ const (
 	sharedPerm  = 0o644
 )
 
-var errNotConfigured = errors.New("no channel configured: run `claude-bot init` (Lark), or init with --discord-token, --telegram-token or --slack-app-token and --slack-bot-token in the project; or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, or SLACK_APP_TOKEN and SLACK_BOT_TOKEN")
+var errNotConfigured = errors.New("no channel configured: run `claude-bot init` (Lark), or init with --discord-token, --telegram-token, --slack-app-token and --slack-bot-token, or --github-token in the project; or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, or SLACK_APP_TOKEN and SLACK_BOT_TOKEN")
 
 func newApp(ctx context.Context, project string) (*app, error) {
 	dir, err := config.Dir(ctx, project)
@@ -60,42 +61,9 @@ func newApp(ctx context.Context, project string) (*app, error) {
 
 	log := newLogger()
 
-	var channels []channel.Channel
-
-	if cfg.Lark != nil {
-		ch, err := lark.New(*cfg.Lark, log)
-		if err != nil {
-			return nil, err
-		}
-
-		channels = append(channels, ch)
-	}
-
-	if cfg.Discord != nil {
-		ch, err := discord.New(*cfg.Discord, log)
-		if err != nil {
-			return nil, err
-		}
-
-		channels = append(channels, ch)
-	}
-
-	if cfg.Telegram != nil {
-		ch, err := telegram.New(*cfg.Telegram, log)
-		if err != nil {
-			return nil, err
-		}
-
-		channels = append(channels, ch)
-	}
-
-	if cfg.Slack != nil {
-		ch, err := slack.New(*cfg.Slack, log)
-		if err != nil {
-			return nil, err
-		}
-
-		channels = append(channels, ch)
+	channels, err := openChannels(cfg, log)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(channels) == 0 {
@@ -103,6 +71,37 @@ func newApp(ctx context.Context, project string) (*app, error) {
 	}
 
 	return assemble(dir, log, channels...), nil
+}
+
+// openChannels builds the adapters of the configured channels.
+func openChannels(cfg config.Config, log *slog.Logger) ([]channel.Channel, error) {
+	var chs []channel.Channel
+
+	err := errors.Join(
+		addChannel(&chs, cfg.Lark, lark.New, log),
+		addChannel(&chs, cfg.Discord, discord.New, log),
+		addChannel(&chs, cfg.Telegram, telegram.New, log),
+		addChannel(&chs, cfg.Slack, slack.New, log),
+		addChannel(&chs, cfg.GitHub, github.New, log),
+	)
+
+	return chs, err
+}
+
+// addChannel appends the adapter newChannel builds for cfg, if it is set.
+func addChannel[C any, T channel.Channel](chs *[]channel.Channel, cfg *C, newChannel func(C, *slog.Logger) (T, error), log *slog.Logger) error {
+	if cfg == nil {
+		return nil
+	}
+
+	ch, err := newChannel(*cfg, log)
+	if err != nil {
+		return err
+	}
+
+	*chs = append(*chs, ch)
+
+	return nil
 }
 
 // assemble builds an app over already constructed channels.
