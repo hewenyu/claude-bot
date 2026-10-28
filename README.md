@@ -13,16 +13,31 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 ## 工作原理
 
 ```
- 飞书私聊 / 群里 @bot ──长连接──▶ claude-bot serve ──▶ .claude-bot/inbox/
+ 私聊 bot / 群里 @bot                 ┌──▶ 给原消息加表情：收到了
+ （飞书、Discord、Telegram、Slack）    │
+        ──长连接 / 长轮询──▶ claude-bot serve ──▶ .claude-bot/inbox/
                                                            │
  Claude Code (/loop /bot) ◀──── claude-bot inbox --wait ───┘
           │
-          └── claude-bot reply <id> ──▶ 飞书（原消息下回复，群里 @ 发送者）
+          └── claude-bot reply <id> ──▶ 原消息下回复（群里 @ 发送者）
 ```
 
-- **不需要公网地址**：通过飞书的长连接（WebSocket）接收事件。
-- **一个仓库一个 bot**：凭证、收件箱、监听进程都放在仓库自己的 `.claude-bot/` 里，多个项目可以同时值守。
+- **不需要公网地址**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，Telegram 用长轮询，都是从本机主动连出去的。
+- **一个仓库一个 bot**：凭证、收件箱、监听进程都放在仓库自己的 `.claude-bot/` 里，多个项目可以同时值守。一个仓库里可以同时接多个渠道。
 - **监听进程按需启动**：第一次执行 `claude-bot inbox` 时，会在后台自动拉起 `serve`。
+
+### 多条消息怎么处理
+
+一个仓库只有一个 Claude Code 会话在值守，消息是**按顺序一条一条处理**的：
+
+1. **到了就落盘**：监听进程收到消息后，马上写进 `.claude-bot/inbox/pending/`（一条一个文件，平台重复投递会去重），并给原消息加一个表情（飞书是 OnIt，其他渠道是 👀），发消息的人立刻知道 bot 已经收到。
+2. **先到先处理**：每一轮 `claude-bot inbox` 会取出所有待处理的消息，最早的排在前面。Claude 逐条排查、修改、测试、回复。回复之后，这条消息才移到 `inbox/done/`。
+3. **处理中新来的消息排在后面**：在收件箱里等着，当前这批处理完后的下一轮再取。
+4. **不会丢**：Claude Code 会话中断、电脑重启都不影响，没有回复的消息一直留在 `pending/` 里，重新 `/loop /bot` 之后接着处理。
+
+串行的好处是同一时间只有一个任务在改代码，提交和发版不会互相冲突。代价是排在后面的人要等前面的任务做完，比如前面是一个要改半小时代码的 bug，后面一个一句话就能回答的问题也要等。遇到耗时长的任务，Claude 会先用 `reply --keep` 回一句「收到，正在看」，做完再正式回复。
+
+想知道还有多少条在排队，可以运行 `claude-bot status`，看 `pending` 字段。
 
 协议细节和接入新渠道的方法见 [PROTOCOL.md](PROTOCOL.md)。
 
@@ -60,17 +75,18 @@ claude-bot init
 
 `init` 会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram 或 Slack 时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
 
-选飞书时，`init` 会：
+不管选哪个渠道，`init` 都会把凭证写入 `.claude-bot/config.json`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通。
 
-1. 打开浏览器，走飞书官方的应用注册授权流程。登录后点「确认」，就会创建好应用，并配置好机器人能力、[权限](#权限)和事件订阅（长连接），不用去开放平台手动配置。
-2. 把凭证写入 `.claude-bot/config.json`（权限 `0600`），并把 `.claude-bot/` 加进 `.gitignore`。
-3. 生成值守流程 `.claude/commands/bot.md`（值守飞书消息和 GitHub 的 issue、PR），可以按项目约定修改。
-4. 验证连接：在飞书里给 bot 发一条私聊，收到「连接成功」的回复就说明收发都已打通。
+**选飞书时**
 
-**接 Discord（可选，可以和飞书同时用）**
+`init` 会打开浏览器，走飞书官方的应用注册授权流程。登录后点「确认」，就会创建好应用，并配置好机器人能力、[权限](#权限)和事件订阅（长连接），不用去开放平台手动配置。已经有应用的话，用 `--app-id` 和 `--app-secret` 接入。
+
+`.claude/commands/bot.md` 是值守流程（处理聊天消息和 GitHub 的 issue、PR），可以按项目约定修改。
+
+**选 Discord 时**
 
 1. 在 [Discord Developer Portal](https://discord.com/developers/applications) 新建一个应用，在 Bot 页面点 Reset Token 拿到 token。
-2. 在仓库里运行：
+2. 在 `init` 的菜单里选 Discord 后粘贴 token，或者直接运行：
 
    ```bash
    claude-bot init --discord-token <token>
@@ -80,11 +96,11 @@ claude-bot init
 
 不需要开启 Message Content 这个特权 intent：私聊和 @ 了 bot 的消息，Discord 总会给出正文，而 bot 只处理这两种。在服务器里要 @ bot 本人；@ 它的同名角色不会被投递。
 
-**接 Telegram（可选）**
+**选 Telegram 时**
 
 1. 在 Telegram 里找 [@BotFather](https://t.me/BotFather)，发 `/newbot` 建一个 bot，拿到 token。每个项目建一个。
 2. 建议关掉隐私模式：给 @BotFather 发 `/setprivacy`，选这个 bot，再选 `Disable`。开着隐私模式时，群里 @bot 的普通消息可能收不到。关掉后 bot 也只处理 @ 它或回复它的消息。如果 bot 已经在群里，要移出群再拉回来才生效。
-3. 在仓库里运行：
+3. 在 `init` 的菜单里选 Telegram 后粘贴 token，或者直接运行：
 
    ```bash
    claude-bot init --telegram-token <token>
@@ -94,7 +110,7 @@ claude-bot init
 
 Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram 上不可用。作为替代，回复某条消息时，被回复的内容会以引用（`> 名字: …`）的形式放在 `text` 开头。国内访问 Telegram 需要代理，默认使用环境变量里的代理，见[代理](#代理)。
 
-**接 Slack（可选）**
+**选 Slack 时**
 
 1. 在 [Slack API](https://api.slack.com/apps) 点 Create New App → From a manifest，选工作区，粘贴下面的 manifest（把名字改成项目名）。它会开启 Socket Mode，所以同样不需要公网地址：
 
@@ -129,7 +145,7 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
    ```
 
 2. 在 Basic Information → App-Level Tokens 里生成一个带 `connections:write` 的 token（`xapp-` 开头）；在 Install App 里装到工作区，拿到 Bot User OAuth Token（`xoxb-` 开头）。
-3. 在仓库里运行：
+3. 在 `init` 的菜单里选 Slack 后依次粘贴两个 token，或者直接运行：
 
    ```bash
    claude-bot init --slack-app-token xapp-… --slack-bot-token xoxb-…
@@ -264,9 +280,17 @@ Slack：manifest 里的 scope 依次用于：收 @bot 的消息、发消息、�
 
 授权链接也会打印在终端里，可以复制到任何已登录飞书的浏览器里打开，手机也可以。加 `--no-open` 则只打印链接。
 
-**监听进程起不来 / 连不上飞书**
+**监听进程起不来 / 连不上**
 
-运行 `claude-bot status` 查看状态，日志在 `.claude-bot/serve.log`。本机开了代理的情况见[代理](#代理)。
+运行 `claude-bot status` 查看状态，日志在 `.claude-bot/serve.log`。监听进程启动时如果 token 无效（比如已被撤销），会直接退出，并在日志里写明原因，重新 `init` 一次即可。本机开了代理的情况见[代理](#代理)。
+
+**升级 claude-bot 之后**
+
+`go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest` 之后，运行 `claude-bot init --bot-md` 用新版本的值守流程覆盖 `.claude/commands/bot.md`（不动任何配置），再重启 `/loop /bot`。如果你改过 bot.md，先备份或者用 git 看一下差异。正在运行的监听进程还是旧版本，可以结束它（`claude-bot status` 里有 pid），下次 `inbox` 会自动用新版本拉起。
+
+**群里一次来了好几个任务**
+
+按到达顺序逐个处理，每条消息到达时都会先收到一个表情回应，见[多条消息怎么处理](#多条消息怎么处理)。
 
 ## 开发
 
