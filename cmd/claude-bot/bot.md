@@ -29,7 +29,7 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 ### 2. 收消息
 
-运行 `claude-bot inbox --wait 9m`（Bash 的 timeout 设为 600000）。每行输出是一条待处理消息（JSON）；没有输出说明 9 分钟内没人找你，本轮结束。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；其他报错按错误信息排查，比如看 `claude-bot status`。
+运行 `claude-bot inbox`，马上取出所有待处理的消息。每行输出是一条待处理消息（JSON）；没有输出说明没人找你，直接到第 3 步。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；其他报错按错误信息排查，比如看 `claude-bot status`。
 
 `id` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`、`dingtalk:<会话>/<消息>`、`github:<owner>/<repo>/<编号>`。逐条处理：
 
@@ -47,7 +47,15 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
    - 不需要回复的（纯表情、重复消息），用 `claude-bot done <id>` 标记。
    - 要主动通知某个群（比如发版通知），用 `claude-bot send <chat_id> "..."`，`chat_id` 由消息的 `channel` 和 `chat_id` 拼成，比如 `lark:oc_xxx`、`discord:123`、`telegram:-100123`、`slack:C123`、`dingtalk:cidXXX`。
 
-全部处理完，本轮结束。
+全部处理完，到第 3 步。
+
+### 3. 等下一条消息
+
+用 Bash 的 `run_in_background` 在后台运行 `claude-bot inbox --wait 55m`，然后结束本轮。来了消息它会马上退出，没消息就等满 55 分钟退出；它报错也会退出（报错按第 2 步说的处理）。它一退出就会把你叫醒：从第 1 步开始新的一轮。空闲时你不用运行，也不花 token。
+
+- **不要在前台等，也不要 sleep 轮询**它的输出文件。
+- 上一次的后台等待还在运行，就不要再开一个。
+- 用 `/loop /bot` 跑时，这个后台命令才是唤醒你的信号；`ScheduleWakeup` 只是兜底，设成 3600 秒。
 
 ## 改代码：一律走 PR
 

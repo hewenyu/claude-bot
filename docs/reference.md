@@ -9,7 +9,7 @@ claude-bot [-C <repo>] <command> [args]
 | 命令 | 说明 |
 |---|---|
 | `init` | 创建或接入 bot 应用，保存凭证，生成 `/bot` 命令，验证连接 |
-| `inbox [--wait 9m]` | 以 JSON Lines 输出待处理消息；监听进程没在运行时报错 |
+| `inbox [--wait 55m]` | 以 JSON Lines 输出待处理消息；监听进程没在运行时报错 |
 | `reply [--keep] <id> [text\|-]` | 在原消息下回复（Markdown），并标记为已处理 |
 | `done <id>...` | 标记为已处理，不回复 |
 | `get <id>` | 获取任意一条消息，比如 `reply_to` 指向的那条 |
