@@ -9,8 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/hewenyu/claude-bot/internal/config"
 )
 
 // Version is set at build time with -ldflags "-X main.Version=...".
@@ -55,7 +53,9 @@ const (
 	exitUsage   = 2
 )
 
-type command func(ctx context.Context, args []string) error
+// command runs a subcommand. project is the repository chosen with -C, or ""
+// to locate it from the working directory.
+type command func(ctx context.Context, project string, args []string) error
 
 var errUsage = errors.New("usage")
 
@@ -70,21 +70,16 @@ func run(ctx context.Context, args []string) int {
 		"download": cmdDownload,
 		"send":     cmdSend,
 		"status":   cmdStatus,
-		"version": func(context.Context, []string) error {
+		"version": func(context.Context, string, []string) error {
 			fmt.Println(Version)
 
 			return nil
 		},
 	}
 
+	var project string
 	if len(args) >= 2 && args[0] == "-C" {
-		if err := os.Setenv(config.ProjectEnv, args[1]); err != nil {
-			fmt.Fprintf(os.Stderr, "claude-bot: %v\n", err)
-
-			return exitFailure
-		}
-
-		args = args[2:]
+		project, args = args[1], args[2:]
 	}
 
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
@@ -100,7 +95,7 @@ func run(ctx context.Context, args []string) int {
 		return exitUsage
 	}
 
-	if err := cmd(ctx, args[1:]); err != nil {
+	if err := cmd(ctx, project, args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "claude-bot %s: %v\n", args[0], err)
 
 		if errors.Is(err, errUsage) {

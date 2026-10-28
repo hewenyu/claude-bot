@@ -111,6 +111,11 @@ linters:
       # Tests read fixtures and temp files by variable path by design.
       - path: _test\.go
         linters: [gosec, goconst]
+      # -C <repo> picks the project directory by design; every path below it
+      # is derived from that choice, not from untrusted input.
+      - path: cmd/claude-bot/
+        linters: [gosec]
+        text: G703
 
   settings:
     dupl:

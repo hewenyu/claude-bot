@@ -44,13 +44,13 @@ type initOptions struct {
 	reregister, noOpen, noVerify, force bool
 }
 
-func cmdInit(ctx context.Context, args []string) error {
+func cmdInit(ctx context.Context, project string, args []string) error {
 	o, err := parseInitFlags(args)
 	if err != nil {
 		return err
 	}
 
-	dir, err := config.Dir(ctx)
+	dir, err := config.Dir(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -365,7 +365,7 @@ func ensureLine(path, line string) error {
 
 	raw = append(raw, line+"\n"...)
 
-	if err := os.WriteFile(path, raw, sharedPerm); err != nil { //nolint:gosec // .gitignore is meant to be world-readable
+	if err := os.WriteFile(path, raw, sharedPerm); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 

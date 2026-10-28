@@ -26,7 +26,7 @@ const (
 	privatePerm = 0o600 // the file holds app secrets
 )
 
-// Environment variables read besides ProjectEnv.
+// Environment variables.
 const (
 	claudeProjectEnv = "CLAUDE_PROJECT_DIR" // set by Claude Code for its session
 	larkAppIDEnv     = "LARK_APP_ID"
@@ -39,17 +39,14 @@ type Config struct {
 	Lark *lark.Config `json:"lark,omitempty"`
 }
 
-// ProjectEnv selects the project explicitly (set by `claude-bot -C <dir>`).
-const ProjectEnv = "CLAUDE_BOT_PROJECT"
-
-// Dir returns <project root>/.claude-bot. The project root is, in order:
-// $CLAUDE_BOT_PROJECT (from -C), the git repository containing the working
-// directory, $CLAUDE_PROJECT_DIR (the Claude Code session root), the working
-// directory. Each repository therefore carries its own bots and state, and
-// several projects can run side by side.
-func Dir(ctx context.Context) (string, error) {
-	if root := os.Getenv(ProjectEnv); root != "" {
-		return projectDir(ctx, root)
+// Dir returns <project root>/.claude-bot. The project root is, in order: the
+// repository of project (from -C) if given, the git repository containing the
+// working directory, $CLAUDE_PROJECT_DIR (the Claude Code session root), the
+// working directory. Each repository therefore carries its own bots and
+// state, and several projects can run side by side.
+func Dir(ctx context.Context, project string) (string, error) {
+	if project != "" {
+		return projectDir(ctx, project)
 	}
 
 	wd, err := os.Getwd()
@@ -75,7 +72,7 @@ func projectDir(ctx context.Context, root string) (string, error) {
 		return "", fmt.Errorf("resolve project %s: %w", root, err)
 	}
 
-	if info, err := os.Stat(abs); err != nil || !info.IsDir() { //nolint:gosec // the user picks the project directory with -C
+	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
 		return "", fmt.Errorf("project %s is not a directory", root)
 	}
 
