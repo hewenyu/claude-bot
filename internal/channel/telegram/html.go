@@ -15,9 +15,9 @@ var (
 )
 
 const (
-	codeFence = "```"
-	backtick  = "`"
-	quote     = ">"
+	codeFence   = "```"
+	backtick    = "`"
+	quoteMarker = ">" // starts a quoted line
 )
 
 // toHTML renders the Markdown Claude writes as Telegram HTML: code blocks,
@@ -63,8 +63,8 @@ func toHTML(md string) string {
 			flushQuote()
 
 			inCode, lang = true, strings.TrimSpace(strings.TrimPrefix(trimmed, codeFence))
-		case strings.HasPrefix(trimmed, quote):
-			quotes = append(quotes, inline(strings.TrimSpace(strings.TrimPrefix(trimmed, quote))))
+		case strings.HasPrefix(trimmed, quoteMarker):
+			quotes = append(quotes, inline(strings.TrimSpace(strings.TrimPrefix(trimmed, quoteMarker))))
 		default:
 			flushQuote()
 

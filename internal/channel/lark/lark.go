@@ -10,11 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -62,11 +60,6 @@ const (
 	scopeGranted  = 1        // grant_status of an active permission
 )
 
-const (
-	dirPerm  = 0o750
-	filePerm = 0o600
-)
-
 // ackEmojis are tried in order; see the emoji_type list in the Lark docs.
 var ackEmojis = []string{"OnIt", "OK"}
 
@@ -105,15 +98,12 @@ func (c Config) BaseURL() string {
 
 // ProxyFunc returns the proxy selector used for both API and WebSocket traffic.
 func (c Config) ProxyFunc() (transport.ProxyFunc, error) {
-	mode := c.Proxy
-	if mode == "" {
-		mode = transport.ProxyDirect
-		if c.Domain == DomainLark {
-			mode = transport.ProxyEnv
-		}
+	fallback := transport.ProxyDirect
+	if c.Domain == DomainLark {
+		fallback = transport.ProxyEnv
 	}
 
-	proxy, err := transport.Proxy(mode)
+	proxy, err := transport.ProxyOr(c.Proxy, fallback)
 	if err != nil {
 		return nil, fmt.Errorf("lark: %w", err)
 	}
@@ -507,17 +497,13 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
-	data, err := io.ReadAll(resp.File)
+	data, err := transport.ReadAll(resp.File)
 	if err != nil {
-		return "", fmt.Errorf("lark download: read: %w", err)
-	}
-
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
-	path := filepath.Join(dir, fileName(att, resp.FileName, data))
-	if err := os.WriteFile(path, data, filePerm); err != nil {
+	path, err := channel.SaveFile(dir, fileName(att, resp.FileName, data), data)
+	if err != nil {
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
@@ -541,7 +527,7 @@ func fileName(att channel.Attachment, served string, data []byte) string {
 	}
 
 	if name == "" {
-		name = att.Key
+		name = channel.PathSafe(att.Key)
 	}
 
 	if filepath.Ext(name) == "" {

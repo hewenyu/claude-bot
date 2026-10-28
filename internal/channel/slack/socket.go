@@ -10,10 +10,11 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const (
-	backoffStart = 2 * time.Second
+	backoffStart = 2 * time.Second // first wait after a failed connection
 	backoffCap   = time.Minute
 	pingEvery    = 30 * time.Second
 	readTimeout  = 3 * pingEvery // no frame, not even a pong, for this long: reconnect
@@ -47,7 +48,7 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 		return err
 	}
 
-	var retry time.Duration
+	backoff := transport.Backoff{Start: backoffStart, Cap: backoffCap}
 
 	for {
 		connected, err := c.session(ctx, bot, deliver, ready)
@@ -58,7 +59,7 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 		case fatal(err) || errors.Is(err, errLinkDisabled):
 			return err
 		case connected:
-			retry = 0
+			backoff.Reset()
 		}
 
 		if err == nil && connected {
@@ -67,13 +68,11 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 			continue
 		}
 
-		retry = min(max(2*retry, backoffStart), backoffCap)
-		c.log.Warn("slack connection", "err", err, "retry_in", retry)
+		wait := backoff.Next()
+		c.log.Warn("slack connection", "err", err, "retry_in", wait)
 
-		select {
-		case <-ctx.Done():
+		if !transport.Sleep(ctx, wait) {
 			return nil
-		case <-time.After(retry):
 		}
 	}
 }
@@ -83,7 +82,7 @@ func (c *Channel) socketURL(ctx context.Context) (string, error) {
 	var r struct {
 		URL string `json:"url"`
 	}
-	if err := c.call(ctx, c.cfg.AppToken, "apps.connections.open", nil, &r); err != nil {
+	if err := c.call(ctx, c.cfg.AppToken, methodOpenSocket, nil, &r); err != nil {
 		return "", err
 	}
 

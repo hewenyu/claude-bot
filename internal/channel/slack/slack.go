@@ -10,12 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,20 +31,28 @@ const (
 	appTokenPrefix = "xapp-"
 	botTokenPrefix = "xoxb-"
 	clientTimeout  = 2 * time.Minute
-	maxResponse    = 16 << 20  // bound on an API answer
-	maxDownload    = 512 << 20 // well above what people attach to a bug report
-	maxMarkdownLen = 12000     // Slack's limit for markdown blocks per message
-	maxFallbackLen = 4000      // notification text Slack recommends at most
+	maxResponse    = 16 << 20 // bound on an API answer
+	maxMarkdownLen = 12000    // Slack's limit for markdown blocks per message
+	maxFallbackLen = 4000     // notification text Slack recommends at most
 	ackEmoji       = "eyes"
-	dirPerm        = 0o750
-	filePerm       = 0o600
 )
 
-// Scopes the bot token needs; the app manifest in the README grants them.
-var Scopes = []string{
-	"app_mentions:read", "chat:write", "im:history", "channels:history",
-	"groups:history", "mpim:history", "files:read", "reactions:write",
-}
+// Web API methods.
+const (
+	methodAuthTest    = "auth.test"
+	methodOpenSocket  = "apps.connections.open"
+	methodPostMessage = "chat.postMessage"
+	methodReplies     = "conversations.replies"
+	methodFileInfo    = "files.info"
+	methodAddReaction = "reactions.add"
+)
+
+// Block Kit types used in replies.
+const (
+	blockSection  = "section"
+	blockMarkdown = "markdown"
+	textMrkdwn    = "mrkdwn"
+)
 
 // Config holds the two tokens of the project's Slack app: the app-level
 // token (xapp-…, scope connections:write) opens the Socket Mode connection,
@@ -72,12 +77,7 @@ func (c Config) validate() error {
 
 // ProxyFunc returns the proxy selector used for both API and socket traffic.
 func (c Config) ProxyFunc() (transport.ProxyFunc, error) {
-	mode := c.Proxy
-	if mode == "" {
-		mode = transport.ProxyEnv
-	}
-
-	proxy, err := transport.Proxy(mode)
+	proxy, err := transport.ProxyOr(c.Proxy, transport.ProxyEnv)
 	if err != nil {
 		return nil, fmt.Errorf("slack: %w", err)
 	}
@@ -141,8 +141,6 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 		return *c.bot, nil
 	}
 
-	var b Bot
-
 	var r struct {
 		UserID string `json:"user_id"`
 		User   string `json:"user"`
@@ -150,12 +148,12 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 		Team   string `json:"team"`
 		URL    string `json:"url"`
 	}
-	if err := c.call(ctx, c.cfg.BotToken, "auth.test", nil, &r); err != nil {
-		return b, err
+	if err := c.call(ctx, c.cfg.BotToken, methodAuthTest, nil, &r); err != nil {
+		return Bot{}, err
 	}
 
 	if r.BotID == "" {
-		return b, fmt.Errorf("slack: the bot token belongs to a user (%s), not a bot", r.User)
+		return Bot{}, fmt.Errorf("slack: the bot token belongs to a user (%s), not a bot", r.User)
 	}
 
 	c.bot = &Bot{UserID: r.UserID, Name: r.User, BotID: r.BotID, Team: r.Team, URL: r.URL}
@@ -174,7 +172,7 @@ func (c *Channel) CheckAppToken(ctx context.Context) error {
 // into the message's thread (starting one if needed) and @-mentions the
 // sender; in a direct message it stays in the conversation or its thread.
 func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) error {
-	channelID, ts, err := locate(msg.ID)
+	channelID, ts, err := channel.LocateScoped(msg.ID)
 	if err != nil {
 		return err
 	}
@@ -212,11 +210,11 @@ func (c *Channel) post(ctx context.Context, channelID, thread, mention, text str
 		fallback := part
 
 		if i == 0 && mention != "" {
-			blocks = append(blocks, block{Type: "section", Text: textObject{Type: "mrkdwn", Text: mention}})
+			blocks = append(blocks, block{Type: blockSection, Text: textObject{Type: textMrkdwn, Text: mention}})
 			fallback = mention + " " + part
 		}
 
-		blocks = append(blocks, block{Type: "markdown", Text: part})
+		blocks = append(blocks, block{Type: blockMarkdown, Text: part})
 
 		raw, err := json.Marshal(blocks)
 		if err != nil {
@@ -234,7 +232,7 @@ func (c *Channel) post(ctx context.Context, channelID, thread, mention, text str
 			params.Set("thread_ts", thread)
 		}
 
-		if err := c.call(ctx, c.cfg.BotToken, "chat.postMessage", params, nil); err != nil {
+		if err := c.call(ctx, c.cfg.BotToken, methodPostMessage, params, nil); err != nil {
 			return fmt.Errorf("slack send (part %d): %w", i+1, err)
 		}
 	}
@@ -270,7 +268,7 @@ func truncate(s string, n int) string {
 
 // Get implements channel.Channel, for messages in channels and threads alike.
 func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, error) {
-	channelID, ts, err := splitPlatformID(platformID)
+	channelID, ts, err := channel.SplitScopedID(platformID)
 	if err != nil {
 		return channel.Message{}, err
 	}
@@ -282,7 +280,7 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 	var r struct {
 		Messages []event `json:"messages"`
 	}
-	if err := c.call(ctx, c.cfg.BotToken, "conversations.replies", params, &r); err != nil {
+	if err := c.call(ctx, c.cfg.BotToken, methodReplies, params, &r); err != nil {
 		return channel.Message{}, fmt.Errorf("slack get message: %w", err)
 	}
 
@@ -304,7 +302,7 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 	var r struct {
 		File file `json:"file"`
 	}
-	if err := c.call(ctx, c.cfg.BotToken, "files.info", url.Values{"file": {att.Key}}, &r); err != nil {
+	if err := c.call(ctx, c.cfg.BotToken, methodFileInfo, url.Values{"file": {att.Key}}, &r); err != nil {
 		return "", fmt.Errorf("slack download: %w", err)
 	}
 
@@ -312,7 +310,9 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		return "", fmt.Errorf("slack download: file %s has no download link", att.Key)
 	}
 
-	data, err := c.fetch(ctx, r.File.URLPrivateDownload)
+	auth := http.Header{"Authorization": {bearer + c.cfg.BotToken}}
+
+	data, err := transport.Download(ctx, c.http, r.File.URLPrivateDownload, auth)
 	if err != nil {
 		return "", fmt.Errorf("slack download: %w", err)
 	}
@@ -322,60 +322,24 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		name = channel.PathSafe(att.Key)
 	}
 
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return "", fmt.Errorf("slack download: %w", err)
-	}
-
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, data, filePerm); err != nil {
+	path, err := channel.SaveFile(dir, name, data)
+	if err != nil {
 		return "", fmt.Errorf("slack download: %w", err)
 	}
 
 	return path, nil
 }
 
-// fetch downloads a private file with the bot token, refusing one larger
-// than maxDownload rather than saving it cut short.
-func (c *Channel) fetch(ctx context.Context, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.cfg.BotToken)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close() //nolint:errcheck // read-only body
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET file: %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
-	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
-	}
-
-	if len(data) > maxDownload {
-		return nil, fmt.Errorf("file larger than %d MiB", maxDownload>>20)
-	}
-
-	return data, nil
-}
-
 // Ack implements channel.Channel with an emoji reaction.
 func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
-	channelID, ts, err := locate(msg.ID)
+	channelID, ts, err := channel.LocateScoped(msg.ID)
 	if err != nil {
 		return err
 	}
 
 	params := url.Values{"channel": {channelID}, "timestamp": {ts}, "name": {ackEmoji}}
 
-	err = c.call(ctx, c.cfg.BotToken, "reactions.add", params, nil)
+	err = c.call(ctx, c.cfg.BotToken, methodAddReaction, params, nil)
 	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeAlreadyReacted {
 		return nil
 	}

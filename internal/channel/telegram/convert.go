@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	idSep         = "/" // between chat and message in a platform id
 	imageMIME     = "image/"
 	mentionMark   = "@"
 	chatPrivate   = "private"
@@ -21,7 +20,7 @@ const (
 	entityTextRef = "text_mention" // a user without a username, by id
 	entityCommand = "bot_command"  // /cmd or /cmd@bot
 	maxQuoteLen   = 500            // characters of a quoted message kept
-	quoteMark     = "> "
+	quoteLine     = "> "           // starts each line of a quoted message
 	attachmentTag = "[attachment]" // stands for a quoted message without text
 )
 
@@ -135,7 +134,7 @@ func fromMessage(m *message, bot Bot) (channel.Message, bool) {
 	}
 
 	msg := channel.Message{
-		ID:          channel.ID(Name, platformID(m.Chat.ID, m.MessageID)),
+		ID:          channel.ID(Name, channel.ScopedID(strconv.FormatInt(m.Chat.ID, 10), strconv.FormatInt(m.MessageID, 10))),
 		Channel:     Name,
 		ChatID:      strconv.FormatInt(m.Chat.ID, 10),
 		ChatType:    chatType,
@@ -255,7 +254,7 @@ func quoted(r *message) string {
 		text = r.From.name() + ": " + text
 	}
 
-	return quoteMark + strings.ReplaceAll(text, "\n", "\n"+quoteMark)
+	return quoteLine + strings.ReplaceAll(text, "\n", "\n"+quoteLine)
 }
 
 func attachments(m *message) []channel.Attachment {
@@ -296,25 +295,16 @@ func mentionSyntax(u *user) string {
 	return fmt.Sprintf("[%s](tg://user?id=%d)", strings.NewReplacer("[", "(", "]", ")").Replace(u.name()), u.ID)
 }
 
-func platformID(chatID, messageID int64) string {
-	return strconv.FormatInt(chatID, 10) + idSep + strconv.FormatInt(messageID, 10)
-}
-
-// locate returns the chat and message id of a protocol message id.
+// locate returns the chat and numeric message id of a protocol message id.
 func locate(id string) (chatID string, messageID int64, err error) {
-	_, platform, err := channel.SplitID(id)
+	chatID, msg, err := channel.LocateScoped(id)
 	if err != nil {
 		return "", 0, err
 	}
 
-	chatID, msg, ok := strings.Cut(platform, idSep)
-	if !ok || chatID == "" {
-		return "", 0, fmt.Errorf("%w %q: want <chat id>%s<message id>", channel.ErrInvalidID, platform, idSep)
-	}
-
 	messageID, err = strconv.ParseInt(msg, 10, 64)
 	if err != nil {
-		return "", 0, fmt.Errorf("%w %q: want <chat id>%s<message id>", channel.ErrInvalidID, platform, idSep)
+		return "", 0, fmt.Errorf("%w %q: message id is not a number", channel.ErrInvalidID, id)
 	}
 
 	return chatID, messageID, nil

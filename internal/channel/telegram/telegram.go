@@ -9,12 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,16 +29,24 @@ const (
 	// pollSeconds stays below the transport's 30 s response header timeout.
 	pollSeconds   = 25
 	clientTimeout = 2 * time.Minute
-	backoffStart  = 2 * time.Second
+	backoffStart  = 2 * time.Second // first wait after a failed poll
 	backoffCap    = time.Minute
 	maxMessageLen = 4096     // Telegram's limit per message, in characters
 	maxResponse   = 16 << 20 // bound on a decoded API answer
-	maxDownload   = 50 << 20 // the Bot API serves files up to 20 MB
 	ackEmoji      = "👀"
+	reactionEmoji = "emoji" // ReactionType of a plain emoji
+	updateMessage = "message"
 	parseHTML     = "HTML"
-	dirPerm       = 0o750
-	filePerm      = 0o600
 	botLink       = "https://t.me/"
+)
+
+// Bot API methods.
+const (
+	methodGetMe       = "getMe"
+	methodGetUpdates  = "getUpdates"
+	methodSendMessage = "sendMessage"
+	methodGetFile     = "getFile"
+	methodSetReaction = "setMessageReaction"
 )
 
 // ErrNoGet is returned by Get: the Bot API cannot fetch a message by id.
@@ -64,12 +69,7 @@ func (c Config) validate() error {
 
 // ProxyFunc returns the proxy selector for API traffic.
 func (c Config) ProxyFunc() (transport.ProxyFunc, error) {
-	mode := c.Proxy
-	if mode == "" {
-		mode = transport.ProxyEnv
-	}
-
-	proxy, err := transport.Proxy(mode)
+	proxy, err := transport.ProxyOr(c.Proxy, transport.ProxyEnv)
 	if err != nil {
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
@@ -137,7 +137,7 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 	}
 
 	var u user
-	if err := c.call(ctx, "getMe", struct{}{}, &u); err != nil {
+	if err := c.call(ctx, methodGetMe, struct{}{}, &u); err != nil {
 		return Bot{}, err
 	}
 
@@ -162,17 +162,14 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 		return err
 	}
 
-	req := getUpdates{Timeout: pollSeconds, AllowedUpdates: []string{"message"}}
-
-	var (
-		connected bool
-		retry     time.Duration
-	)
+	req := getUpdates{Timeout: pollSeconds, AllowedUpdates: []string{updateMessage}}
+	backoff := transport.Backoff{Start: backoffStart, Cap: backoffCap}
+	connected := false
 
 	for {
 		var updates []update
 
-		err := c.call(ctx, "getUpdates", req, &updates)
+		err := c.call(ctx, methodGetUpdates, req, &updates)
 
 		switch {
 		case ctx.Err() != nil:
@@ -181,13 +178,11 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 			return err
 		case err != nil:
 			connected = false
-			retry = min(max(2*retry, backoffStart), backoffCap)
-			c.log.Warn("telegram poll", "err", err, "retry_in", retry)
+			wait := backoff.Next()
+			c.log.Warn("telegram poll", "err", err, "retry_in", wait)
 
-			select {
-			case <-ctx.Done():
+			if !transport.Sleep(ctx, wait) {
 				return nil
-			case <-time.After(retry):
 			}
 
 			continue
@@ -198,7 +193,9 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 			ready()
 		}
 
-		connected, retry = true, 0
+		connected = true
+
+		backoff.Reset()
 
 		for _, u := range updates {
 			req.Offset = u.UpdateID + 1 // confirms it on the next poll
@@ -272,12 +269,12 @@ func (c *Channel) post(ctx context.Context, chatID, threadID string, replyTo int
 			send.ReplyParameters = &replyParameters{MessageID: replyTo, AllowSendingWithoutReply: true}
 		}
 
-		err := c.call(ctx, "sendMessage", send, nil)
+		err := c.call(ctx, methodSendMessage, send, nil)
 
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Code == codeBadRequest && strings.Contains(ae.Description, "parse") {
 			send.Text, send.ParseMode = part, ""
-			err = c.call(ctx, "sendMessage", send, nil)
+			err = c.call(ctx, methodSendMessage, send, nil)
 		}
 
 		if err != nil {
@@ -301,7 +298,7 @@ type fileInfo struct {
 // Download implements channel.Channel.
 func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.Attachment, dir string) (string, error) {
 	var f fileInfo
-	if err := c.call(ctx, "getFile", map[string]string{"file_id": att.Key}, &f); err != nil {
+	if err := c.call(ctx, methodGetFile, map[string]string{"file_id": att.Key}, &f); err != nil {
 		return "", fmt.Errorf("telegram download: %w", err)
 	}
 
@@ -309,9 +306,10 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		return "", errors.New("telegram download: no file path (larger than the Bot API's 20 MB?)")
 	}
 
-	data, err := c.fetch(ctx, f.FilePath)
+	// The file URL carries the token, so errors must not.
+	data, err := transport.Download(ctx, c.http, c.api+"/file/bot"+c.token+"/"+f.FilePath, nil)
 	if err != nil {
-		return "", fmt.Errorf("telegram download: %w", err)
+		return "", fmt.Errorf("telegram download: %w", redact(err))
 	}
 
 	name := channel.BaseName(att.Name)
@@ -323,46 +321,12 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		name = channel.PathSafe(att.Key)
 	}
 
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
+	path, err := channel.SaveFile(dir, name, data)
+	if err != nil {
 		return "", fmt.Errorf("telegram download: %w", err)
 	}
 
-	dst := filepath.Join(dir, name)
-	if err := os.WriteFile(dst, data, filePerm); err != nil {
-		return "", fmt.Errorf("telegram download: %w", err)
-	}
-
-	return dst, nil
-}
-
-// fetch downloads a file by its Bot API path, refusing one larger than
-// maxDownload rather than saving it cut short.
-func (c *Channel) fetch(ctx context.Context, filePath string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.api+"/file/bot"+c.token+"/"+filePath, nil)
-	if err != nil {
-		return nil, redact(err)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, redact(err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // read-only body
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET file: %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
-	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
-	}
-
-	if len(data) > maxDownload {
-		return nil, fmt.Errorf("file larger than %d MiB", maxDownload>>20)
-	}
-
-	return data, nil
+	return path, nil
 }
 
 type reaction struct {
@@ -383,8 +347,8 @@ func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
 		return err
 	}
 
-	r := setReaction{ChatID: chatID, MessageID: messageID, Reaction: []reaction{{Type: "emoji", Emoji: ackEmoji}}}
-	if err := c.call(ctx, "setMessageReaction", r, nil); err != nil {
+	r := setReaction{ChatID: chatID, MessageID: messageID, Reaction: []reaction{{Type: reactionEmoji, Emoji: ackEmoji}}}
+	if err := c.call(ctx, methodSetReaction, r, nil); err != nil {
 		return fmt.Errorf("telegram ack: %w", err)
 	}
 

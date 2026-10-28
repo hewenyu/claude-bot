@@ -1,7 +1,6 @@
 package discord
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -11,7 +10,6 @@ import (
 )
 
 const (
-	idSep       = "/"      // between channel and message in a platform id
 	imageMIME   = "image/" // content type prefix of images
 	mentionMark = "@"      // shown before a mentioned person's name in text
 )
@@ -81,7 +79,7 @@ func fromMessage(m *discordgo.Message, botID string) channel.Message {
 	}
 
 	return channel.Message{
-		ID:          channel.ID(Name, platformID(m.ChannelID, m.ID)),
+		ID:          channel.ID(Name, channel.ScopedID(m.ChannelID, m.ID)),
 		Channel:     Name,
 		ChatID:      m.ChannelID,
 		ReplyTo:     replyTo(m),
@@ -143,7 +141,7 @@ func replyTo(m *discordgo.Message) string {
 		ch = m.ChannelID
 	}
 
-	return channel.ID(Name, platformID(ch, ref.MessageID))
+	return channel.ID(Name, channel.ScopedID(ch, ref.MessageID))
 }
 
 func user(u *discordgo.User) channel.User {
@@ -160,28 +158,4 @@ func displayName(u *discordgo.User) string {
 
 func mentionSyntax(userID string) string {
 	return "<@" + userID + ">"
-}
-
-func platformID(channelID, messageID string) string {
-	return channelID + idSep + messageID
-}
-
-// splitPlatformID returns the channel and message id of a platform id.
-func splitPlatformID(id string) (channelID, messageID string, err error) {
-	channelID, messageID, ok := strings.Cut(id, idSep)
-	if !ok || channelID == "" || messageID == "" {
-		return "", "", fmt.Errorf("%w %q: want <channel id>%s<message id>", channel.ErrInvalidID, id, idSep)
-	}
-
-	return channelID, messageID, nil
-}
-
-// locate returns the channel and message id of a protocol message id.
-func locate(id string) (channelID, messageID string, err error) {
-	_, platform, err := channel.SplitID(id)
-	if err != nil {
-		return "", "", err
-	}
-
-	return splitPlatformID(platform)
 }

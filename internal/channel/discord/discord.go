@@ -9,12 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
@@ -45,10 +42,7 @@ const (
 	tokenPrefix   = "Bot " // Authorization scheme of bot tokens
 	self          = "@me"  // the authenticated user or application in REST paths
 	ackEmoji      = "👀"
-	dirPerm       = 0o750
-	filePerm      = 0o600
-	maxDownload   = 512 << 20 // well above Discord's upload limits
-	maxMessageLen = 2000      // Discord's limit per message, in characters
+	maxMessageLen = 2000 // Discord's limit per message, in characters
 )
 
 // Config holds the bot token of the project's Discord application.
@@ -68,12 +62,7 @@ func (c Config) validate() error {
 
 // ProxyFunc returns the proxy selector used for both API and Gateway traffic.
 func (c Config) ProxyFunc() (transport.ProxyFunc, error) {
-	mode := c.Proxy
-	if mode == "" {
-		mode = transport.ProxyEnv
-	}
-
-	proxy, err := transport.Proxy(mode)
+	proxy, err := transport.ProxyOr(c.Proxy, transport.ProxyEnv)
 	if err != nil {
 		return nil, fmt.Errorf("discord: %w", err)
 	}
@@ -214,7 +203,7 @@ func isThread(s *discordgo.Session, channelID string) bool {
 // by @-mentioning the sender (a message fetched with Get carries no chat type,
 // so it counts as a server message).
 func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) error {
-	channelID, messageID, err := locate(msg.ID)
+	channelID, messageID, err := channel.LocateScoped(msg.ID)
 	if err != nil {
 		return err
 	}
@@ -257,7 +246,7 @@ func (c *Channel) post(ctx context.Context, channelID, text string, ref *discord
 
 // Get implements channel.Channel.
 func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, error) {
-	channelID, messageID, err := splitPlatformID(platformID)
+	channelID, messageID, err := channel.SplitScopedID(platformID)
 	if err != nil {
 		return channel.Message{}, err
 	}
@@ -275,7 +264,7 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 // Download implements channel.Channel. Attachment URLs expire, so the message
 // is fetched again for a fresh one.
 func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel.Attachment, dir string) (string, error) {
-	channelID, messageID, err := locate(msg.ID)
+	channelID, messageID, err := channel.LocateScoped(msg.ID)
 	if err != nil {
 		return "", err
 	}
@@ -299,51 +288,17 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("discord download: attachment %s not found on %s", att.Key, msg.ID)
 	}
 
-	data, err := c.fetch(ctx, found.URL)
+	data, err := transport.Download(ctx, c.s.Client, found.URL, nil)
 	if err != nil {
 		return "", fmt.Errorf("discord download: %w", err)
 	}
 
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return "", fmt.Errorf("discord download: %w", err)
-	}
-
-	path := filepath.Join(dir, fileName(found))
-	if err := os.WriteFile(path, data, filePerm); err != nil {
+	path, err := channel.SaveFile(dir, fileName(found), data)
+	if err != nil {
 		return "", fmt.Errorf("discord download: %w", err)
 	}
 
 	return path, nil
-}
-
-// fetch downloads a file, refusing one larger than maxDownload rather than
-// saving it cut short.
-func (c *Channel) fetch(ctx context.Context, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.s.Client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close() //nolint:errcheck // read-only body
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET attachment: %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
-	if err != nil {
-		return nil, fmt.Errorf("read attachment: %w", err)
-	}
-
-	if len(data) > maxDownload {
-		return nil, fmt.Errorf("attachment larger than %d MiB", maxDownload>>20)
-	}
-
-	return data, nil
 }
 
 // fileName is the attachment's own name without any directories, or its id.
@@ -357,7 +312,7 @@ func fileName(a *discordgo.MessageAttachment) string {
 
 // Ack implements channel.Channel with an emoji reaction.
 func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
-	channelID, messageID, err := locate(msg.ID)
+	channelID, messageID, err := channel.LocateScoped(msg.ID)
 	if err != nil {
 		return err
 	}

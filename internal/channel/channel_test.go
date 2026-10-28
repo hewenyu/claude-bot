@@ -2,6 +2,8 @@ package channel
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -69,5 +71,39 @@ func TestBaseName(t *testing.T) {
 		if got := BaseName(in); got != want {
 			t.Errorf("BaseName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestScopedID(t *testing.T) {
+	t.Parallel()
+
+	if chat, msg, err := LocateScoped("telegram:" + ScopedID("-1001", "9001")); err != nil || chat != "-1001" || msg != "9001" {
+		t.Errorf("LocateScoped(ScopedID()) = %q, %q, %v", chat, msg, err)
+	}
+
+	for _, bad := range []string{"discord:9001", "discord:/9001", "discord:42/", "42/9001"} {
+		if _, _, err := LocateScoped(bad); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("LocateScoped(%q) error = %v, want ErrInvalidID", bad, err)
+		}
+	}
+}
+
+func TestSaveFile(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "new", "dir")
+
+	path, err := SaveFile(dir, "crash.log", []byte("boom"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if path != filepath.Join(dir, "crash.log") {
+		t.Errorf("SaveFile() = %s", path)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("saved file mode = %v, %v; want 600", info.Mode().Perm(), err)
 	}
 }

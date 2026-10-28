@@ -11,12 +11,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const (
 	defaultAPI    = "https://slack.com/api"
 	maxRetryAfter = 60 * time.Second // longest rate-limit wait honoured before giving up
 	formType      = "application/x-www-form-urlencoded"
+	bearer        = "Bearer " // Authorization scheme of every token
 )
 
 // APIError is an error answer of the Web API.
@@ -59,10 +62,8 @@ func (c *Channel) call(ctx context.Context, token, method string, params url.Val
 
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Code == codeRateLimited && ae.RetryAfter <= maxRetryAfter {
-		select {
-		case <-ctx.Done():
+		if !transport.Sleep(ctx, ae.RetryAfter) {
 			return ctx.Err()
-		case <-time.After(ae.RetryAfter):
 		}
 
 		err = c.callOnce(ctx, token, method, params, out)
@@ -78,7 +79,7 @@ func (c *Channel) callOnce(ctx context.Context, token, method string, params url
 	}
 
 	req.Header.Set("Content-Type", formType)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", bearer+token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

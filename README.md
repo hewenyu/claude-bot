@@ -285,6 +285,7 @@ internal/channel/slack/  Slack 适配器（Socket Mode）
 internal/markdown/       各适配器共用的 Markdown 拆分
 internal/inbox/          基于文件的收件箱
 internal/config/         项目定位和凭证加载
+internal/transport/      各适配器共用的 HTTP / WebSocket 客户端、代理、限长下载、重连退避
 internal/atomicfile/     原子写文件
 ```
 

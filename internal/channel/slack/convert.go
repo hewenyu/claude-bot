@@ -1,7 +1,6 @@
 package slack
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,7 +10,6 @@ import (
 )
 
 const (
-	idSep         = "/" // between channel and timestamp in a platform id
 	imageMIME     = "image/"
 	directPrefix  = "D" // channel ids of direct messages
 	channelTypeIM = "im"
@@ -78,7 +76,7 @@ func toMessage(ev event, botUserID string) channel.Message {
 	text, others := plainText(ev.Text, botUserID)
 
 	msg := channel.Message{
-		ID:          channel.ID(Name, platformID(ev.Channel, ev.TS)),
+		ID:          channel.ID(Name, channel.ScopedID(ev.Channel, ev.TS)),
 		Channel:     Name,
 		ChatID:      ev.Channel,
 		ChatType:    chatType,
@@ -92,7 +90,7 @@ func toMessage(ev event, botUserID string) channel.Message {
 
 	// A message in a thread answers the thread's first message.
 	if ev.ThreadTS != "" && ev.ThreadTS != ev.TS {
-		msg.ReplyTo = channel.ID(Name, platformID(ev.Channel, ev.ThreadTS))
+		msg.ReplyTo = channel.ID(Name, channel.ScopedID(ev.Channel, ev.ThreadTS))
 	}
 
 	return msg
@@ -157,28 +155,4 @@ func parseTS(ts string) time.Time {
 
 func mentionSyntax(userID string) string {
 	return "<@" + userID + ">"
-}
-
-func platformID(channelID, ts string) string {
-	return channelID + idSep + ts
-}
-
-// splitPlatformID returns the channel and timestamp of a platform id.
-func splitPlatformID(id string) (channelID, ts string, err error) {
-	channelID, ts, ok := strings.Cut(id, idSep)
-	if !ok || channelID == "" || ts == "" {
-		return "", "", fmt.Errorf("%w %q: want <channel id>%s<ts>", channel.ErrInvalidID, id, idSep)
-	}
-
-	return channelID, ts, nil
-}
-
-// locate returns the channel and timestamp of a protocol message id.
-func locate(id string) (channelID, ts string, err error) {
-	_, platform, err := channel.SplitID(id)
-	if err != nil {
-		return "", "", err
-	}
-
-	return splitPlatformID(platform)
 }

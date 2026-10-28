@@ -10,17 +10,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
-	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
-	"github.com/hewenyu/claude-bot/internal/channel/slack"
-	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 )
 
@@ -30,17 +24,10 @@ var botCommand []byte
 const (
 	verifyTimeout = 3 * time.Minute
 	apiTimeout    = 15 * time.Second
-	// A freshly registered app can take a few seconds before its token works.
-	registerChecks = 5
-	registerDelay  = 2 * time.Second // grows linearly between checks
 )
 
-// larkApp is a set of credentials proven to work, with the bot they belong to.
-type larkApp struct {
-	cfg lark.Config
-	ch  *lark.Channel
-	bot lark.Bot
-}
+// quiet is the logger of channels built only to check credentials.
+var quiet = slog.New(slog.DiscardHandler)
 
 type initOptions struct {
 	appID, secret, domain, proxy, name  string
@@ -123,38 +110,7 @@ func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root s
 		return setupSlack(ctx, cfg, o)
 	}
 
-	la, err := obtainApp(ctx, cfg.Lark, o, root)
-	if err != nil {
-		return setup{}, err
-	}
-
-	cfg.Lark = &la.cfg
-
-	return setup{
-		ch:     la.ch,
-		name:   la.bot.AppName,
-		prompt: fmt.Sprintf("请在飞书里搜索「%s」，给它发一条私聊消息", la.bot.AppName),
-		report: func(ctx context.Context) { reportScopes(ctx, la.ch) },
-	}, nil
-}
-
-// setupDiscord checks a Discord bot token and records it in cfg.
-func setupDiscord(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
-	dcfg := discord.Config{Token: o.discordToken, Proxy: o.proxy}
-
-	ch, bot, err := connectDiscord(ctx, dcfg)
-	if err != nil {
-		return setup{}, fmt.Errorf("discord token check failed (nothing written): %w", err)
-	}
-
-	cfg.Discord = &dcfg
-
-	return setup{
-		ch:     ch,
-		name:   bot.Name,
-		prompt: fmt.Sprintf("请用上面的链接把 bot 邀请进服务器，然后在 Discord 里给「%s」发一条私聊消息", bot.Name),
-		report: func(context.Context) { reportInvite(bot) },
-	}, nil
+	return setupLark(ctx, cfg, o, root)
 }
 
 func parseInitFlags(args []string) (initOptions, error) {
@@ -202,242 +158,12 @@ func parseInitFlags(args []string) (initOptions, error) {
 	return o, nil
 }
 
-// setupTelegram checks a Telegram bot token and records it in cfg.
-func setupTelegram(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
-	tcfg := telegram.Config{Token: o.telegramToken, Proxy: o.proxy}
-
-	ch, err := telegram.New(tcfg, slog.New(slog.DiscardHandler))
-	if err != nil {
-		return setup{}, err
-	}
-
-	bot, err := withTimeout(ctx, ch.Bot)
-	if err != nil {
-		return setup{}, fmt.Errorf("telegram token check failed (nothing written): %w", err)
-	}
-
-	cfg.Telegram = &tcfg
-
-	return setup{
-		ch:     ch,
-		name:   bot.Name,
-		prompt: fmt.Sprintf("请在 Telegram 里打开 %s，给 bot 发一条消息", bot.Link()),
-		report: func(context.Context) { reportPrivacy(bot) },
-	}, nil
-}
-
-// reportPrivacy warns that, with privacy mode on, Telegram may withhold
-// group messages that @-mention the bot.
-func reportPrivacy(bot telegram.Bot) {
-	if bot.ReadsAllGroupMessages {
-		return
-	}
-
-	fmt.Printf("! bot 开着隐私模式（privacy mode），群里 @%s 的消息可能收不到。\n", bot.Username)
-	fmt.Println("  在 @BotFather 里发 /setprivacy，选这个 bot，再选 Disable；已经在群里的话，要把 bot 移出群再拉回来才生效。")
-	fmt.Println("  关掉后 bot 仍然只处理 @ 它或回复它的消息。")
-}
-
-// setupSlack checks both Slack tokens and records them in cfg.
-func setupSlack(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
-	scfg := slack.Config{AppToken: o.slackAppToken, BotToken: o.slackBotToken, Proxy: o.proxy}
-
-	ch, err := slack.New(scfg, slog.New(slog.DiscardHandler))
-	if err != nil {
-		return setup{}, err
-	}
-
-	bot, err := withTimeout(ctx, ch.Bot)
-	if err != nil {
-		return setup{}, fmt.Errorf("slack bot token check failed (nothing written): %w", err)
-	}
-
-	if _, err := withTimeout(ctx, func(ctx context.Context) (struct{}, error) { return struct{}{}, ch.CheckAppToken(ctx) }); err != nil {
-		return setup{}, fmt.Errorf("slack app token check failed (nothing written): %w", err)
-	}
-
-	cfg.Slack = &scfg
-
-	return setup{
-		ch:     ch,
-		name:   bot.Name,
-		prompt: fmt.Sprintf("请在 Slack（%s）里给「%s」发一条私信", bot.URL, bot.Name),
-		report: func(context.Context) {
-			fmt.Printf("在要用的频道里输入 /invite @%s 把 bot 拉进去。\n", bot.Name)
-		},
-	}, nil
-}
-
 // withTimeout runs an API check under apiTimeout.
 func withTimeout[T any](ctx context.Context, f func(context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
 	return f(ctx)
-}
-
-// reportInvite prints the link that adds the Discord bot to a server.
-func reportInvite(bot discord.Bot) {
-	fmt.Printf("把 bot 邀请进 Discord 服务器（需要服务器的管理权限）：\n\n  %s\n\n", bot.InviteURL())
-}
-
-func reportScopes(ctx context.Context, ch *lark.Channel) {
-	switch missing, err := missingScopes(ctx, ch); {
-	case err != nil:
-		fmt.Printf("! 无法查询权限状态：%v\n", err)
-	case len(missing) > 0:
-		fmt.Printf("! 以下权限尚未生效（如果企业需要管理员审批，请在飞书里通过）：%s\n", strings.Join(missing, ", "))
-	}
-}
-
-// obtainApp returns working credentials: from flags, from the existing
-// config, or by registering a new app through the browser.
-func obtainApp(ctx context.Context, existing *lark.Config, o initOptions, root string) (larkApp, error) {
-	if o.appID != "" {
-		la, err := connect(ctx, lark.Config{AppID: o.appID, AppSecret: o.secret, Domain: o.domain, Proxy: o.proxy})
-		if err != nil {
-			return la, fmt.Errorf("credentials check failed (nothing written): %w", err)
-		}
-
-		return la, nil
-	}
-
-	var upgrade string // existing app that only lacks permissions
-
-	if existing != nil && !o.reregister {
-		la, ready, err := checkExisting(ctx, *existing)
-		if ready {
-			fmt.Printf("✓ 已配置 bot「%s」，跳过注册（重新创建请加 --reregister）\n", la.bot.AppName)
-
-			return la, nil
-		}
-
-		if err == nil {
-			upgrade = existing.AppID
-		}
-	}
-
-	lc, err := register(ctx, o, root, upgrade)
-	if err != nil {
-		return larkApp{}, err
-	}
-
-	return connectRegistered(ctx, lc)
-}
-
-// checkExisting reports whether the configured app is ready to use. A nil
-// error with ready false means it works but lacks permissions.
-func checkExisting(ctx context.Context, cfg lark.Config) (la larkApp, ready bool, err error) {
-	la, err = connect(ctx, cfg)
-	if err != nil {
-		return la, false, err
-	}
-
-	return la, !lacksScopes(ctx, la.ch), nil
-}
-
-// lacksScopes reports whether ch is known to miss permissions. When the
-// scopes cannot be queried it says no, rather than sending the user through
-// the browser again for a working app.
-func lacksScopes(ctx context.Context, ch *lark.Channel) bool {
-	missing, err := missingScopes(ctx, ch)
-
-	return err == nil && len(missing) > 0
-}
-
-// connectRegistered waits for a freshly registered app's credentials to work.
-func connectRegistered(ctx context.Context, cfg lark.Config) (larkApp, error) {
-	for check := 1; ; check++ {
-		la, err := connect(ctx, cfg)
-		if err == nil {
-			return la, nil
-		}
-
-		if check == registerChecks {
-			return la, fmt.Errorf("app registered (%s) but credentials check failed: %w", cfg.AppID, err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return la, fmt.Errorf("app registered (%s), credentials not saved: %w", cfg.AppID, ctx.Err())
-		case <-time.After(time.Duration(check) * registerDelay):
-		}
-	}
-}
-
-func register(ctx context.Context, o initOptions, root, upgradeAppID string) (lark.Config, error) {
-	proxy, err := (lark.Config{Proxy: o.proxy}).ProxyFunc()
-	if err != nil {
-		return lark.Config{}, err
-	}
-
-	r := lark.NewRegistrar(proxy)
-	r.Name = o.name
-	r.Desc = "项目 " + filepath.Base(root) + " 的 Claude Code 值守机器人：私聊或在群里 @ 它，提问题、报 bug、提需求。"
-	r.AppID = upgradeAppID
-	r.OnLink = func(link string, expires time.Time) {
-		action := "创建飞书应用"
-		if upgradeAppID != "" {
-			action = "为已有应用补充权限"
-		}
-
-		fmt.Printf("请在浏览器中登录飞书并确认，以%s（%s 前有效）：\n\n  %s\n\n", action, expires.Format("15:04"), link)
-
-		if !o.noOpen {
-			openBrowser(ctx, link)
-		}
-
-		fmt.Println("等待确认 …")
-	}
-	r.OnTenantSwitch = func(string) {
-		fmt.Println("检测到 Lark 国际版租户，切换到 larksuite.com …")
-	}
-
-	reg, err := r.Register(ctx)
-	if err != nil {
-		return lark.Config{}, fmt.Errorf("register app: %w", err)
-	}
-
-	return lark.Config{AppID: reg.AppID, AppSecret: reg.AppSecret, Domain: reg.Domain, Proxy: o.proxy}, nil
-}
-
-// connect builds a channel for cfg and fetches its bot, which proves the
-// credentials work.
-func connect(ctx context.Context, cfg lark.Config) (larkApp, error) {
-	ch, err := lark.New(cfg, slog.New(slog.DiscardHandler))
-	if err != nil {
-		return larkApp{}, err
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
-	defer cancel()
-
-	bot, err := ch.Bot(ctx)
-
-	return larkApp{cfg: cfg, ch: ch, bot: bot}, err
-}
-
-// connectDiscord builds a Discord channel and fetches its bot, which proves
-// the token works.
-func connectDiscord(ctx context.Context, cfg discord.Config) (*discord.Channel, discord.Bot, error) {
-	ch, err := discord.New(cfg, slog.New(slog.DiscardHandler))
-	if err != nil {
-		return nil, discord.Bot{}, err
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
-	defer cancel()
-
-	bot, err := ch.Bot(ctx)
-
-	return ch, bot, err
-}
-
-func missingScopes(ctx context.Context, ch *lark.Channel) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
-	defer cancel()
-
-	return ch.MissingScopes(ctx)
 }
 
 // verifyConnection proves the round trip: the user sends the bot a direct
@@ -501,21 +227,6 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 
 		return nil
 	}
-}
-
-func openBrowser(ctx context.Context, link string) {
-	var cmd *exec.Cmd
-
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.CommandContext(ctx, "open", link) //nolint:gosec // link was validated as an official Lark URL
-	case "windows":
-		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", link) //nolint:gosec // link was validated as an official Lark URL
-	default:
-		cmd = exec.CommandContext(ctx, "xdg-open", link) //nolint:gosec // link was validated as an official Lark URL
-	}
-
-	_ = cmd.Start() // best effort; the link is printed too
 }
 
 func ensureLine(path, line string) error {

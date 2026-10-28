@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const (
@@ -74,10 +76,8 @@ func (c *Channel) call(ctx context.Context, method string, params, out any) erro
 
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Code == codeTooMany && ae.RetryAfter <= maxRetryAfter {
-		select {
-		case <-ctx.Done():
+		if !transport.Sleep(ctx, ae.RetryAfter) {
 			return ctx.Err()
-		case <-time.After(ae.RetryAfter):
 		}
 
 		err = c.callOnce(ctx, method, params, out)

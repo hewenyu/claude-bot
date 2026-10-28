@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -117,6 +118,36 @@ func SplitID(id string) (channel, platformID string, err error) {
 	return channel, platformID, nil
 }
 
+// scopeSep joins the two halves of a scoped platform id.
+const scopeSep = "/"
+
+// ScopedID builds the platform id of a message that is only addressable
+// within its chat or channel (Discord, Telegram, Slack): "<chat>/<message>".
+func ScopedID(chat, message string) string {
+	return chat + scopeSep + message
+}
+
+// SplitScopedID returns the chat and message of a scoped platform id.
+func SplitScopedID(platformID string) (chat, message string, err error) {
+	chat, message, ok := strings.Cut(platformID, scopeSep)
+	if !ok || chat == "" || message == "" {
+		return "", "", fmt.Errorf("%w %q: want <chat>%s<message>", ErrInvalidID, platformID, scopeSep)
+	}
+
+	return chat, message, nil
+}
+
+// LocateScoped returns the chat and message of a protocol id whose platform
+// id is scoped.
+func LocateScoped(id string) (chat, message string, err error) {
+	_, platformID, err := SplitID(id)
+	if err != nil {
+		return "", "", err
+	}
+
+	return SplitScopedID(platformID)
+}
+
 // BaseName strips any directories from a sender-chosen file name; "" if
 // nothing usable is left. Adapters use it to name downloads.
 func BaseName(name string) string {
@@ -126,4 +157,25 @@ func BaseName(name string) string {
 	default:
 		return base
 	}
+}
+
+// Download files stay private to the owner.
+const (
+	downloadDirPerm  = 0o750
+	downloadFilePerm = 0o600
+)
+
+// SaveFile writes a downloaded attachment to dir/name, creating dir, and
+// returns its path. name must already be a bare file name (see BaseName).
+func SaveFile(dir, name string, data []byte) (string, error) {
+	if err := os.MkdirAll(dir, downloadDirPerm); err != nil {
+		return "", fmt.Errorf("save %s: %w", name, err)
+	}
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, downloadFilePerm); err != nil {
+		return "", fmt.Errorf("save %s: %w", name, err)
+	}
+
+	return path, nil
 }

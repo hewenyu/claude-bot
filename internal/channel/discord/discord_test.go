@@ -2,7 +2,6 @@ package discord
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -104,20 +103,6 @@ func TestFromEvent_filters(t *testing.T) {
 				t.Errorf("chat type = %q, want %q", got.ChatType, channel.ChatDirect)
 			}
 		})
-	}
-}
-
-func TestSplitPlatformID(t *testing.T) {
-	t.Parallel()
-
-	if ch, msg, err := splitPlatformID("42/9001"); err != nil || ch != "42" || msg != "9001" {
-		t.Errorf("splitPlatformID(42/9001) = %q, %q, %v", ch, msg, err)
-	}
-
-	for _, bad := range []string{"9001", "/9001", "42/"} {
-		if _, _, err := splitPlatformID(bad); !errors.Is(err, channel.ErrInvalidID) {
-			t.Errorf("splitPlatformID(%q) error = %v, want ErrInvalidID", bad, err)
-		}
 	}
 }
 
@@ -255,42 +240,6 @@ func TestReply_directHasNoMention(t *testing.T) {
 	}
 }
 
-// sized serves a body of n bytes.
-type sized int
-
-func (n sized) RoundTrip(req *http.Request) (*http.Response, error) {
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Status:     "200 OK",
-		Body:       io.NopCloser(io.LimitReader(zeros{}, int64(n))),
-		Request:    req,
-	}, nil
-}
-
-type zeros struct{}
-
-func (zeros) Read(p []byte) (int, error) {
-	clear(p)
-
-	return len(p), nil
-}
-
-func TestFetch_refusesOversizedFiles(t *testing.T) {
-	t.Parallel()
-
-	c, _ := newRecorded(t)
-
-	c.s.Client = &http.Client{Transport: sized(maxDownload)}
-	if data, err := c.fetch(t.Context(), "https://cdn.example/a"); err != nil || len(data) != maxDownload {
-		t.Fatalf("fetch at the limit = %d bytes, %v; want all of it", len(data), err)
-	}
-
-	c.s.Client = &http.Client{Transport: sized(maxDownload + 1)}
-	if _, err := c.fetch(t.Context(), "https://cdn.example/a"); err == nil {
-		t.Error("fetch over the limit succeeded; want an error, not a truncated file")
-	}
-}
-
 func TestFileName(t *testing.T) {
 	t.Parallel()
 
@@ -300,17 +249,5 @@ func TestFileName(t *testing.T) {
 
 	if got := fileName(&discordgo.MessageAttachment{ID: "a1", Filename: ".."}); got != "a1" {
 		t.Errorf("fileName() = %q, want the id", got)
-	}
-}
-
-func TestLocate(t *testing.T) {
-	t.Parallel()
-
-	if ch, msg, err := locate("discord:42/9001"); err != nil || ch != "42" || msg != "9001" {
-		t.Errorf("locate() = %q, %q, %v", ch, msg, err)
-	}
-
-	if _, _, err := locate("42/9001"); !errors.Is(err, channel.ErrInvalidID) {
-		t.Errorf("locate() without channel prefix error = %v, want ErrInvalidID", err)
 	}
 }

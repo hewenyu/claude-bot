@@ -1,5 +1,6 @@
 // Package transport builds the HTTP and WebSocket clients the channel
-// adapters share, with the same proxy rules and bounded timeouts everywhere.
+// adapters share, with the same proxy rules and bounded timeouts everywhere,
+// plus the bounded download and reconnect backoff they all need.
 package transport
 
 import (
@@ -47,6 +48,16 @@ func Proxy(mode string) (ProxyFunc, error) {
 	}
 
 	return http.ProxyURL(u), nil
+}
+
+// ProxyOr is Proxy for a configured mode that may be empty, which means
+// fallback.
+func ProxyOr(mode, fallback string) (ProxyFunc, error) {
+	if mode == "" {
+		mode = fallback
+	}
+
+	return Proxy(mode)
 }
 
 // HTTP returns a transport that bounds every phase of a request that can

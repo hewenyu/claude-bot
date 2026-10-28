@@ -70,7 +70,12 @@ type Channel interface {
 - **`ready` 在连接建立后调用**。监听进程等所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断监听进程是否健康。
 - `Ack` 是"已收到"的反馈（比如表情回应），尽力而为即可，失败不影响收消息。
 
-然后在 `internal/config` 里加上这个渠道的配置字段，在 `cmd/claude-bot/app.go` 的 `newApp` 里注册。Claude 那一侧的用法完全不用改。
+可以直接用的公共部分：
+- `transport`：带代理和超时的 HTTP / WebSocket 客户端（`HTTP`、`WebSocket`、`ProxyOr`），限长下载（`Download`、`ReadAll`），以及重连退避（`Backoff`、`Sleep`）。
+- `channel`：消息只能在会话内定位的平台，用 `ScopedID` / `LocateScoped` 拼、拆 `<会话>/<消息>` 形式的 ID；附件用 `BaseName` 取文件名，用 `SaveFile` 落盘。
+- `markdown.Split`：按平台的长度上限拆分回复，被切开的代码块会补上闭合和重新开启的 fence。
+
+然后在 `internal/config` 里加上这个渠道的配置字段，在 `cmd/claude-bot/app.go` 的 `newApp` 里注册，在 `cmd/claude-bot/init_token.go`（或单独的文件）里加上 `init` 的接入流程。Claude 那一侧的用法完全不用改。
 
 ## 4. 项目里的文件
 
