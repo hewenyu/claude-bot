@@ -168,7 +168,7 @@ func seedDemo(t *testing.T, s *store.Store) {
 
 	root := t.TempDir()
 
-	if err := s.SetSetting(t.Context(), store.SettingGitHubToken, "ghp_demo0000000000000000000000000000c9d2"); err != nil {
+	if err := s.SetSetting(t.Context(), store.SettingGitHubToken, "ghp_demo-not-a-token-c9d2"); err != nil {
 		t.Fatal(err)
 	}
 
