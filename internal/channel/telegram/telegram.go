@@ -28,7 +28,6 @@ const Name = "telegram"
 const (
 	// pollSeconds stays below the transport's 30 s response header timeout.
 	pollSeconds   = 25
-	clientTimeout = 2 * time.Minute
 	backoffStart  = 2 * time.Second // first wait after a failed poll
 	backoffCap    = time.Minute
 	maxMessageLen = 4096 // Telegram's limit per message, in characters
@@ -115,7 +114,7 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 	}
 
 	return &Channel{
-		http:  &http.Client{Transport: transport.HTTP(proxy), Timeout: clientTimeout},
+		http:  transport.Client(proxy),
 		api:   defaultAPI,
 		token: cfg.Token,
 		log:   log,

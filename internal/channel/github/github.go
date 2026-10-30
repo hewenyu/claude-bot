@@ -29,13 +29,12 @@ import (
 const Name = "github"
 
 const (
-	clientTimeout = time.Minute
-	pollEvery     = 30 * time.Second
-	clockSkew     = time.Minute // activity this much before the start still counts as new
-	backoffStart  = 5 * time.Second
-	backoffCap    = 5 * time.Minute
-	maxBodyLen    = 60000 // GitHub allows 65536 characters per comment
-	ackReaction   = "eyes"
+	pollEvery    = 30 * time.Second
+	clockSkew    = time.Minute // activity this much before the start still counts as new
+	backoffStart = 5 * time.Second
+	backoffCap   = 5 * time.Minute
+	maxBodyLen   = 60000 // GitHub allows 65536 characters per comment
+	ackReaction  = "eyes"
 )
 
 // Pull request merge methods.
@@ -107,7 +106,7 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 	}
 
 	return &Channel{
-		http:  &http.Client{Transport: transport.HTTP(proxy), Timeout: clientTimeout},
+		http:  transport.Client(proxy),
 		api:   defaultAPI,
 		token: cfg.Token,
 		repo:  cfg.Repo,
@@ -167,12 +166,12 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 	imported := false
 
 	for {
-		if !imported {
-			err = p.importOpen(ctx)
-			imported = err == nil
-		}
-
-		if err == nil {
+		// Every round sets err afresh: a failure must not stick and skip
+		// the rounds after it.
+		if imported {
+			err = p.poll(ctx)
+		} else if err = p.importOpen(ctx); err == nil {
+			imported = true
 			err = p.poll(ctx)
 		}
 

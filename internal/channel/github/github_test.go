@@ -538,3 +538,52 @@ func TestDownload_onlyGitHubFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestListen_pollsAgainAfterAFailure(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.json("GET /user", self)
+	f.json("GET /repos/o/r", map[string]any{"full_name": repo})
+	f.json("GET /repos/o/r/issues/comments", []comment{})
+	f.json("GET /repos/o/r/pulls/comments", []reviewComment{})
+
+	var calls atomic.Int32
+
+	f.on("GET /repos/o/r/issues", func(w http.ResponseWriter, _ *http.Request) {
+		switch calls.Add(1) {
+		case 1: // the import of open issues
+			_ = json.NewEncoder(w).Encode([]issue{})
+		case 2: // the first poll
+			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+		default:
+			now := time.Now()
+			_ = json.NewEncoder(w).Encode([]issue{{Number: 9, User: alice, CreatedAt: now, UpdatedAt: now}})
+		}
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	got := make(chan channel.Message, 1)
+
+	go func() {
+		_ = ch.Listen(ctx, func(m channel.Message) error {
+			select {
+			case got <- m:
+			default:
+			}
+
+			return nil
+		}, func() {})
+	}()
+
+	select {
+	case m := <-got:
+		if m.ID != "github:o/r/9" {
+			t.Errorf("delivered %s, want github:o/r/9", m.ID)
+		}
+	case <-time.After(3 * backoffStart):
+		t.Fatalf("nothing delivered after the failed poll; issues listed %d times", calls.Load())
+	}
+}

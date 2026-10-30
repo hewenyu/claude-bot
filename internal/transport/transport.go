@@ -4,6 +4,8 @@
 package transport
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,6 +34,10 @@ const (
 	maxIdleConns     = 10
 	handshakeTimeout = 45 * time.Second // WebSocket upgrade, TLS included
 )
+
+// ClientTimeout bounds a whole request made with Client, reading the body
+// included: an API call or an attachment download.
+const ClientTimeout = 2 * time.Minute
 
 // MaxResponse bounds an API answer read into memory.
 const MaxResponse = 16 << 20
@@ -63,6 +69,14 @@ func ProxyOr(mode, fallback string) (ProxyFunc, error) {
 	return Proxy(mode)
 }
 
+// Client returns the client for a channel's API calls and downloads: every
+// request is bounded by ClientTimeout, and a failed request closes the idle
+// connections, so the retry starts on a new one. WebSocket and other long
+// connections do not go through it.
+func Client(proxy ProxyFunc) *http.Client {
+	return &http.Client{Transport: closeOnError{HTTP(proxy)}, Timeout: ClientTimeout}
+}
+
 // HTTP returns a transport that bounds every phase of a request that can
 // hang: dial, TLS and waiting for the response headers.
 func HTTP(proxy ProxyFunc) *http.Transport {
@@ -75,6 +89,21 @@ func HTTP(proxy ProxyFunc) *http.Transport {
 		IdleConnTimeout:       idleTimeout,
 		MaxIdleConns:          maxIdleConns,
 	}
+}
+
+// closeOnError closes the idle connections of its transport after a request
+// fails: a connection pooled before the failure may be just as broken. A
+// request the caller cancelled says nothing about the network.
+type closeOnError struct{ *http.Transport }
+
+// RoundTrip implements http.RoundTripper.
+func (t closeOnError) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.Transport.RoundTrip(req)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.CloseIdleConnections()
+	}
+
+	return resp, err
 }
 
 // WebSocket returns a dialer that goes through the same proxy.

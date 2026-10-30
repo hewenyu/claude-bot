@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -249,5 +250,50 @@ func TestFileName(t *testing.T) {
 
 	if got := fileName(&discordgo.MessageAttachment{ID: "a1", Filename: ".."}); got != "a1" {
 		t.Errorf("fileName() = %q, want the id", got)
+	}
+}
+
+func TestBot(t *testing.T) {
+	t.Parallel()
+
+	c, rec := newRecorded(t)
+
+	bot, err := c.Bot(t.Context())
+	if err != nil || bot.ID != "1" || bot.AppID != "1" {
+		t.Fatalf("Bot() = %+v, %v", bot, err)
+	}
+
+	want := []string{"/api/v9/users/@me", "/api/v9/oauth2/applications/@me"}
+	for i, r := range rec.reqs {
+		if i >= len(want) || r.Method != http.MethodGet || r.Path != want[i] {
+			t.Errorf("request %d = %s %s, want GET %s", i, r.Method, r.Path, want)
+		}
+	}
+}
+
+// stall answers the user and never the application, until the request ends.
+type stall struct{ recorder }
+
+func (s *stall) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Path, "/applications/") {
+		<-req.Context().Done()
+
+		return nil, req.Context().Err()
+	}
+
+	return s.recorder.RoundTrip(req)
+}
+
+func TestBot_applicationEndsWithContext(t *testing.T) {
+	t.Parallel()
+
+	c, _ := newRecorded(t)
+	c.s.Client = &http.Client{Transport: &stall{}}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	if _, err := c.Bot(ctx); err == nil {
+		t.Fatal("Bot() succeeded without the application")
 	}
 }

@@ -141,7 +141,7 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 		return nil, err
 	}
 
-	hc := &http.Client{Transport: transport.HTTP(proxy)}
+	hc := transport.Client(proxy)
 
 	return &Channel{
 		cfg: cfg,

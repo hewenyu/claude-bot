@@ -30,7 +30,6 @@ import (
 const Name = "dingtalk"
 
 const (
-	clientTimeout  = 2 * time.Minute
 	maxMarkdownLen = 4000 // characters per message, below DingTalk's limit
 	maxTitleLen    = 30   // characters of the title shown in notifications
 	msgKeyMarkdown = "sampleMarkdown"
@@ -90,7 +89,7 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 	}
 
 	return &Channel{
-		http:   &http.Client{Transport: transport.HTTP(proxy), Timeout: clientTimeout},
+		http:   transport.Client(proxy),
 		dialer: transport.WebSocket(proxy),
 		api:    defaultAPI,
 		cfg:    cfg,
