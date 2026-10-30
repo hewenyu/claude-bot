@@ -44,6 +44,19 @@ type Message struct {
 	Mentions    []User       `json:"mentions,omitempty"` // other people mentioned (the bot itself is removed)
 	Attachments []Attachment `json:"attachments,omitempty"`
 	CreatedAt   time.Time    `json:"created_at"`
+	// Pieces is set when the listener screened the message with Jev: its
+	// text and attachments, cut up and labelled with the task each is part
+	// of. Whatever Jev refused is gone from Text, Attachments and Pieces.
+	Pieces []Piece `json:"pieces,omitempty"`
+}
+
+// Piece is part of a screened message: a span of its text, or one
+// attachment, with the task it belongs to. A message with nothing to read
+// (a sticker) has one piece with only a task.
+type Piece struct {
+	Task string `json:"task"`           // shared by the pieces of one task, across messages
+	Text string `json:"text,omitempty"` // the span; for a file, where it was saved
+	File string `json:"file,omitempty"` // the saved attachment
 }
 
 // User identifies a person on a platform.
@@ -67,6 +80,7 @@ type Attachment struct {
 	Kind AttachmentKind `json:"kind"`
 	Key  string         `json:"key"`
 	Name string         `json:"name,omitempty"`
+	Path string         `json:"path,omitempty"` // where the listener saved it, when it screens messages
 }
 
 // Channel is a chat platform adapter.

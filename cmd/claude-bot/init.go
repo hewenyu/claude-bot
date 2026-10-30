@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -21,6 +22,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
+	"github.com/hewenyu/claude-bot/internal/jev"
 )
 
 //go:embed bot.md
@@ -41,6 +43,7 @@ type initOptions struct {
 	slackAppToken, slackBotToken        string
 	githubToken, githubRepo             string
 	dingtalkID, dingtalkSecret          string
+	typesafeKey                         string
 	reregister, noOpen, noVerify, force bool
 	botMD                               bool // only rewrite the /bot command
 }
@@ -70,6 +73,10 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
+	if done, err := initJev(ctx, dir, root, &cfg, o); done || err != nil {
+		return err
+	}
+
 	if err := pickChannel(&o, cfg); err != nil {
 		return err
 	}
@@ -78,6 +85,14 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	return finishInit(ctx, dir, cfg, s, o)
+}
+
+// finishInit saves what init set up, writes the /bot command, checks the
+// connection and says what to do next.
+func finishInit(ctx context.Context, dir string, cfg config.Config, s setup, o initOptions) error {
+	root := filepath.Dir(dir)
 
 	// Ignore the directory before the secret is written into it.
 	if err := ensureLine(filepath.Join(root, ".gitignore"), config.DirName+"/"); err != nil {
@@ -133,6 +148,69 @@ func pickChannel(o *initOptions, cfg config.Config) error {
 	}
 
 	return askTokens(o, p)
+}
+
+// jevGuide is where to get a TypeSafe API key.
+const jevGuide = "https://console.typesafe.ai/keys"
+
+// setupJev checks key and records it in cfg. Without a key it keeps the one
+// set up before, or asks for one on a terminal.
+func setupJev(ctx context.Context, cfg *config.Config, key string) error {
+	if key == "" && cfg.TypeSafe != nil {
+		return nil
+	}
+
+	if key == "" {
+		p, ok := terminalPrompter()
+		if !ok {
+			return fmt.Errorf("%w: claude-bot needs a TypeSafe API key for Jev: --typesafe-key <key> (from %s)", errUsage, jevGuide)
+		}
+
+		p.say("每条消息都先交给 TypeSafe 的 Jev 裁剪归组、拦下非法请求，再给 Claude。API key 在这里创建：%s\n", jevGuide)
+
+		var err error
+		if key, err = p.ask("TypeSafe API key"); err != nil {
+			return err
+		}
+	}
+
+	if _, err := withTimeout(ctx, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, jev.New(key).Check(ctx)
+	}); err != nil {
+		return fmt.Errorf("TypeSafe API key not accepted: %w", err)
+	}
+
+	cfg.TypeSafe = &jev.Config{APIKey: key}
+
+	fmt.Println("✓ Jev 已接入（TypeSafe API key 有效）")
+
+	return nil
+}
+
+// initJev sets up Jev before anything else: every message goes through it.
+// Given only a key for channels already set up, it saves the key and is
+// done.
+func initJev(ctx context.Context, dir, root string, cfg *config.Config, o initOptions) (done bool, err error) {
+	if err := setupJev(ctx, cfg, o.typesafeKey); err != nil {
+		return false, err
+	}
+
+	hasChannel := slices.ContainsFunc(channelChoices, func(c channelChoice) bool { return cfg.Has(c.name) })
+	if o.channel != "" || o.typesafeKey == "" || !hasChannel {
+		return false, nil
+	}
+
+	if err := ensureLine(filepath.Join(root, ".gitignore"), config.DirName+"/"); err != nil {
+		return true, err
+	}
+
+	if err := config.Save(dir, *cfg); err != nil {
+		return true, err
+	}
+
+	fmt.Println("下一步：在终端里运行  claude-bot restart  让监听进程用上 Jev")
+
+	return true, nil
 }
 
 func botCommandPath(root string) string {
@@ -194,6 +272,7 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.StringVar(&o.githubToken, "github-token", "", "set up the GitHub channel with this token (issues, PRs, comments and reviews of the repository)")
 	fs.StringVar(&o.dingtalkID, "dingtalk-client-id", "", "set up a DingTalk app: its Client ID (AppKey), with --dingtalk-client-secret")
 	fs.StringVar(&o.dingtalkSecret, "dingtalk-client-secret", "", "set up a DingTalk app: its Client Secret (AppSecret), with --dingtalk-client-id")
+	fs.StringVar(&o.typesafeKey, "typesafe-key", "", "TypeSafe API key for Jev, which screens every message (asked on a terminal if none is set up)")
 	fs.StringVar(&o.githubRepo, "github-repo", "", "with --github-token: <owner>/<name> (default: from the origin remote)")
 	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu and dingtalk, env for the others)")
 	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")

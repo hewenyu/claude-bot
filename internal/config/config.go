@@ -20,6 +20,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
+	"github.com/hewenyu/claude-bot/internal/jev"
 )
 
 // DirName is the per-project state directory (git-ignored).
@@ -53,6 +54,9 @@ type Config struct {
 	Slack    *slack.Config    `json:"slack,omitempty"`
 	GitHub   *github.Config   `json:"github,omitempty"`
 	DingTalk *dingtalk.Config `json:"dingtalk,omitempty"`
+	// TypeSafe, if set, has the listener screen messages with Jev before
+	// they reach the inbox. Only config.json sets it, never the environment.
+	TypeSafe *jev.Config `json:"typesafe,omitempty"`
 }
 
 // Dir returns <project root>/.claude-bot. The project root is, in order: the

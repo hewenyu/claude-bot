@@ -21,6 +21,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就建好应用；其他渠道粘贴 token 即可。
 - **改代码一律走 PR**：Claude 自己开的 PR 验证后合并、打 tag 发版；别人的 PR 先判断值不值得要，再在本地实际跑过才合并。
 - **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理，按顺序串行处理。
+- **Jev 先过一遍**：每条消息先由 [TypeSafe](https://typesafe.ai) 的 Jev 模型筛选：把消息和附件裁剪、归组成一件件事，附件下载好并标明存在哪里；非法请求直接回复「现在暂时不支持。」，不交给 Claude。`init` 时填入 TypeSafe API key。见 [PROTOCOL.md §1.1](PROTOCOL.md#11-jev-筛选)。
 - **工具保持简单**：单个 Go 二进制，没有数据库和额外服务。值守流程是一个 Markdown 文件（`.claude/commands/bot.md`），可以按项目约定修改。
 
 ```
@@ -53,7 +54,7 @@ go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
 
 ```bash
 cd your-project
-claude-bot init        # 选渠道、保存凭证、生成 .claude/commands/bot.md、验证收发
+claude-bot init        # 填 TypeSafe API key、选渠道、保存凭证、生成 .claude/commands/bot.md、验证收发
 claude-bot start       # 在后台启动监听进程（stop 停止，restart 重启）
 ```
 

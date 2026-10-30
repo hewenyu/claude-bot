@@ -199,3 +199,43 @@ func TestInbox_Put_concurrentRedelivery(t *testing.T) {
 		t.Errorf("Pending() = %v, %v; want the one message", ids(got), err)
 	}
 }
+
+func TestInbox_HoldAdmitReject(t *testing.T) {
+	t.Parallel()
+
+	b := New(t.TempDir())
+	held, refused := msg("lark:om_1", time.Now()), msg("lark:om_2", time.Now())
+
+	for _, m := range []channel.Message{held, refused} {
+		if fresh, err := b.Hold(m); !fresh || err != nil {
+			t.Fatalf("Hold(%s) = %v, %v", m.ID, fresh, err)
+		}
+	}
+
+	if pending, _ := b.Pending(); len(pending) != 0 {
+		t.Fatalf("held messages are pending: %v", pending)
+	}
+
+	held.Text = "screened"
+	if err := b.Admit(held); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.Reject(refused); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, _ := b.Pending()
+	incoming, _ := b.Incoming()
+
+	if len(pending) != 1 || pending[0].Text != "screened" || len(incoming) != 0 {
+		t.Errorf("pending = %v, incoming = %v; want the screened message pending", pending, incoming)
+	}
+
+	// Redeliveries of either are not held again.
+	for _, m := range []channel.Message{held, refused} {
+		if fresh, _ := b.Hold(m); fresh {
+			t.Errorf("redelivered %s held again", m.ID)
+		}
+	}
+}

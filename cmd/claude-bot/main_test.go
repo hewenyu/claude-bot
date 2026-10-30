@@ -24,15 +24,23 @@ import (
 
 // fakeChannel records calls; it stands in for a real platform adapter.
 type fakeChannel struct {
-	mu    sync.Mutex
-	acked []string
+	mu      sync.Mutex
+	acked   []string
+	replies []string // "<id>: <text>"
 }
 
 func (f *fakeChannel) Name() string { return "fake" }
 
 func (f *fakeChannel) Listen(context.Context, func(channel.Message) error, func()) error { return nil }
 
-func (f *fakeChannel) Reply(context.Context, channel.Message, string) error { return nil }
+func (f *fakeChannel) Reply(_ context.Context, m channel.Message, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.replies = append(f.replies, m.ID+": "+text)
+
+	return nil
+}
 
 func (f *fakeChannel) Send(context.Context, string, string) error { return nil }
 
@@ -87,9 +95,9 @@ func TestDeliverer(t *testing.T) {
 		t.Errorf("acked %d times, want exactly once", n)
 	}
 
-	pending, err := a.inbox.Pending()
-	if err != nil || len(pending) != 1 {
-		t.Errorf("pending = %d, %v; want 1", len(pending), err)
+	incoming, err := a.inbox.Incoming()
+	if err != nil || len(incoming) != 1 {
+		t.Errorf("incoming = %d, %v; want 1, held for screening", len(incoming), err)
 	}
 }
 

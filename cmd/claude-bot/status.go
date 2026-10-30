@@ -20,6 +20,8 @@ type status struct {
 	Channels []string        `json:"channels"`
 	Listener listenerStatus  `json:"listener"`
 	Pending  int             `json:"pending"`
+	Jev      bool            `json:"jev"`       // a TypeSafe key is set up; messages wait for Jev without one
+	Incoming int             `json:"screening"` // messages waiting for Jev, which Claude cannot see yet
 	Lark     *larkStatus     `json:"lark,omitempty"`
 	Discord  *discordStatus  `json:"discord,omitempty"`
 	Telegram *telegramStatus `json:"telegram,omitempty"`
@@ -98,12 +100,19 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
+	incoming, err := a.inbox.Incoming()
+	if err != nil {
+		return err
+	}
+
 	hb, alive := readHeartbeat(a.dir)
 	s := status{
 		Project:  filepath.Dir(a.dir),
 		Channels: a.names(),
 		Listener: listenerStatus{Alive: alive, PID: hb.PID, LastBeat: hb.BeatAt, Channels: hb.Channels, Version: hb.Version},
 		Pending:  len(pending),
+		Jev:      a.typesafe != nil,
+		Incoming: len(incoming),
 	}
 
 	if bot, errText, ok := identity(ctx, a, lark.Name, (*lark.Channel).Bot); ok {

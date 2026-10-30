@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/jev"
 )
 
 const (
@@ -48,6 +49,10 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
+	if a.typesafe == nil {
+		return errNoJev
+	}
+
 	unlock, err := lockFile(a.path(listenerLock))
 	if err != nil {
 		return fmt.Errorf("listener already running for %s: %w", filepath.Dir(a.dir), err)
@@ -65,6 +70,13 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 	// The heartbeat means "connected": it starts once every channel has
 	// connected and disappears when the listener exits.
 	defer func() { _ = os.Remove(a.path(heartbeatFile)) }()
+
+	// Every message waits in incoming/ until Jev has screened it; leftovers
+	// from a previous run are screened first.
+	a.screen = make(chan struct{}, 1)
+	a.screen <- struct{}{}
+
+	go a.screener(ctx, jev.New(a.typesafe.APIKey), a.screen)
 
 	allReady := make(chan struct{})
 
@@ -95,7 +107,7 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 
 func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Message) error {
 	return func(m channel.Message) error {
-		fresh, err := a.inbox.Put(m)
+		fresh, err := a.inbox.Hold(m)
 		if err != nil {
 			a.log.Error("store message", "id", m.ID, "err", err)
 
@@ -107,6 +119,11 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 		}
 
 		a.log.Info("message", "id", m.ID, "chat", m.ChatType, "from", m.Sender.ID)
+
+		select {
+		case a.screen <- struct{}{}:
+		default: // a wake-up is already due
+		}
 
 		go func() {
 			ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ackTimeout)
