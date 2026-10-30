@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -286,6 +287,58 @@ func TestPoll(t *testing.T) {
 
 	if !p.issues.since.Equal(after) {
 		t.Errorf("issues feed since = %v, want %v", p.issues.since, after)
+	}
+}
+
+// A failure reading a PR's reviews must not lose them: the issues feed has
+// already moved past the PR, so the next poll reads them from what is due.
+func TestPoll_retriesReviewsAfterFailure(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+
+	var issuesCalls atomic.Int32
+
+	f.on("GET /repos/o/r/issues", func(w http.ResponseWriter, _ *http.Request) {
+		var list []issue
+		if issuesCalls.Add(1) == 1 {
+			list = []issue{{Number: 7, User: alice, CreatedAt: before, UpdatedAt: after, PullRequest: &struct{}{}}}
+		}
+
+		_ = json.NewEncoder(w).Encode(list)
+	})
+
+	var reviewCalls atomic.Int32
+
+	f.on("GET /repos/o/r/pulls/7/reviews", func(w http.ResponseWriter, _ *http.Request) {
+		if reviewCalls.Add(1) == 1 {
+			http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode([]review{{ID: 70, User: alice, State: "CHANGES_REQUESTED", Body: "缺测试", SubmittedAt: after}})
+	})
+	f.json("GET /repos/o/r/issues/comments", []comment{})
+	f.json("GET /repos/o/r/pulls/comments", []reviewComment{})
+
+	var got collect
+
+	p := newPoller(ch, me, got.deliver, start)
+	if err := p.poll(t.Context()); err == nil {
+		t.Fatal("first poll: want the reviews error")
+	}
+
+	if err := p.poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := []string{"github:o/r/7#v70"}; !reflect.DeepEqual(got.ids(), want) {
+		t.Fatalf("delivered %v, want %v", got.ids(), want)
+	}
+
+	if len(p.reviewsDue) != 0 {
+		t.Errorf("reviews still due for %v", p.reviewsDue)
 	}
 }
 

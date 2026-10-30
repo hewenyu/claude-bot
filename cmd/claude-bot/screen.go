@@ -152,7 +152,9 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 		a.logRefusal(t, byID)
 
 		last := byID[t.Messages[len(t.Messages)-1]]
-		if err := a.channels[last.Channel].Reply(ctx, last, refusal); err != nil {
+		if ch, ok := a.channels[last.Channel]; !ok {
+			a.log.Warn("send refusal", "id", last.ID, "err", "channel not configured")
+		} else if err := ch.Reply(ctx, last, refusal); err != nil {
 			a.log.Warn("send refusal", "id", last.ID, "err", err)
 		}
 
@@ -345,17 +347,26 @@ func fileNote(id string, att channel.Attachment) string {
 }
 
 // fetchAttachments downloads msg's attachments, as `download` does. A failed
-// download leaves "" in its place.
+// download leaves "" in its place, as does a message from a channel no
+// longer configured (left incoming by an earlier run).
 func (a *app) fetchAttachments(ctx context.Context, msg channel.Message) []string {
 	if len(msg.Attachments) == 0 {
 		return nil
 	}
 
 	paths := make([]string, len(msg.Attachments))
+
+	ch, ok := a.channels[msg.Channel]
+	if !ok {
+		a.log.Warn("download attachment", "id", msg.ID, "err", "channel not configured")
+
+		return paths
+	}
+
 	dir := a.attachmentDir(msg)
 
 	for i, att := range msg.Attachments {
-		path, err := a.channels[msg.Channel].Download(ctx, msg, att, dir)
+		path, err := ch.Download(ctx, msg, att, dir)
 		if err != nil {
 			a.log.Warn("download attachment", "id", msg.ID, "err", err)
 

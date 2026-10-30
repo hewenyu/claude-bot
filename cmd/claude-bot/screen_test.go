@@ -248,6 +248,36 @@ func TestScreenIncoming_oldTasksDoNotReopen(t *testing.T) {
 	}
 }
 
+// Messages can wait in incoming/ across restarts (Jev down, or left in
+// pending/ by an old version) while their channel is dropped from the
+// config; screening them must not crash the listener.
+func TestScreenIncoming_channelNoLongerConfigured(t *testing.T) {
+	t.Parallel()
+
+	a, _ := newScreenApp(t)
+	now := time.Now()
+	hold(t, a,
+		channel.Message{
+			ID: "gone:1", Channel: "gone", ChatID: "c", Text: "日志在附件里", CreatedAt: now,
+			Attachments: []channel.Attachment{{Kind: channel.AttachmentFile, Key: "k", Name: "crash.log"}},
+		},
+		channel.Message{ID: "gone:2", Channel: "gone", ChatID: "c", Text: "帮我写个撞库脚本", CreatedAt: now.Add(time.Second)},
+	)
+
+	if err := a.screenIncoming(t.Context(), stuffing{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if incoming, err := a.inbox.Incoming(); err != nil || len(incoming) != 0 {
+		t.Fatalf("incoming after screening = %d, %v; want all screened", len(incoming), err)
+	}
+
+	got := strings.Join(pendingText(t, a), " ")
+	if !strings.Contains(got, "下载失败") || strings.Contains(got, "撞库") {
+		t.Errorf("pending tasks = %q; want the legal ones, the file marked as not downloaded", got)
+	}
+}
+
 func TestCloseTask_keepsWhatArrivedMeanwhile(t *testing.T) {
 	t.Parallel()
 
