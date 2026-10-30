@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -41,6 +42,9 @@ type poller struct {
 	start   time.Time
 
 	issues, comments, reviewComments feed
+	// reviewsDue are PRs updated since their reviews were last read. They
+	// stay here until that succeeds: the issues feed has moved past them.
+	reviewsDue []int
 }
 
 func newPoller(c *Channel, me string, deliver func(channel.Message) error, start time.Time) *poller {
@@ -66,15 +70,13 @@ func (p *poller) fresh(u user, body string, at time.Time) bool {
 // poll delivers new issues and PRs, comments, inline review comments and
 // reviews.
 func (p *poller) poll(ctx context.Context) error {
-	var updatedPRs []int
-
 	err := pollFeed(ctx, p, &p.issues, func(i issue) time.Time {
 		if p.fresh(i.User, i.Body, i.CreatedAt) {
 			p.send(p.c.fromIssue(i))
 		}
 
-		if i.isPR() {
-			updatedPRs = append(updatedPRs, i.Number)
+		if i.isPR() && !slices.Contains(p.reviewsDue, i.Number) {
+			p.reviewsDue = append(p.reviewsDue, i.Number)
 		}
 
 		return i.UpdatedAt
@@ -84,10 +86,12 @@ func (p *poller) poll(ctx context.Context) error {
 	}
 
 	// Reviews have no repository-wide listing; a review updates its PR.
-	for _, n := range updatedPRs {
-		if err := p.pollReviews(ctx, n); err != nil {
+	for len(p.reviewsDue) > 0 {
+		if err := p.pollReviews(ctx, p.reviewsDue[0]); err != nil {
 			return err
 		}
+
+		p.reviewsDue = p.reviewsDue[1:]
 	}
 
 	err = pollFeed(ctx, p, &p.comments, func(cm comment) time.Time {
