@@ -9,9 +9,9 @@ claude-bot [-C <repo>] <command> [args]
 | 命令 | 说明 |
 |---|---|
 | `init` | 接入 Jev（必需），创建或接入 bot 应用，保存凭证，生成 `/bot` 命令，验证连接 |
-| `inbox [--wait 55m]` | 以 JSON Lines 输出 Jev 筛过的待处理消息，一行一件事；监听进程没在运行、或者没接入 Jev 时报错 |
-| `reply [--keep] <id> [text\|-]` | 在原消息下回复（Markdown），并标记为已处理 |
-| `done <id>...` | 标记为已处理，不回复 |
+| `inbox [--wait 55m]` | 以 JSON Lines 输出 Jev 归好组的待处理的事，一行一件，带着整段对话（包括 bot 之前的回复）；监听进程没在运行、或者没接入 Jev 时报错 |
+| `reply [--keep] <task:id> [text\|-]` | 在这件事最新的那条消息下回复（Markdown），记进对话，并标记为已处理 |
+| `done <task:id>...` | 标记为已处理，不回复 |
 | `get <id>` | 获取任意一条消息，比如 `reply_to` 指向的那条 |
 | `download <id>` | 下载消息附件到 `.claude-bot/files/<消息>/`，输出文件路径 |
 | `send <channel>:<chat_id> [text\|-]` | 主动发消息到某个会话；GitHub 上是在 `github:<owner>/<repo>/<编号>` 下发评论 |
@@ -20,7 +20,7 @@ claude-bot [-C <repo>] <command> [args]
 | `stop` | 停止监听进程 |
 | `restart` | 重启监听进程，升级 claude-bot 或新接了渠道之后用 |
 | `serve` | 在前台运行监听进程 |
-| `status` | 查看 bot 身份、监听进程状态、待处理消息数、是否接入了 Jev（`jev`）和等待 Jev 筛选的消息数（`screening`） |
+| `status` | 查看 bot 身份、监听进程状态、待处理的事（`pending`）、是否接入了 Jev（`jev`）和等待 Jev 筛选的消息数（`screening`） |
 | `version` | 查看版本 |
 
 文本参数可以写在命令行上，也可以用 `-` 或省略，改为从 stdin 读取，适合多行内容配合 heredoc 使用。退出码：`0` 成功，`1` 失败，`2` 用法错误。
@@ -66,8 +66,10 @@ claude-bot [-C <repo>] <command> [args]
 .claude-bot/                 已加入 .gitignore
   config.json                凭证和 TypeSafe API key，0600
   inbox/incoming/            刚收到、还没经过 Jev 筛选的消息，Claude 看不到
-  inbox/pending/             筛过的待处理消息，每条一个 JSON 文件（裁剪过、标好了属于哪件事、附件存在哪）
-  inbox/done/                已处理消息
+  inbox/tasks/pending/       待处理的事，每件一个 JSON 文件（整段对话：用户的话、附件存在哪、bot 的回复）
+  inbox/tasks/done/          已处理的事，24 小时内有追问会重新打开
+  inbox/tasks.lock           监听进程和命令读写事情时的锁
+  inbox/done/                筛过的消息存档（裁剪过、标好了进了哪件事）
   files/                     附件，监听进程收到消息时就下载到 files/<消息>/
   serve.json                 监听进程心跳
   serve.log                  监听进程日志

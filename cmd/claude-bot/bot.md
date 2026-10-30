@@ -27,33 +27,39 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
   ```
   最后一条评论或 review 是你的账号发的、之后没有新评论也没有新提交的，上一轮已经处理过，跳过。draft PR 先不管。其余的按「处理 issue」「处理 PR」逐个处理。
 
-### 2. 收消息
+### 2. 收消息，一件事交给一个子 Agent
 
-运行 `claude-bot inbox`，马上取出所有待处理的事。每行输出是一件事（JSON，见下）；没有输出说明没人找你，直接到第 3 步。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；其他报错按错误信息排查，比如看 `claude-bot status`。
+运行 `claude-bot inbox`，马上取出所有待处理的事；没有输出说明没人找你，直接到第 3 步。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；报 Jev 没接入时，告诉用户运行 `claude-bot init --typesafe-key <key>` 再 `claude-bot restart`；其他报错按错误信息排查，比如看 `claude-bot status`（`screening` 一直不为 0 说明 Jev 调用在失败，让用户看 `.claude-bot/serve.log`）。
 
-`inbox` 每行是**一件事**（`task`），不是一条消息：监听进程已经用 Jev 把消息和附件裁剪、归好组，非法请求已经直接回复「现在暂时不支持。」并删掉了，你看不到也不用管。按件处理：`pieces` 是这件事的全部内容（`text` 是原话里的一段；`file` 是已经下载好的附件，直接读，`text` 里写着它是什么、存在哪），`messages` 是涉及的消息（`id`、`reply_to`、发送者等）。一件事处理完回复一次，回在 `messages` 的最后一条上；几件事落在同一条消息上的，可以合成一条回复。回复完把 `messages` 里其余的消息 `claude-bot done` 掉。分组看着不对的（明显是一件事被拆开了，或者两件事被合在一起），按你自己的判断处理。`inbox` 报 Jev 没接入时，告诉用户运行 `claude-bot init --typesafe-key <key>` 再 `claude-bot restart`；`status` 里 `screening` 一直不为 0，说明 Jev 调用在失败，让用户看 `.claude-bot/serve.log`。
+`inbox` 每行是**一件事**（task）的 JSON，带着它的完整上下文。监听进程已经用 Jev 把消息和附件裁剪、归好组：同一件事的追问（24 小时内，包括群里别人补充的同一件事）会并回原来那件事，非法请求已经直接回复「现在暂时不支持。」并删掉了，你看不到也不用管。
 
-`id` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`、`dingtalk:<会话>/<消息>`、`github:<owner>/<repo>/<编号>`。逐件处理：
+**你（主会话）只做调度，不亲自处理事情**：不同的人、不同的事，上下文不能互相干扰。按 `inbox` 输出的顺序，**一次一件**：用 Agent 工具开一个子 Agent，把这一行 JSON 原样交给它，连同下面「子 Agent 的任务说明」；等它返回一句话的结果，再开下一件。不要并行开多个，也不要把几件事交给同一个子 Agent。
 
-1. **补全上下文**：有 `reply_to` 的，用 `claude-bot get <reply_to>` 看对方回复的是哪条；附件已经下载好了，路径在 `pieces` 的 `file` 里。
-2. **GitHub 的消息**：`text` 第一行说明是什么：`Issue #42: 标题`、`PR #43: 标题`（新开的）、`Comment on …`（评论）、`Review comment on PR #43, 文件:行号`（行内 review 评论）、`Review on PR #43: changes requested`（review）。评论和 review 的 `reply_to` 指向所属的 issue 或 PR，`claude-bot get <reply_to>` 会给出标题、正文和最近的评论。按「处理 issue」「处理 PR」做。
-3. **聊天里的问题**：能直接回答的就查清楚再答；要改代码的（报 bug、提需求），和 issue 一样按「改代码」走 PR，回复里带上 PR 链接和版本号。
-4. **回复**：
-   ```bash
-   claude-bot reply <id> <<'EOF'
-   ……支持 Markdown（代码块、列表、链接）……
-   EOF
-   ```
-   群聊里会自动 @ 发送者，话题里的消息回在同一个话题里；GitHub 上发成一条评论，行内 review 评论回在同一个讨论串里。回复完这条消息就标记为已处理。
-   - 要花比较长时间的，先 `claude-bot reply --keep <id> "收到，正在看……"` 回一句，做完再正式回复。
-   - 不需要回复的（纯表情、重复消息），用 `claude-bot done <id>` 标记。
-   - 要主动通知某个群（比如发版通知），用 `claude-bot send <chat_id> "..."`，`chat_id` 由消息的 `channel` 和 `chat_id` 拼成，比如 `lark:oc_xxx`、`discord:123`、`telegram:-100123`、`slack:C123`、`dingtalk:cidXXX`。
+全部派完以后，再运行一次 `claude-bot inbox`：处理期间来的新消息、或者子 Agent 回复时提示 `still pending` 的事，会再出现在这里，照样派。直到没有输出，到第 3 步。
 
-全部处理完，到第 3 步。
+#### 子 Agent 的任务说明
+
+交给子 Agent 时，把这一节和「改代码：一律走 PR」「处理 issue」「处理 PR」「发版」「原则」几节一起给它（可以让它直接读这个文件），再附上那一行 JSON。子 Agent 只处理这一件事：
+
+- **读懂这件事**：`entries` 是按时间排的整段对话。`kind: "user"` 是用户说的（`sender` 是谁，群里可能有几个人；`text` 是原话里属于这件事的一段；`file` 是已经下载好的附件，直接读，`text` 里写着它是什么、存在哪），`kind: "bot"` 是之前给的回复。`new: true` 的是还没处理的，**要回应的就是这些**，前面的是上下文：比如用户回「发吧」「1B,2A」，意思要看上一条 bot 回复问了什么。分组看着不对的（这件事里混了另一件事），只处理属于这件事的部分，其余的在回复里说一句让对方另外再发。
+- **补全上下文**：用户 entry 有 `reply_to` 的，用 `claude-bot get <reply_to>` 看对方回复的是哪条。`message` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`、`dingtalk:<会话>/<消息>`、`github:<owner>/<repo>/<编号>`。
+- **GitHub 的消息**：`text` 第一行说明是什么：`Issue #42: 标题`、`PR #43: 标题`（新开的）、`Comment on …`（评论）、`Review comment on PR #43, 文件:行号`（行内 review 评论）、`Review on PR #43: changes requested`（review）。评论和 review 的 `reply_to` 指向所属的 issue 或 PR，`claude-bot get <reply_to>` 会给出标题、正文和最近的评论。按「处理 issue」「处理 PR」做。
+- **聊天里的问题**：能直接回答的就查清楚再答；要改代码的（报 bug、提需求），和 issue 一样按「改代码」走 PR，回复里带上 PR 链接和版本号。
+- **回复**，用这件事的 `id`（形如 `task:xxx`）：
+  ```bash
+  claude-bot reply <task:id> <<'EOF'
+  ……支持 Markdown（代码块、列表、链接）……
+  EOF
+  ```
+  回复会落在这件事最新的那条消息上：群聊里自动 @ 发送者，话题里的消息回在同一个话题里；GitHub 上发成一条评论，行内 review 评论回在同一个讨论串里。回复会记进这件事的对话，下次追问时带着。回复完这件事就处理完了；输出 `still pending` 说明处理期间对方又补充了，把这个告诉主会话（主会话下一次 `inbox` 会拿到）。
+  - 要花比较长时间的，先 `claude-bot reply --keep <task:id> "收到，正在看……"` 回一句，做完再正式回复。
+  - 不需要回复的（纯表情、重复消息），用 `claude-bot done <task:id>` 标记。
+  - 要主动通知某个群（比如发版通知），用 `claude-bot send <chat_id> "..."`，`chat_id` 由这件事的 `channel` 和 `chat_id` 拼成，比如 `lark:oc_xxx`、`discord:123`、`telegram:-100123`、`slack:C123`、`dingtalk:cidXXX`。
+- **最后返回一句话**给主会话：处理了什么、结果（回复了 / PR 链接 / 版本号 / `still pending`）。
 
 ### 3. 等下一条消息
 
-用 Bash 的 `run_in_background` 在后台运行 `claude-bot inbox --wait 55m`，然后结束本轮。来了消息它会马上退出，没消息就等满 55 分钟退出；它报错也会退出（报错按第 2 步说的处理）。它一退出就会把你叫醒：从第 1 步开始新的一轮。空闲时你不用运行，也不花 token。
+用 Bash 的 `run_in_background` 在后台运行 `claude-bot inbox --wait 55m`，然后结束本轮。来了新的事它会马上退出，没消息就等满 55 分钟退出；它报错也会退出（报错按第 2 步说的处理）。它一退出就会把你叫醒：从第 1 步开始新的一轮。空闲时你不用运行，也不花 token。
 
 - **不要在前台等，也不要 sleep 轮询**它的输出文件。
 - 上一次的后台等待还在运行，就不要再开一个。
@@ -87,9 +93,9 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 先看完整内容（GitHub 渠道：`claude-bot get github:<owner>/<repo>/<n>`；否则 `gh issue view <n> --comments`），判断值不值得做：
 
-- **值得做**（真实的 bug、合理的需求、符合项目定位）：按「改代码」开 PR、合并、发版，然后在 issue 下回复原因、改动、PR 链接和版本号。正文写了 `Fixes #<n>` 的，合并时 issue 已经自动关掉，回复就行；没有自动关的，回复后再关（GitHub 渠道：`claude-bot github close <id>`；否则 `gh issue close <n> --comment "..."`）。
+- **值得做**（真实的 bug、合理的需求、符合项目定位）：按「改代码」开 PR、合并、发版，然后在 issue 下回复原因、改动、PR 链接和版本号。正文写了 `Fixes #<n>` 的，合并时 issue 已经自动关掉，回复就行；没有自动关的，回复后再关（GitHub 渠道：`claude-bot github close github:<owner>/<repo>/<n>`；否则 `gh issue close <n> --comment "..."`）。
 - **要做但还缺信息**：具体地问缺什么（版本、复现步骤、日志、期望的行为），先不关。
-- **不做**：也一定要回复理由。不是 bug 的说明为什么；重复的指向原 issue；超出项目范围的说明项目定位；广告（推广产品或服务、要求接入第三方服务）统一回复「感谢关注，日后会出相关合作方案，敬请期待。」。回复后关掉（GitHub 渠道：`claude-bot github close <id> --not-planned`；否则 `gh issue close <n> --reason "not planned" --comment "..."`）。
+- **不做**：也一定要回复理由。不是 bug 的说明为什么；重复的指向原 issue；超出项目范围的说明项目定位；广告（推广产品或服务、要求接入第三方服务）统一回复「感谢关注，日后会出相关合作方案，敬请期待。」。回复后关掉（GitHub 渠道：`claude-bot github close github:<owner>/<repo>/<n> --not-planned`；否则 `gh issue close <n> --reason "not planned" --comment "..."`）。
 
 ## 处理 PR
 
@@ -110,7 +116,7 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
    - 是不是广告：主要改动是加外链、推广自家产品或服务、加赞助和徽章，或者把第三方服务（比如 API 中转站、代理、付费接口）直接接进产品？第三方服务不能因为有人提了 PR 就接进来，哪怕代码写得没问题。
    - 是不是刷贡献：只是无关痛痒的改字、改格式，或者一看就是 Agent 生成、作者自己都没跑过的大段改动？
 
-   不值得要的，回复说明理由后关掉（GitHub 渠道：`claude-bot reply <id>` 再 `claude-bot github close <id>`；否则 `gh pr close <n> --comment "..."`），不用再往下审。广告类的 PR 和 issue 不用逐条解释，统一回复「感谢关注，日后会出相关合作方案，敬请期待。」后关掉。
+   不值得要的，回复说明理由后关掉（GitHub 渠道：`claude-bot reply <task:id>` 再 `claude-bot github close github:<owner>/<repo>/<n>`；否则 `gh pr close <n> --comment "..."`），不用再往下审。广告类的 PR 和 issue 不用逐条解释，统一回复「感谢关注，日后会出相关合作方案，敬请期待。」后关掉。
 2. **安全**：PR 的代码不可信。在本地跑之前，先确认它没有动构建脚本、CI 配置、依赖，测试里没有可疑命令、网络请求、读取密钥或环境变量。有可疑的，不要跑，在 PR 里指出并关掉。
 3. **代码对不对、实际能不能用**：
    - 读懂每一行改动、每一个逻辑分支：是否真的解决了它声称的问题，边界情况和错误处理，有没有引入回归，有没有多余或无关的改动，风格是否和周围代码一致，测试是不是真的在测东西。
@@ -123,14 +129,14 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 下结论：
 
-- **值得要、而且实际验证过没问题**：合并（GitHub 渠道：`claude-bot github merge <id>`，默认 squash；否则 `gh pr merge <n> --squash`），发版，在 PR 里回复验证了什么、版本号。
+- **值得要、而且实际验证过没问题**：合并（GitHub 渠道：`claude-bot github merge github:<owner>/<repo>/<n>`，默认 squash；否则 `gh pr merge <n> --squash`），发版，在 PR 里回复验证了什么、版本号。
 - **值得要但有问题**：逐条指出（文件、行号、为什么不对、怎么改），提交 request changes：
   ```bash
-  claude-bot github review <id> request-changes <<'EOF'
+  claude-bot github review github:<owner>/<repo>/<n> request-changes <<'EOF'
   ……
   EOF
   ```
-  没接 GitHub 渠道就用 `gh pr review <n> --request-changes --body "..."`。PR 作者是你的账号时 GitHub 不允许 request changes，改成普通回复。review 发完用 `claude-bot done <id>` 标记这条消息。问题小、作者又迟迟不改的，也可以自己按「改代码」开一个 PR 接手，在原 PR 里说明后关掉它。
+  没接 GitHub 渠道就用 `gh pr review <n> --request-changes --body "..."`。PR 作者是你的账号时 GitHub 不允许 request changes，改成普通回复。review 发完用 `claude-bot done <task:id>` 标记这件事。问题小、作者又迟迟不改的，也可以自己按「改代码」开一个 PR 接手，在原 PR 里说明后关掉它。
 
 测试通过不等于可以合并——测试本身可能就是错的。拿不准的宁可不合，在 PR 里把疑问写清楚。
 

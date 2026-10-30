@@ -71,6 +71,14 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 	// connected and disappears when the listener exits.
 	defer func() { _ = os.Remove(a.path(heartbeatFile)) }()
 
+	// Messages left pending by a version before tasks are screened into
+	// tasks like new ones.
+	if n, err := a.inbox.Migrate(); err != nil {
+		return err
+	} else if n > 0 {
+		a.log.Info("screening messages from before tasks", "count", n)
+	}
+
 	// Every message waits in incoming/ until Jev has screened it; leftovers
 	// from a previous run are screened first.
 	a.screen = make(chan struct{}, 1)

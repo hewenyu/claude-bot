@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/screen"
 	"github.com/hewenyu/claude-bot/internal/transport"
 )
@@ -88,10 +90,19 @@ func settle(ctx context.Context, wake <-chan struct{}) {
 	}
 }
 
-// screenIncoming has Jev group the incoming messages into tasks and refuse
-// the illegal ones. Each message moves to pending with what is left of it,
-// labelled by task and with its files saved; a message with nothing left
-// goes to done. Then the senders of refused tasks are told it is not
+// Threads a new message may continue: the conversation's pending tasks and
+// those handled in the last reopenWindow, at most maxThreads, latest first;
+// Jev reads the last transcriptRunes of each.
+const (
+	reopenWindow    = 24 * time.Hour
+	maxThreads      = 10
+	transcriptRunes = 800
+)
+
+// screenIncoming has Jev screen the incoming messages: their pieces go into
+// tasks, new ones or ones they continue (reopening those already handled),
+// and whatever Jev refuses goes nowhere. The messages are archived, cropped
+// and labelled; then the senders of refused tasks are told it is not
 // supported.
 func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 	msgs, err := a.inbox.Incoming()
@@ -104,7 +115,20 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 		items[i] = screen.Item{Msg: m, Files: a.fetchAttachments(ctx, m)}
 	}
 
-	tasks, err := screen.Screen(ctx, ask, items)
+	var threadErr error
+
+	tasks, err := screen.Screen(ctx, ask, items, func(m channel.Message) []screen.Thread {
+		th, err := a.threads(m)
+		if err != nil {
+			threadErr = err
+		}
+
+		return th
+	})
+	if err == nil {
+		err = threadErr
+	}
+
 	if err != nil {
 		return err
 	}
@@ -114,14 +138,10 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 		byID[m.ID] = m
 	}
 
-	labelled, refused := label(tasks, byID)
-
-	// Move the messages before replying: if this fails nothing was sent, and
-	// once it succeeds the refused pieces are gone for good.
-	for _, it := range items {
-		if err := a.settleMessage(it, labelled[it.Msg.ID], refused[it.Msg.ID]); err != nil {
-			return err
-		}
+	// Store the tasks and messages before replying: if this fails nothing
+	// was sent, and once it succeeds the refused pieces are gone for good.
+	if err := a.inbox.Locked(func() error { return a.commit(items, tasks, byID) }); err != nil {
+		return err
 	}
 
 	for _, t := range tasks {
@@ -142,14 +162,60 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 	return nil
 }
 
-// label names every legal task and returns, by message, its labelled
-// pieces and its refused ones. A task is named after its first message and
-// how many tasks start there: "lark:om_1/2". A file's piece says where the
-// file was saved.
-func label(tasks []screen.Task, byID map[string]channel.Message) (map[string][]channel.Piece, map[string][]screen.Piece) {
-	labelled := map[string][]channel.Piece{}
+// threads returns the tasks m's conversation may continue.
+func (a *app) threads(m channel.Message) ([]screen.Thread, error) {
+	tasks, err := a.inbox.RecentTasks(m.Channel, m.ChatID, m.ThreadID, time.Now().Add(-reopenWindow))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]screen.Thread, 0, min(len(tasks), maxThreads))
+	for _, t := range tasks[:min(len(tasks), maxThreads)] {
+		var transcript, asked []string
+
+		for _, e := range t.Entries {
+			if e.Kind == inbox.EntryBot {
+				transcript = append(transcript, "bot: "+e.Text)
+
+				continue
+			}
+
+			who := "user"
+			if e.Sender != nil && e.Sender.Name != "" {
+				who = e.Sender.Name
+			}
+
+			transcript = append(transcript, who+": "+e.Text)
+			asked = append(asked, e.Text)
+		}
+
+		out = append(out, screen.Thread{
+			ID:         t.ID,
+			Transcript: lastRunes(strings.Join(transcript, "\n"), transcriptRunes),
+			Asked:      lastRunes(strings.Join(asked, "\n"), transcriptRunes),
+		})
+	}
+
+	return out, nil
+}
+
+// lastRunes keeps the end of s, the latest of a conversation.
+func lastRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+
+	return "…" + string(r[len(r)-n:])
+}
+
+// commit stores what screening found, inside the inbox lock: each legal
+// task's pieces go into its inbox task, new or continued, which is then
+// pending; each message is archived without its refused pieces and labelled
+// with the tasks its pieces went to; refused files are deleted.
+func (a *app) commit(items []screen.Item, tasks []screen.Task, byID map[string]channel.Message) error {
+	labels := map[string][]channel.Piece{}
 	refused := map[string][]screen.Piece{}
-	started := map[string]int{}
 
 	for _, t := range tasks {
 		if t.Refused() {
@@ -160,57 +226,108 @@ func label(tasks []screen.Task, byID map[string]channel.Message) (map[string][]c
 			continue
 		}
 
-		first := t.Messages[0]
-		started[first]++
-		id := fmt.Sprintf("%s/%d", first, started[first])
-
-		if len(t.Pieces) == 0 {
-			labelled[first] = append(labelled[first], channel.Piece{Task: id})
+		task, err := a.taskFor(t, byID)
+		if err != nil {
+			return err
 		}
 
-		for _, p := range t.Pieces {
-			text := p.Text
-			if p.Attachment >= 0 {
-				att := byID[p.Message].Attachments[p.Attachment]
-				att.Path = p.File
-				text = fileNote(p.Message, att)
-			}
+		for _, id := range t.Messages {
+			m := byID[id]
+			entries := entriesOf(m, t.Pieces)
+			task.Append(id, entries)
 
-			labelled[p.Message] = append(labelled[p.Message], channel.Piece{Task: id, Text: text, File: p.File})
+			for _, e := range entries {
+				labels[id] = append(labels[id], channel.Piece{Task: task.ID, Text: e.Text, File: e.File})
+			}
+		}
+
+		if err := a.inbox.SaveTask(task, true); err != nil {
+			return err
 		}
 	}
 
-	return labelled, refused
+	return a.archive(items, labels, refused)
 }
 
-// settleMessage records where each attachment was saved and the message's
-// pieces, crops what was refused, and moves the message on.
-func (a *app) settleMessage(it screen.Item, pieces []channel.Piece, refused []screen.Piece) error {
-	m := it.Msg
+// archive stores the screened messages: where their files were saved, the
+// tasks their pieces went to, and without what was refused, whose files it
+// deletes.
+func (a *app) archive(items []screen.Item, labels map[string][]channel.Piece, refused map[string][]screen.Piece) error {
+	for _, it := range items {
+		m := it.Msg
 
-	m.Attachments = append([]channel.Attachment(nil), m.Attachments...)
-	for i := range m.Attachments {
-		if i < len(it.Files) {
-			m.Attachments[i].Path = it.Files[i]
+		m.Attachments = append([]channel.Attachment(nil), m.Attachments...)
+		for i := range m.Attachments {
+			if i < len(it.Files) {
+				m.Attachments[i].Path = it.Files[i]
+			}
+		}
+
+		for _, p := range refused[m.ID] {
+			if p.File != "" {
+				_ = os.Remove(p.File)
+			}
+		}
+
+		cropped, _ := screen.Crop(m, refused[m.ID])
+		cropped.Pieces = labels[m.ID]
+
+		if err := a.inbox.Archive(cropped); err != nil {
+			return err
 		}
 	}
 
-	for _, p := range refused {
-		if p.File != "" {
-			_ = os.Remove(p.File)
+	return nil
+}
+
+// taskFor returns the inbox task t continues, or a new one.
+func (a *app) taskFor(t screen.Task, byID map[string]channel.Message) (inbox.Task, error) {
+	if t.Thread != "" {
+		task, _, err := a.inbox.Task(t.Thread)
+		if err == nil {
+			return task, nil
+		}
+
+		if !errors.Is(err, inbox.ErrNoTask) {
+			return task, err
 		}
 	}
 
-	cropped, left := screen.Crop(m, refused)
-	cropped.Pieces = pieces
+	first := byID[t.Messages[0]]
 
-	if len(refused) > 0 && !left {
-		cropped.Pieces = nil
+	return inbox.Task{
+		ID: inbox.NewTaskID(time.Now()), Channel: first.Channel, ChatID: first.ChatID,
+		ChatType: first.ChatType, ThreadID: first.ThreadID, CreatedAt: first.CreatedAt,
+	}, nil
+}
 
-		return a.inbox.Reject(cropped)
+// entriesOf turns the pieces of m into task entries; a message with no
+// pieces (a sticker) is one empty entry.
+func entriesOf(m channel.Message, pieces []screen.Piece) []inbox.Entry {
+	sender := m.Sender
+
+	var entries []inbox.Entry
+
+	for _, p := range pieces {
+		if p.Message != m.ID {
+			continue
+		}
+
+		e := inbox.Entry{Kind: inbox.EntryUser, Message: m.ID, Sender: &sender, ReplyTo: m.ReplyTo, At: m.CreatedAt, Text: p.Text, File: p.File}
+		if p.Attachment >= 0 {
+			att := m.Attachments[p.Attachment]
+			att.Path = p.File
+			e.Text = fileNote(m.ID, att)
+		}
+
+		entries = append(entries, e)
 	}
 
-	return a.inbox.Admit(cropped)
+	if len(entries) == 0 {
+		entries = append(entries, inbox.Entry{Kind: inbox.EntryUser, Message: m.ID, Sender: &sender, ReplyTo: m.ReplyTo, At: m.CreatedAt})
+	}
+
+	return entries
 }
 
 // fileNote describes an uploaded file and where the listener saved it.
@@ -304,53 +421,25 @@ func (a *app) logRefusal(t screen.Task, byID map[string]channel.Message) {
 	_, _ = f.Write(append(line, '\n'))
 }
 
-// taskLine is one line of `inbox` output: one task, made of pieces of one
-// or more pending messages.
+// taskLine is one line of `inbox` output: a task with its whole
+// conversation. New marks the user entries not handled yet.
 type taskLine struct {
-	Task     string       `json:"task"`
-	Messages []messageRef `json:"messages"`
-	Pieces   []taskPiece  `json:"pieces"`
+	inbox.Task
+
+	Entries []entryLine `json:"entries"`
 }
 
-type taskPiece struct {
-	Message string `json:"message"`
-	Text    string `json:"text,omitempty"`
-	File    string `json:"file,omitempty"`
+type entryLine struct {
+	inbox.Entry
+
+	New bool `json:"new,omitempty"`
 }
 
-// tasksOf gathers the pieces of pending messages into tasks, in the order
-// they first appear. A message from before screening is a task of its own.
-func tasksOf(msgs []channel.Message) []taskLine {
-	var (
-		lines []taskLine
-		index = map[string]int{}
-	)
-
-	for _, m := range msgs {
-		pieces := m.Pieces
-		if len(pieces) == 0 {
-			pieces = []channel.Piece{{Task: m.ID, Text: m.Text}}
-		}
-
-		for _, p := range pieces {
-			i, ok := index[p.Task]
-			if !ok {
-				i = len(lines)
-				index[p.Task] = i
-
-				lines = append(lines, taskLine{Task: p.Task})
-			}
-
-			t := &lines[i]
-			if len(t.Messages) == 0 || t.Messages[len(t.Messages)-1].ID != m.ID {
-				t.Messages = append(t.Messages, refOf(m))
-			}
-
-			if p.Text != "" || p.File != "" {
-				t.Pieces = append(t.Pieces, taskPiece{Message: m.ID, Text: p.Text, File: p.File})
-			}
-		}
+func lineOf(t inbox.Task) taskLine {
+	l := taskLine{Task: t, Entries: make([]entryLine, len(t.Entries))}
+	for i, e := range t.Entries {
+		l.Entries[i] = entryLine{Entry: e, New: e.Kind == inbox.EntryUser && i >= t.Handled}
 	}
 
-	return lines
+	return l
 }

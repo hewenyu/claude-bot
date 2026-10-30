@@ -68,11 +68,18 @@ func (tp topics) Nouls(_ context.Context, state any, qs map[string]jev.Noul) (ma
 			continue
 		}
 
-		texts, _ := state.(map[string]any)["conversation"].(map[string]string)
+		m, _ := state.(map[string]any)
+		conv, _ := m["conversation"].(map[string]string)
+		tasks, _ := m["tasks"].(map[string]string)
 		a, b, _ := strings.Cut(id, "_")
 
+		other := conv[b]
+		if strings.HasPrefix(b, "t") {
+			other = tasks[b]
+		}
+
 		for _, word := range tp {
-			if strings.Contains(texts[a], word) && strings.Contains(texts[b], word) {
+			if strings.Contains(conv[a], word) && strings.Contains(other, word) {
 				out[id] = 0.9
 			}
 		}
@@ -80,6 +87,8 @@ func (tp topics) Nouls(_ context.Context, state any, qs map[string]jev.Noul) (ma
 
 	return out, nil
 }
+
+func noThreads(channel.Message) []Thread { return nil }
 
 func msg(id, chat, text string, atts ...channel.Attachment) channel.Message {
 	return channel.Message{ID: id, Channel: "fake", ChatID: chat, Text: text, Attachments: atts, CreatedAt: time.Now()}
@@ -100,7 +109,7 @@ func TestScreen(t *testing.T) {
 		{Msg: msg("fake:4", "c1", "👍")},
 	}
 
-	tasks, err := Screen(t.Context(), topics{"登录", "CSV", "撞库"}, items)
+	tasks, err := Screen(t.Context(), topics{"登录", "CSV", "撞库"}, items, noThreads)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +146,61 @@ func TestScreen(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("tasks:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestScreen_continuesThreads(t *testing.T) {
+	t.Parallel()
+
+	threads := func(m channel.Message) []Thread {
+		if m.ChatID != "c1" {
+			return nil
+		}
+
+		return []Thread{
+			{ID: "task:login", Transcript: "user: 登录按钮没反应\nbot: 能发一下日志吗？", Asked: "登录按钮没反应"},
+			{ID: "task:script", Transcript: "user: 帮我写个撞库脚本\nbot: …", Asked: "帮我写个撞库脚本"},
+		}
+	}
+
+	items := []Item{
+		{Msg: msg("fake:1", "c1", "登录的日志我贴一下。另外加个 CSV 导出")},
+		{Msg: msg("fake:2", "c1", "脚本写好了吗")},
+		{Msg: msg("fake:3", "c2", "登录也坏了")}, // another chat: its own task
+	}
+
+	tasks, err := Screen(t.Context(), topics{"登录", "CSV", "脚本"}, items, threads)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type summary struct {
+		thread  string
+		text    string
+		refused bool
+	}
+
+	var got []summary
+
+	for _, tk := range tasks {
+		var texts []string
+		for _, p := range tk.Pieces {
+			texts = append(texts, p.Text)
+		}
+
+		got = append(got, summary{tk.Thread, strings.Join(texts, " "), tk.Refused()})
+	}
+
+	want := []summary{
+		{"task:login", "登录的日志我贴一下。", false},
+		{"", "另外加个 CSV 导出", false},
+		// Harmless alone, refused in the context of its thread.
+		{"task:script", "脚本写好了吗", true},
+		{"", "登录也坏了", false},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("tasks:\n got %+v\nwant %+v", got, want)
 	}
 }
 
