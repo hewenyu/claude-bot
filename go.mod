@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/larksuite/oapi-sdk-go/v3 v3.12.2
 	golang.org/x/term v0.47.0
+	rsc.io/qr v0.2.0
 )
 
 require (
