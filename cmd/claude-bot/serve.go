@@ -36,7 +36,9 @@ type heartbeat struct {
 	StartedAt time.Time `json:"started_at"`
 	BeatAt    time.Time `json:"beat_at"`
 	Channels  []string  `json:"channels"`
-	Version   string    `json:"version"`
+	// Stopped lists channels that failed while the others kept running.
+	Stopped []string `json:"stopped,omitempty"`
+	Version string   `json:"version"`
 }
 
 func cmdServe(ctx context.Context, project string, args []string) error {
@@ -64,12 +66,13 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 		return fmt.Errorf("write listener pid: %w", err)
 	}
 
+	// The heartbeat means "connected": it starts once every channel has
+	// connected and disappears when the listener exits. Deferred before
+	// cancel, so it runs after beat has been told to stop.
+	defer func() { _ = os.Remove(a.path(heartbeatFile)) }()
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	// The heartbeat means "connected": it starts once every channel has
-	// connected and disappears when the listener exits.
-	defer func() { _ = os.Remove(a.path(heartbeatFile)) }()
 
 	// Messages left pending by a version before tasks are screened into
 	// tasks like new ones.
@@ -86,31 +89,70 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 
 	go a.screener(ctx, jev.New(a.typesafe.APIKey), a.screen)
 
+	return a.listen(ctx)
+}
+
+// listen runs every channel until ctx ends. A channel that fails is logged
+// and dropped from the heartbeat, which lists it as stopped so that inbox
+// asks for a restart; the other channels keep running. listen returns only
+// once every channel has stopped.
+func (a *app) listen(ctx context.Context) error {
+	type result struct {
+		name string
+		err  error
+	}
+
 	allReady := make(chan struct{})
 
 	var waiting atomic.Int64
 
 	waiting.Store(int64(len(a.channels)))
 
-	errs := make(chan error, len(a.channels))
-	for _, ch := range a.channels {
+	readies := make(map[string]func(), len(a.channels))
+	results := make(chan result, len(a.channels))
+	stopped := make(chan string, len(a.channels))
+
+	for name, ch := range a.channels {
 		ready := sync.OnceFunc(func() { // Listen calls it on every reconnect
 			if waiting.Add(-1) == 0 {
 				close(allReady)
 			}
 		})
+		readies[name] = ready
 
-		go func() { errs <- ch.Listen(ctx, a.deliverer(ctx, ch), ready) }()
+		go func() { results <- result{name, ch.Listen(ctx, a.deliverer(ctx, ch), ready)} }()
 	}
 
-	go a.beat(ctx, allReady)
+	go a.beat(ctx, allReady, stopped)
 
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-errs:
-		return err
+	var errs []error
+
+	for len(errs) < len(a.channels) {
+		select {
+		case <-ctx.Done():
+			return nil
+		case r := <-results:
+			if ctx.Err() != nil {
+				return nil //nolint:nilerr // shutting down: the channel error is just the cancellation
+			}
+
+			if r.err == nil {
+				r.err = errors.New("stopped")
+			}
+
+			errs = append(errs, fmt.Errorf("%s: %w", r.name, r.err))
+
+			if len(errs) < len(a.channels) {
+				a.log.Error("channel stopped; the others keep running", "channel", r.name, "err", r.err)
+
+				stopped <- r.name
+
+				readies[r.name]() // a channel that never connected no longer holds up the heartbeat
+			}
+		}
 	}
+
+	return errors.Join(errs...)
 }
 
 func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Message) error {
@@ -146,20 +188,36 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 	}
 }
 
-// beat writes the heartbeat every heartbeatEvery once ready is closed.
-func (a *app) beat(ctx context.Context, ready <-chan struct{}) {
+// beat writes the heartbeat every heartbeatEvery once ready is closed, and
+// at once when a channel arrives on stopped.
+func (a *app) beat(ctx context.Context, ready <-chan struct{}, stopped <-chan string) {
 	hb := heartbeat{PID: os.Getpid(), StartedAt: time.Now().UTC(), Channels: a.names(), Version: Version}
 
-	select {
-	case <-ctx.Done():
-		return
-	case <-ready:
+	stop := func(name string) {
+		hb.Channels = slices.DeleteFunc(hb.Channels, func(c string) bool { return c == name })
+		hb.Stopped = append(hb.Stopped, name)
+	}
+
+	for ready != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case name := <-stopped:
+			stop(name)
+		case <-ready:
+			ready = nil
+		}
 	}
 
 	t := time.NewTicker(heartbeatEvery)
 	defer t.Stop()
 
 	for {
+		// A channel that stopped before ready was closed is already queued.
+		for len(stopped) > 0 {
+			stop(<-stopped)
+		}
+
 		hb.BeatAt = time.Now().UTC()
 		if err := writeJSON(a.path(heartbeatFile), hb); err != nil {
 			a.log.Warn("write heartbeat", "err", err)
@@ -168,6 +226,8 @@ func (a *app) beat(ctx context.Context, ready <-chan struct{}) {
 		select {
 		case <-ctx.Done():
 			return
+		case name := <-stopped:
+			stop(name)
 		case <-t.C:
 		}
 	}
@@ -267,7 +327,9 @@ func (a *app) checkListener() error {
 		return errListenerDown
 	}
 
-	if !slices.Equal(hb.Channels, a.names()) {
+	if len(hb.Stopped) > 0 {
+		a.warnStopped(hb)
+	} else if !slices.Equal(hb.Channels, a.names()) {
 		fmt.Fprintf(os.Stderr, "claude-bot: the listener serves %s but %s are configured; ask the user to run `claude-bot restart`\n",
 			strings.Join(hb.Channels, ", "), strings.Join(a.names(), ", "))
 	}
@@ -277,6 +339,12 @@ func (a *app) checkListener() error {
 	}
 
 	return nil
+}
+
+// warnStopped says which channels of the listener failed and where to look.
+func (a *app) warnStopped(hb heartbeat) {
+	fmt.Fprintf(os.Stderr, "claude-bot: channel %s stopped after an error (see \"channel stopped\" in %s) while the others keep running; ask the user to fix it and run `claude-bot restart`\n",
+		strings.Join(hb.Stopped, ", "), a.path(listenerLog))
 }
 
 // listenerPID returns the pid of the running listener, 0 if there is none.
@@ -339,6 +407,10 @@ func (a *app) startListener(ctx context.Context) error {
 		case <-tick.C:
 			if hb, alive := readHeartbeat(a.dir); alive && hb.PID == pid {
 				fmt.Printf("started listener (pid %d), log: %s\n", pid, logPath)
+
+				if len(hb.Stopped) > 0 {
+					a.warnStopped(hb)
+				}
 
 				return nil
 			}
