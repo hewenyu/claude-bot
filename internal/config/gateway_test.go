@@ -137,16 +137,47 @@ func TestImport(t *testing.T) { //nolint:paralleltest // sets the environment
 	expect(t, got.Gateway != nil && *got.Lark == *legacy.Lark && *got.DingTalk == *legacy.DingTalk &&
 		*got.GitHub == *legacy.GitHub && *got.TypeSafe == *legacy.TypeSafe, "after import Read = %+v", got)
 
-	// The second project's own key and token lose to the shared ones.
 	imp = must(Import(ctx, web))(t)
-	expect(t, strings.Join(imp.Kept, ",") == "TypeSafe API key,GitHub token", "Import(web).Kept = %v", imp.Kept)
+	expect(t, strings.Join(imp.Kept, ",") == "TypeSafe API key", "Import(web).Kept = %v", imp.Kept)
 
 	got = must(Read(ctx, web))(t)
-	expect(t, got.GitHub.Token == "ghp_api" && got.TypeSafe.APIKey == "ts-api",
-		"web after import uses %q / %q, want the shared ones", got.GitHub.Token, got.TypeSafe.APIKey)
+	expect(t, got.TypeSafe.APIKey == "ts-api", "web after import uses TypeSafe key %q, want the shared one", got.TypeSafe.APIKey)
 
 	_, err = Import(ctx, web)
 	expect(t, errors.Is(err, ErrNothingToImport), "importing again = %v, want ErrNothingToImport", err)
+}
+
+func TestImport_githubTokens(t *testing.T) { //nolint:paralleltest // sets the environment
+	clearEnv(t)
+	isolate(t)
+	ctx := t.Context()
+
+	imported := func(name, token string) (Imported, Config) {
+		t.Helper()
+
+		dir := newProjectDir(t, name)
+		if err := WriteFile(dir, Config{GitHub: &github.Config{Token: token, Repo: "o/" + name}}); err != nil {
+			t.Fatal(err)
+		}
+
+		return must(Import(ctx, dir))(t), must(Read(ctx, dir))(t)
+	}
+
+	// The first token becomes the default one.
+	imp, api := imported("api", "ghp_api")
+	expect(t, imp.GitHubToken == "" && api.GitHub.Token == "ghp_api", "api: %+v uses %q", imp, api.GitHub.Token)
+
+	// A token of another account is kept under the project's name.
+	imp, web := imported("web", "ghp_web")
+	expect(t, imp.GitHubToken == "web" && web.GitHub.Token == "ghp_web" && web.GitHubTokenName == "web",
+		"web: %+v uses %q (%q)", imp, web.GitHub.Token, web.GitHubTokenName)
+
+	// A token the gateway has already is used by name, whichever it is.
+	for name, want := range map[string]string{"site": "web", "docs": ""} {
+		token := map[string]string{"web": "ghp_web", "": "ghp_api"}[want]
+		imp, got := imported(name, token)
+		expect(t, imp.GitHubToken == want && got.GitHub.Token == token, "%s: %+v uses %q", name, imp, got.GitHub.Token)
+	}
 }
 
 // must returns v, failing the test if err is set: must(f())(t).

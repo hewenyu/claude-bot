@@ -71,7 +71,7 @@ const p = (id: number) => `/api/projects/${id}`;
 
 export const api = {
   overview: () => call<Overview>("GET", "/api/overview"),
-  channelTypes: () => call<ChannelType[]>("GET", "/api/channel-types"),
+  channelTypes: (project: number) => call<ChannelType[]>("GET", `${p(project)}/channel-types`),
   tasks: (project: number) => call<TaskSummary[]>("GET", `${p(project)}/tasks`),
   task: (project: number, id: string) => call<TaskDetail>("GET", `${p(project)}/tasks/${encodeURIComponent(id)}`),
   channels: (project: number) => call<ChannelView[]>("GET", `${p(project)}/channels`),
@@ -83,4 +83,7 @@ export const api = {
   removeProject: (project: number) => call<{ config: string }>("DELETE", p(project)),
   settings: () => call<Settings>("GET", "/api/settings"),
   saveSettings: (s: { typesafe_key?: string; github_token?: string }) => call<Settings>("PUT", "/api/settings", s),
+  saveGitHubToken: (name: string, token: string, projects: number[]) =>
+    call<Settings>("PUT", `/api/github-tokens/${encodeURIComponent(name)}`, { token, projects }),
+  removeGitHubToken: (name: string) => call<Settings>("DELETE", `/api/github-tokens/${encodeURIComponent(name)}`),
 };

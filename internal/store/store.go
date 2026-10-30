@@ -41,7 +41,7 @@ const (
 // Settings shared by every project.
 const (
 	SettingTypeSafeKey = "typesafe_api_key"
-	SettingGitHubToken = "github_token"
+	SettingGitHubToken = "github_token" // the default GitHub token
 	SettingUIToken     = "ui_token"
 	SettingUIAddr      = "ui_addr"
 )
@@ -263,6 +263,37 @@ func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 	}
 
 	return v, nil
+}
+
+// SettingGitHubTokenPrefix starts the key of each named GitHub token, for
+// projects that use another account than the default token's.
+const SettingGitHubTokenPrefix = "github_token:" //nolint:gosec // a settings key, not a credential
+
+// SettingsWithPrefix returns the settings whose key starts with prefix, by
+// the rest of their key.
+func (s *Store) SettingsWithPrefix(ctx context.Context, prefix string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings WHERE substr(key, 1, ?) = ? ORDER BY key`, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("read settings %s*: %w", prefix, err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only
+
+	out := map[string]string{}
+
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("read settings %s*: %w", prefix, err)
+		}
+
+		out[k[len(prefix):]] = v
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read settings %s*: %w", prefix, err)
+	}
+
+	return out, nil
 }
 
 // SetSetting sets a setting; "" removes it.

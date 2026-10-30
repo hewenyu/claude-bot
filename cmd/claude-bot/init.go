@@ -42,11 +42,13 @@ type initOptions struct {
 	discordToken, telegramToken         string
 	slackAppToken, slackBotToken        string
 	githubToken, githubRepo             string
+	githubTokenName                     string // the gateway's token to use; "" is the default one
+	githubRemote                        string // <owner>/<name> of the repository's GitHub remote, "" if none
 	dingtalkID, dingtalkSecret          string
 	typesafeKey                         string
 	reregister, noOpen, noVerify, force bool
 	botMD                               bool   // only rewrite the /bot command
-	sharedGitHubToken                   string // the gateway's, used unless --github-token gives another
+	sharedGitHubToken                   string // the gateway's token of githubTokenName, used unless --github-token gives another
 }
 
 func cmdInit(ctx context.Context, project string, args []string) error {
@@ -74,10 +76,17 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	// Every project shares the gateway's GitHub token.
-	if o.sharedGitHubToken, err = config.SharedGitHubToken(ctx); err != nil {
+	// Projects share the gateway's GitHub tokens: the default one, or the
+	// one named for an account of their own.
+	if o.githubTokenName == "" {
+		o.githubTokenName = cfg.GitHubTokenName
+	}
+
+	if o.sharedGitHubToken, err = config.GatewayGitHubToken(ctx, o.githubTokenName); err != nil {
 		return err
 	}
+
+	o.githubRemote = githubRemote(ctx, root)
 
 	if done, err := initJev(ctx, dir, root, &cfg, o); done || err != nil {
 		return err
@@ -163,7 +172,7 @@ func pickChannel(o *initOptions, cfg config.Config) error {
 		o.channel = lark.Name
 
 		if p != nil {
-			name, err := p.chooseChannel(cfg)
+			name, err := p.chooseChannel(cfg, o.githubRemote != "")
 			if err != nil {
 				return err
 			}
@@ -309,7 +318,8 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.StringVar(&o.dingtalkID, "dingtalk-client-id", "", "set up a DingTalk app: its Client ID (AppKey), with --dingtalk-client-secret")
 	fs.StringVar(&o.dingtalkSecret, "dingtalk-client-secret", "", "set up a DingTalk app: its Client Secret (AppSecret), with --dingtalk-client-id")
 	fs.StringVar(&o.typesafeKey, "typesafe-key", "", "TypeSafe API key for Jev, which screens every message (asked on a terminal if none is set up)")
-	fs.StringVar(&o.githubRepo, "github-repo", "", "with --github-token: <owner>/<name> (default: from the origin remote)")
+	fs.StringVar(&o.githubRepo, "github-repo", "", "with --github-token: <owner>/<name> (default: from the repository's GitHub remote)")
+	fs.StringVar(&o.githubTokenName, "github-token-name", "", "use the gateway's GitHub token of this name, for a project of another account than the default token's; with --github-token, save that token under this name")
 	fs.StringVar(&o.proxy, "proxy", "", "direct, env, or a proxy URL (default: direct for feishu and dingtalk, env for the others)")
 	fs.StringVar(&o.name, "name", "", "bot name shown in Lark (default: <repo> Bot)")
 	fs.BoolVar(&o.reregister, "reregister", false, "create a new app even if one is configured")
@@ -333,26 +343,19 @@ func parseInitFlags(args []string) (initOptions, error) {
 		return o, fmt.Errorf("%w: --dingtalk-client-id and --dingtalk-client-secret go together", errUsage)
 	}
 
+	if o.githubTokenName != "" {
+		if err := config.CheckTokenName(o.githubTokenName); err != nil {
+			return o, fmt.Errorf("%w: %w", errUsage, err)
+		}
+	}
+
 	return o, settleChannel(&o)
 }
 
 // settleChannel derives o.channel from the credential flags and rejects
 // flags that ask for different channels.
 func settleChannel(o *initOptions) error {
-	var implied []string
-
-	for name, set := range map[string]bool{
-		lark.Name:     o.appID != "",
-		discord.Name:  o.discordToken != "",
-		telegram.Name: o.telegramToken != "",
-		slack.Name:    o.slackBotToken != "",
-		github.Name:   o.githubToken != "",
-		dingtalk.Name: o.dingtalkID != "",
-	} {
-		if set {
-			implied = append(implied, name)
-		}
-	}
+	implied := impliedChannels(o)
 
 	switch {
 	case o.botMD && (o.channel != "" || len(implied) > 0):
@@ -368,6 +371,26 @@ func settleChannel(o *initOptions) error {
 	}
 
 	return nil
+}
+
+// impliedChannels are the channels the credential flags set up.
+func impliedChannels(o *initOptions) []string {
+	var implied []string
+
+	for name, set := range map[string]bool{
+		lark.Name:     o.appID != "",
+		discord.Name:  o.discordToken != "",
+		telegram.Name: o.telegramToken != "",
+		slack.Name:    o.slackBotToken != "",
+		github.Name:   o.githubToken != "" || o.githubTokenName != "",
+		dingtalk.Name: o.dingtalkID != "",
+	} {
+		if set {
+			implied = append(implied, name)
+		}
+	}
+
+	return implied
 }
 
 // withTimeout runs an API check under apiTimeout.

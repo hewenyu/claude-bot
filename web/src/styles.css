@@ -1356,3 +1356,97 @@ p:last-child {
 .note {
   overflow-wrap: anywhere;
 }
+
+/* ---------- GitHub tokens ---------- */
+
+.token-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.token-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 12px;
+}
+
+.token-row + .token-row {
+  border-top: 1px solid var(--line);
+}
+
+.token-main {
+  display: flex;
+  flex-direction: column;
+}
+
+.token-name {
+  font-weight: 600;
+}
+
+.token-serves {
+  overflow-wrap: anywhere;
+}
+
+.token-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.token-default {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.token-projects {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  gap: 6px;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.check:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.state-bad {
+  color: var(--bad);
+}
+
+.add-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.add-option:disabled:hover {
+  border-color: var(--line);
+}
+
+.add-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.add-why {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}

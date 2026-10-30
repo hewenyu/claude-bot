@@ -63,6 +63,9 @@ type Config struct {
 	// Gateway is the project's registration when its configuration lives
 	// in the gateway database rather than in config.json.
 	Gateway *store.Project `json:"-"`
+	// GitHubTokenName names the gateway's GitHub token the project uses;
+	// "" is the default token.
+	GitHubTokenName string `json:"-"`
 }
 
 // Dir returns <project root>/.claude-bot. The project root is, in order: the

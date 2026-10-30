@@ -113,13 +113,17 @@ func (p *prompter) line() (string, error) {
 
 // chooseChannel shows the menu until a valid number (or Enter for the
 // default) is given.
-func (p *prompter) chooseChannel(cfg config.Config) (string, error) {
+func (p *prompter) chooseChannel(cfg config.Config, onGitHub bool) (string, error) {
 	p.say("选择要接入的渠道（之后可以再运行 init --channel <渠道> 接入其他渠道）：\n")
 
 	for i, c := range channelChoices {
 		mark := ""
-		if cfg.Has(c.name) {
+
+		switch {
+		case cfg.Has(c.name):
 			mark = "  [已配置]"
+		case c.name == github.Name && !onGitHub:
+			mark = "  [这个仓库没有 GitHub 上的 remote，不可选]"
 		}
 
 		p.say("  %d) %s%s\n", i+1, c.label, mark)
@@ -138,6 +142,12 @@ func (p *prompter) chooseChannel(cfg config.Config) (string, error) {
 		}
 
 		if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(channelChoices) {
+			if channelChoices[n-1].name == github.Name && !onGitHub {
+				p.say("这个仓库没有 GitHub 上的 remote，没有可监听的 issue 和 PR；请选别的渠道（要监听别的仓库，用 --github-token 加 --github-repo）。\n")
+
+				continue
+			}
+
 			return channelChoices[n-1].name, nil
 		}
 
@@ -217,7 +227,11 @@ func askGitHubToken(o *initOptions, p *prompter) error {
 	if o.githubToken == "" && o.sharedGitHubToken != "" {
 		o.githubToken = o.sharedGitHubToken
 
-		fmt.Println("沿用 gateway 里所有项目共用的 GitHub token（要换就加 --github-token）")
+		if o.githubTokenName != "" {
+			fmt.Printf("沿用 gateway 里的 GitHub token「%s」（要换就加 --github-token）\n", o.githubTokenName)
+		} else {
+			fmt.Println("沿用 gateway 里的默认 GitHub token（要换就加 --github-token；另一个账号的项目加 --github-token <token> --github-token-name <名字>）")
+		}
 
 		return nil
 	}

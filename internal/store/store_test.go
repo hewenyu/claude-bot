@@ -116,6 +116,34 @@ func TestSettings(t *testing.T) {
 	}
 }
 
+func TestSettingsWithPrefix(t *testing.T) {
+	t.Parallel()
+
+	s, _ := openTemp(t)
+	ctx := t.Context()
+
+	for k, v := range map[string]string{
+		SettingGitHubToken:                     "default",
+		SettingGitHubTokenPrefix + "work":      "w",
+		SettingGitHubTokenPrefix + "oss":       "o",
+		"github_tokenx":                        "not one",
+		SettingGitHubTokenPrefix + "100%_like": "p",
+	} {
+		if err := s.SetSetting(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.SettingsWithPrefix(ctx, SettingGitHubTokenPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 3 || got["work"] != "w" || got["oss"] != "o" || got["100%_like"] != "p" {
+		t.Errorf("SettingsWithPrefix = %v", got)
+	}
+}
+
 func TestAddProject(t *testing.T) {
 	t.Parallel()
 

@@ -4,16 +4,21 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/channel/github"
+	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/store"
 )
@@ -40,9 +45,22 @@ func newPage(t *testing.T) *page {
 		t.Fatal(err)
 	}
 
-	w := &web{g: f.g, token: testPageToken, hosts: hosts, log: slog.New(slog.DiscardHandler)}
+	w := &web{g: f.g, token: testPageToken, hosts: hosts, log: slog.New(slog.DiscardHandler), checkGitHub: fakeGitHubCheck}
 
 	return &page{t: t, f: f, h: w.routes()}
+}
+
+// fakeGitHubCheck accepts tokens starting with "good" for any repository.
+func fakeGitHubCheck(_ context.Context, token string, gh github.Config) error {
+	if !strings.HasPrefix(token, "good") {
+		return errors.New("401 Bad credentials")
+	}
+
+	if gh.Repo == "" {
+		return errors.New("no repository")
+	}
+
+	return nil
 }
 
 // call makes an authorized request and returns the status and body.
@@ -172,7 +190,7 @@ func TestWeb_neverShowsSecrets(t *testing.T) {
 	proj, secrets := secretFixture(t, p)
 	id := projectPath(proj)
 
-	for _, path := range []string{"/api/overview", "/api/settings", "/api/channel-types", id + "/channels", id + "/tasks"} {
+	for _, path := range []string{"/api/overview", "/api/settings", id + "/channel-types", id + "/channels", id + "/tasks"} {
 		status, body := p.call(http.MethodGet, path, nil)
 		if status != http.StatusOK {
 			t.Fatalf("%s: %d %s", path, status, body)
@@ -197,7 +215,7 @@ func TestWeb_showsWhichSecretsAreSet(t *testing.T) {
 	var got settingsView
 	p.decode(body, &got)
 
-	if !got.TypeSafe.Set || got.TypeSafe.Hint != "…0004" || got.GitHubToken.Hint != "…0005" {
+	if !got.TypeSafe.Set || got.TypeSafe.Hint != "…0004" || len(got.GitHubTokens) != 1 || got.GitHubTokens[0].Token.Hint != "…0005" {
 		t.Errorf("settings = %+v", got)
 	}
 
@@ -466,5 +484,157 @@ func TestTaskLink(t *testing.T) {
 		if got := taskLink(inbox.Task{Channel: c.channel, ChatID: c.chat}); got != c.want {
 			t.Errorf("taskLink(%s %s) = %q, want %q", c.channel, c.chat, got, c.want)
 		}
+	}
+}
+
+// githubPage is a page over two projects with GitHub channels on the
+// default token.
+func githubPage(t *testing.T) (p *page, a, b store.Project) {
+	t.Helper()
+
+	p = newPage(t)
+
+	if err := p.f.store.SetSetting(t.Context(), store.SettingGitHubToken, "good-default-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"a", "b"} {
+		proj, err := p.f.store.SaveProject(t.Context(), t.TempDir(), []store.Channel{
+			{Name: "github", AppKey: "github:o/" + name, Config: json.RawMessage(`{"repo":"o/` + name + `"}`)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if name == "a" {
+			a = proj
+		} else {
+			b = proj
+		}
+	}
+
+	return p, a, b
+}
+
+// tokenOf is the GitHub token a project's listener would use.
+func tokenOf(t *testing.T, s *store.Store, p store.Project) string {
+	t.Helper()
+
+	cfg, err := config.FromStore(t.Context(), s, p)
+	if err != nil {
+		t.Fatalf("FromStore(%s): %v", p.Name, err)
+	}
+
+	return cfg.GitHub.Token
+}
+
+func TestWeb_githubTokenServesItsProjects(t *testing.T) {
+	t.Parallel()
+
+	p, a, b := githubPage(t)
+
+	status, body := p.call(http.MethodPut, "/api/github-tokens/work", githubTokenInput{Token: "good-work-token", Projects: []int64{b.ID}})
+	if status != http.StatusOK {
+		t.Fatalf("add token: %d %s", status, body)
+	}
+
+	if bytes.Contains(body, []byte("good-work-token")) || bytes.Contains(body, []byte("good-default-token")) {
+		t.Errorf("settings show a token: %s", body)
+	}
+
+	if got, want := tokenOf(t, p.f.store, a)+" "+tokenOf(t, p.f.store, b), "good-default-token good-work-token"; got != want {
+		t.Errorf("tokens of a, b = %s, want %s", got, want)
+	}
+
+	var got settingsView
+	p.decode(body, &got)
+
+	if len(got.GitHubTokens) != 2 || strings.Join(got.GitHubTokens[0].Projects, ",") != a.Name ||
+		got.GitHubTokens[1].Name != "work" || strings.Join(got.GitHubTokens[1].Projects, ",") != b.Name {
+		t.Errorf("tokens = %+v", got.GitHubTokens)
+	}
+}
+
+func TestWeb_githubChannelForm(t *testing.T) {
+	t.Parallel()
+
+	p, a, b := githubPage(t)
+
+	if status, body := p.call(http.MethodPut, "/api/github-tokens/work", githubTokenInput{Token: "good-work-token", Projects: []int64{b.ID}}); status != http.StatusOK {
+		t.Fatalf("add token: %d %s", status, body)
+	}
+
+	// The channel form offers the token by name, and refuses unknown ones.
+	_, body := p.call(http.MethodGet, projectPath(a)+"/channel-types", nil)
+
+	var types []channelType
+	p.decode(body, &types)
+
+	gh := types[slices.IndexFunc(types, func(t channelType) bool { return t.Name == "github" })]
+	if f := gh.Fields[slices.IndexFunc(gh.Fields, func(f channelField) bool { return f.Key == "token_name" })]; !slices.Equal(f.Options, []string{"work"}) {
+		t.Errorf("token choices = %v", f.Options)
+	}
+
+	if gh.Unavailable == "" {
+		t.Error("a repository without a GitHub remote can add a GitHub channel")
+	}
+
+	if status, body := putForm(p, a, "github", map[string]string{"repo": "o/a", "token_name": "nope"}); status != http.StatusBadRequest {
+		t.Errorf("unknown token name: %d %s", status, body)
+	}
+
+	if status, body := putForm(p, a, "github", map[string]string{"repo": "o/a", "token_name": "work"}); status != http.StatusOK || tokenOf(t, p.f.store, a) != "good-work-token" {
+		t.Errorf("choose token in the form: %d %s", status, body)
+	}
+}
+
+func TestWeb_githubTokenRefusedOrInUse(t *testing.T) {
+	t.Parallel()
+
+	p, _, b := githubPage(t)
+
+	cases := []struct {
+		name string
+		in   githubTokenInput
+		want int
+	}{
+		{"bad token", githubTokenInput{Token: "bad", Projects: []int64{b.ID}}, http.StatusBadRequest},
+		{"new token without a value", githubTokenInput{Projects: []int64{b.ID}}, http.StatusBadRequest},
+		{"project without GitHub", githubTokenInput{Token: "good", Projects: []int64{999}}, http.StatusBadRequest},
+	}
+
+	for _, c := range cases {
+		if status, body := p.call(http.MethodPut, "/api/github-tokens/work", c.in); status != c.want {
+			t.Errorf("%s: %d %s, want %d", c.name, status, body, c.want)
+		}
+	}
+
+	if status, _ := p.call(http.MethodPut, "/api/github-tokens/a%20b", githubTokenInput{Token: "good"}); status != http.StatusBadRequest {
+		t.Errorf("bad name: %d", status)
+	}
+
+	if tokens, _ := config.GitHubTokens(t.Context(), p.f.store); len(tokens) != 0 {
+		t.Errorf("refused tokens were stored: %v", tokens)
+	}
+
+	if status, body := p.call(http.MethodPut, "/api/github-tokens/work", githubTokenInput{Token: "good-work", Projects: []int64{b.ID}}); status != http.StatusOK {
+		t.Fatalf("add: %d %s", status, body)
+	}
+
+	if status, _ := p.call(http.MethodDelete, "/api/github-tokens/work", nil); status != http.StatusConflict {
+		t.Errorf("delete a token in use: %d, want 409", status)
+	}
+
+	// Serving no project, b goes back to the default token; then it can go.
+	if status, body := p.call(http.MethodPut, "/api/github-tokens/work", githubTokenInput{}); status != http.StatusOK || tokenOf(t, p.f.store, b) != "good-default-token" {
+		t.Errorf("unassign: %d %s", status, body)
+	}
+
+	if status, _ := p.call(http.MethodDelete, "/api/github-tokens/work", nil); status != http.StatusOK {
+		t.Errorf("delete an unused token: %d", status)
+	}
+
+	if tokens, _ := config.GitHubTokens(t.Context(), p.f.store); len(tokens) != 0 {
+		t.Errorf("deleted token still stored: %v", tokens)
 	}
 }

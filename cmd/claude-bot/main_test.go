@@ -449,14 +449,14 @@ func TestChooseChannel(t *testing.T) {
 	for _, tt := range tests {
 		p, _ := testPrompter(tt.input)
 
-		got, err := p.chooseChannel(config.Config{})
+		got, err := p.chooseChannel(config.Config{}, true)
 		if err != nil || got != tt.want {
 			t.Errorf("chooseChannel(%q) = %q, %v; want %q", tt.input, got, err, tt.want)
 		}
 	}
 
 	p, _ := testPrompter("x\n")
-	if _, err := p.chooseChannel(config.Config{}); !errors.Is(err, errNoInput) {
+	if _, err := p.chooseChannel(config.Config{}, true); !errors.Is(err, errNoInput) {
 		t.Errorf("chooseChannel at end of input = %v, want errNoInput", err)
 	}
 }
@@ -465,13 +465,47 @@ func TestChooseChannel_marksConfigured(t *testing.T) {
 	t.Parallel()
 
 	p, out := testPrompter("\n")
-	if _, err := p.chooseChannel(config.Config{Telegram: &telegram.Config{Token: "t"}}); err != nil {
+	if _, err := p.chooseChannel(config.Config{Telegram: &telegram.Config{Token: "t"}}, true); err != nil {
 		t.Fatal(err)
 	}
 
 	for line := range strings.SplitSeq(out.String(), "\n") {
 		if strings.Contains(line, "Telegram") != strings.Contains(line, "已配置") {
 			t.Errorf("menu line %q: only Telegram should be marked configured", line)
+		}
+	}
+}
+
+func TestChooseChannel_noGitHubRemote(t *testing.T) {
+	t.Parallel()
+
+	// GitHub cannot be picked in a repository that is not on GitHub.
+	p, out := testPrompter("5\n2\n")
+
+	got, err := p.chooseChannel(config.Config{}, false)
+	if err != nil || got != "discord" {
+		t.Errorf("chooseChannel = %q, %v; want discord after refusing github", got, err)
+	}
+
+	if !strings.Contains(out.String(), "没有 GitHub 上的 remote") {
+		t.Errorf("menu does not say why GitHub cannot be picked:\n%s", out)
+	}
+}
+
+func TestRepoOfRemotes(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"": "",
+		"origin\tgit@gitlab.com:a/b.git (fetch)\norigin\tgit@gitlab.com:a/b.git (push)\n": "",
+		"origin\thttps://github.com/a/b.git (fetch)\n":                                    "a/b",
+		"fork\tgit@github.com:me/b.git (fetch)\norigin\tgit@github.com:a/b.git (fetch)\n": "a/b",
+		"origin\t/srv/git/b.git (fetch)\nupstream\tgit@github.com:a/b.git (fetch)\n":      "a/b",
+	}
+
+	for in, want := range cases {
+		if got := repoOfRemotes(in); got != want {
+			t.Errorf("repoOfRemotes(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
