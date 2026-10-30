@@ -7,6 +7,7 @@ package discord
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -110,7 +111,7 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 	}
 
 	s.Identify.Intents = intents
-	s.Client = &http.Client{Transport: transport.HTTP(proxy)}
+	s.Client = transport.Client(proxy)
 	s.Dialer = transport.WebSocket(proxy)
 
 	return &Channel{s: s, log: log}, nil
@@ -134,9 +135,18 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 		return Bot{}, fmt.Errorf("discord bot info: %w", err)
 	}
 
-	app, err := c.s.Application(self) // takes no context; the client has timeouts
+	// Session.Application takes no context; this is the same request.
+	endpoint := discordgo.EndpointOAuth2Application(self)
+
+	body, err := c.s.RequestWithBucketID(http.MethodGet, endpoint, nil,
+		discordgo.EndpointOAuth2Application(""), discordgo.WithContext(ctx))
 	if err != nil {
 		return Bot{}, fmt.Errorf("discord application info: %w", err)
+	}
+
+	var app discordgo.Application
+	if err := json.Unmarshal(body, &app); err != nil {
+		return Bot{}, fmt.Errorf("discord application info: parse: %w", err)
 	}
 
 	c.bot = &Bot{Name: u.Username, ID: u.ID, AppID: app.ID}

@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -30,7 +29,6 @@ const Name = "slack"
 const (
 	appTokenPrefix = "xapp-"
 	botTokenPrefix = "xoxb-"
-	clientTimeout  = 2 * time.Minute
 	maxMarkdownLen = 12000 // Slack's limit for markdown blocks per message
 	maxFallbackLen = 4000  // notification text Slack recommends at most
 	ackEmoji       = "eyes"
@@ -119,7 +117,7 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 	}
 
 	return &Channel{
-		http:   &http.Client{Transport: transport.HTTP(proxy), Timeout: clientTimeout},
+		http:   transport.Client(proxy),
 		dialer: transport.WebSocket(proxy),
 		api:    defaultAPI,
 		cfg:    cfg,
