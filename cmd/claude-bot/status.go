@@ -12,11 +12,13 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
+	"github.com/hewenyu/claude-bot/internal/store"
 )
 
 // status is the output of `claude-bot status`.
 type status struct {
 	Project  string          `json:"project"`
+	Gateway  *store.Project  `json:"gateway,omitempty"` // the project's registration, when the gateway serves it
 	Channels []string        `json:"channels"`
 	Listener listenerStatus  `json:"listener"`
 	Pending  int             `json:"pending"`   // tasks waiting for Claude
@@ -109,6 +111,7 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 	hb, alive := readHeartbeat(a.dir)
 	s := status{
 		Project:  filepath.Dir(a.dir),
+		Gateway:  a.gateway,
 		Channels: a.names(),
 		Listener: listenerStatus{Alive: alive, PID: hb.PID, LastBeat: hb.BeatAt, Channels: hb.Channels, Stopped: hb.Stopped, Version: hb.Version},
 		Pending:  len(pending),

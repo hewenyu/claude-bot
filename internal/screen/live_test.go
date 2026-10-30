@@ -32,7 +32,7 @@ func liveClient(t *testing.T) *jev.Client {
 		t.Fatal(err)
 	}
 
-	cfg, err := config.Read(dir)
+	cfg, err := config.Read(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}

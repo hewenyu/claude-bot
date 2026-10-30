@@ -21,6 +21,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/jev"
+	"github.com/hewenyu/claude-bot/internal/store"
 )
 
 // app bundles what every command needs.
@@ -30,8 +31,14 @@ type app struct {
 	channels map[string]channel.Channel
 	log      *slog.Logger
 	typesafe *jev.Config // nil until init sets it up
+	// gateway is the project's registration with the gateway, which then
+	// holds its configuration and serves it; nil for a project configured
+	// by its own config.json.
+	gateway *store.Project
 	// screen, in the listener, wakes the screener when a message arrives.
 	screen chan struct{}
+	// locked, if set, is called once serve holds the project's lock.
+	locked func()
 }
 
 // Layout of the project's .claude-bot directory.
@@ -61,13 +68,16 @@ func newApp(ctx context.Context, project string) (*app, error) {
 		return nil, err
 	}
 
-	cfg, err := config.Load(dir)
+	cfg, err := config.Load(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
 
-	log := newLogger()
+	return appFor(dir, cfg, newLogger())
+}
 
+// appFor builds the app of the project whose bot directory is dir.
+func appFor(dir string, cfg config.Config, log *slog.Logger) (*app, error) {
 	channels, err := openChannels(cfg, log)
 	if err != nil {
 		return nil, err
@@ -79,6 +89,7 @@ func newApp(ctx context.Context, project string) (*app, error) {
 
 	a := assemble(dir, log, channels...)
 	a.typesafe = cfg.TypeSafe
+	a.gateway = cfg.Gateway
 
 	return a, nil
 }

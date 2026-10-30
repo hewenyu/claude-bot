@@ -171,8 +171,7 @@ func askTokens(o *initOptions, p *prompter) error {
 	case telegram.Name:
 		return askToken(p, o.channel, "--telegram-token", "", "Telegram bot token（@BotFather → /newbot）", &o.telegramToken)
 	case github.Name:
-		return askToken(p, o.channel, "--github-token", "token 的获取和权限见："+githubGuide,
-			"GitHub token（Settings → Developer settings → Personal access tokens）", &o.githubToken)
+		return askGitHubToken(o, p)
 	case slack.Name:
 		if o.slackBotToken != "" {
 			return nil
@@ -210,6 +209,21 @@ func askTokens(o *initOptions, p *prompter) error {
 	}
 
 	return nil
+}
+
+// askGitHubToken takes the GitHub token every project shares, or asks for
+// one if there is none yet.
+func askGitHubToken(o *initOptions, p *prompter) error {
+	if o.githubToken == "" && o.sharedGitHubToken != "" {
+		o.githubToken = o.sharedGitHubToken
+
+		fmt.Println("沿用 gateway 里所有项目共用的 GitHub token（要换就加 --github-token）")
+
+		return nil
+	}
+
+	return askToken(p, o.channel, "--github-token", "token 的获取和权限见："+githubGuide,
+		"GitHub token（Settings → Developer settings → Personal access tokens）", &o.githubToken)
 }
 
 // askToken asks for one token unless its flag gave it; hint, if any, is

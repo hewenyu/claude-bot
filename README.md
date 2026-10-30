@@ -17,7 +17,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 
 - **五个聊天渠道 + GitHub**：飞书 / Lark、Discord、Telegram、Slack、钉钉，私聊和群里 @bot 都支持；GitHub 的 issue、PR、评论和 review 也能接成渠道。一个仓库里可以同时接多个。
 - **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，不用配域名、HTTPS 和回调地址。
-- **一个仓库一个 bot**：凭证、收件箱、监听进程都放在仓库自己的 `.claude-bot/` 里，多个项目可以同时值守、互不影响。
+- **一个 gateway 管所有项目**：本机只跑一个 `claude-bot gateway` 进程，服务所有登记过的项目。每个项目有自己的 bot（一个应用只属于一个项目），可以同时接多个渠道。配置统一存在本地 SQLite（`~/.claude-bot/gateway.db`），TypeSafe key 和 GitHub token 只配一次；消息仍进各项目自己的 `.claude-bot/inbox/`，多个项目同时值守、互不影响。
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就建好应用；其他渠道粘贴 token 即可。
 - **改代码一律走 PR**：Claude 自己开的 PR 验证后合并、打 tag 发版；别人的 PR 先判断值不值得要，再在本地实际跑过才合并。
 - **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理，按顺序串行处理。
@@ -25,7 +25,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - **工具保持简单**：单个 Go 二进制，没有数据库和额外服务。值守流程是一个 Markdown 文件（`.claude/commands/bot.md`），可以按项目约定修改。
 
 ```
- 私聊 / 群里 @bot、GitHub 动态 ──▶ claude-bot serve ──▶ .claude-bot/inbox/
+ 私聊 / 群里 @bot、GitHub 动态 ──▶ claude-bot gateway ──▶ 各项目的 .claude-bot/inbox/
                                                                      │
  Claude Code (/loop /bot) ◀──── claude-bot inbox --wait ─────────────┘
           └── claude-bot reply <id> ──▶ 原消息下回复
@@ -54,8 +54,8 @@ go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
 
 ```bash
 cd your-project
-claude-bot init        # 填 TypeSafe API key、选渠道、保存凭证、生成 .claude/commands/bot.md、验证收发
-claude-bot start       # 在后台启动监听进程（stop 停止，restart 重启）
+claude-bot init           # 填 TypeSafe API key、选渠道、把项目登记进 gateway、生成 .claude/commands/bot.md、验证收发
+claude-bot gateway start  # 在后台启动 gateway，一个进程服务所有项目（stop 停止，restart 重启）
 ```
 
 然后在 Claude Code 里挂上 loop：
@@ -64,7 +64,9 @@ claude-bot start       # 在后台启动监听进程（stop 停止，restart 重
 /loop /bot
 ```
 
-把 bot 拉进项目群，之后大家私聊 bot 或在群里 @ 它就可以了。各渠道怎么建应用、拿 token 见[接入各个渠道](docs/channels.md)。
+把 bot 拉进项目群，之后大家私聊 bot 或在群里 @ 它就可以了。再值守一个项目，只要在那个仓库里 `claude-bot init`，gateway 几秒内自动接上，不用重启。
+
+以前用 `claude-bot start` 单独跑监听进程的项目，升级后运行 `claude-bot gateway import` 迁进 gateway，见[常见问题](docs/faq.md#从单项目监听进程迁到-gateway)。各渠道怎么建应用、拿 token 见[接入各个渠道](docs/channels.md)。
 
 ## 文档
 

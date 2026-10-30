@@ -5,7 +5,7 @@
  （飞书、Discord、Telegram、Slack、    │
    钉钉）                              │
  GitHub 的 issue、PR、评论、review     │
-        ──长连接 / 轮询──▶ claude-bot serve ──▶ .claude-bot/inbox/
+        ──长连接 / 轮询──▶ claude-bot gateway ──▶ 各项目的 .claude-bot/inbox/
                                                          │
  Claude Code (/loop /bot) ◀──── claude-bot inbox --wait ─┘
           │
@@ -13,7 +13,10 @@
 ```
 
 - **怎么连出去**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，钉钉用 Stream 模式，Telegram 用长轮询，GitHub 每 30 秒轮询一次 REST API，都是从本机主动发起的。
-- **监听进程由你启停**：在自己的终端里运行 `claude-bot start`，它会在后台启动 `serve`，等所有渠道都连上后返回；`claude-bot stop` 停止，`claude-bot restart` 重启。这样监听进程用的是你终端里的环境变量（比如代理设置），不会继承 Claude Code 会话里的。`inbox` 不会自己启动监听进程：监听进程没在运行时直接报错；正在运行的监听进程版本比当前命令旧，或者没有监听新接的渠道时，`inbox` 会提示你 `claude-bot restart`。
+- **一个 gateway 服务所有项目**：每个项目有自己的 bot，一个 bot 可以接多个渠道；一个应用只属于一个项目（同一个应用连两次，飞书、钉钉、Slack 会随机分走消息，Telegram 互相抢，Discord 各回一遍），登记时就会拒绝。gateway 在一个进程里给每个登记过的项目连上它的渠道、用 Jev 筛选、把事情写进这个项目自己的 `.claude-bot/inbox/`，并在那里写心跳；各项目的 `/loop /bot`、`inbox`、`reply` 和以前单独跑监听进程时完全一样。某个项目或某个渠道出错只停它自己。
+- **配置在本地 SQLite 里**：`~/.claude-bot/gateway.db`（权限 0600，不加密）存着登记的项目、各项目的渠道凭证，以及所有项目共用的 TypeSafe key 和 GitHub token。`init` 改了配置，gateway 几秒内自动用上，不用重启。对话和附件仍是各项目 `.claude-bot/` 下的 JSON 文件和普通文件。
+- **gateway 由你启停**：在自己的终端里运行 `claude-bot gateway start`，它在后台启动，连上各项目后列出它们的状态；`claude-bot gateway stop` 停止，`claude-bot gateway restart` 重启（升级之后用）。这样它用的是你终端里的环境变量（比如代理设置），不会继承 Claude Code 会话里的。`inbox` 不会自己启动它：没在运行时直接报错，版本比当前命令旧时提示你 `claude-bot gateway restart`。
+- **还没迁进 gateway 的项目**（用以前版本 `init` 的，配置在 `.claude-bot/config.json`）照旧用 `claude-bot start` / `stop` / `restart` 跑它自己的监听进程。gateway 不会去连一个自己的监听进程还在跑的项目，等它停掉才接手。
 - **空闲时不花 token**：每一轮处理完，Claude 在后台运行 `claude-bot inbox --wait 55m`，然后停下来。来了消息它马上退出，Claude Code 随即把会话叫醒处理，延迟在几秒内；一直没消息，大约每小时醒一次，看看监听进程是否正常。
 
 ## 多条消息怎么处理

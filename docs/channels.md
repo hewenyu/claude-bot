@@ -2,7 +2,7 @@
 
 在项目仓库里运行 `claude-bot init`，它会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack、GitHub、钉钉）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram、Slack、GitHub 或钉钉时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
 
-不管选哪个渠道，`init` 都会把凭证写入 `.claude-bot/config.json`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通（GitHub 没有私聊，只检查 token 能不能访问仓库）。`init` 的全部参数见[命令与配置](reference.md#命令)。
+不管选哪个渠道，`init` 都会把这个项目登记进 gateway、把凭证存进 `~/.claude-bot/gateway.db`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通（GitHub 没有私聊，只检查 token 能不能访问仓库）。`init` 的全部参数见[命令与配置](reference.md#命令)。
 
 - [飞书 / Lark](#飞书--lark)
 - [Discord](#discord)
@@ -39,7 +39,7 @@
    claude-bot init --discord-token <token>
    ```
 
-   它会验证 token，把它写进 `.claude-bot/config.json`，打印把 bot 邀请进服务器的链接（已带上所需权限），然后等你私聊 bot 来验证连接。
+   它会验证 token，把它存进 gateway，打印把 bot 邀请进服务器的链接（已带上所需权限），然后等你私聊 bot 来验证连接。
 
 不需要开启 Message Content 这个特权 intent：私聊和 @ 了 bot 的消息，Discord 总会给出正文，而 bot 只处理这两种。在服务器里要 @ bot 本人；@ 它的同名角色不会被投递。
 
@@ -55,7 +55,7 @@
    claude-bot init --telegram-token <token>
    ```
 
-   它会验证 token，写进 `.claude-bot/config.json`，然后等你私聊 bot 来验证连接。之后把 bot 拉进群即可，话题（topic）群也支持。
+   它会验证 token，存进 gateway，然后等你私聊 bot 来验证连接。之后把 bot 拉进群即可，话题（topic）群也支持。
 
 Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram 上不可用。作为替代，回复某条消息时，被回复的内容会以引用（`> 名字: …`）的形式放在 `text` 开头。国内访问 Telegram 需要代理，默认使用环境变量里的代理，见[代理](reference.md#代理)。
 
@@ -102,7 +102,7 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
    claude-bot init --slack-app-token xapp-… --slack-bot-token xoxb-…
    ```
 
-   它会验证两个 token，写进 `.claude-bot/config.json`，然后等你私信 bot 来验证连接。之后在频道里 `/invite @bot`。
+   它会验证两个 token，存进 gateway，然后等你私信 bot 来验证连接。之后在频道里 `/invite @bot`。
 
 在频道里 @bot 的消息，回复会发在这条消息的 thread 里，并 @ 提问的人；私信里直接回复。回复里的 `<!channel>`、`<!here>` 这类全员提醒不会生效。
 
@@ -122,7 +122,7 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
    claude-bot init --dingtalk-client-id <Client ID> --dingtalk-client-secret <Client Secret>
    ```
 
-   它会验证凭证，写进 `.claude-bot/config.json`，然后等你私聊机器人来验证连接。之后在群设置 → 机器人里把它加进群。
+   它会验证凭证，存进 gateway，然后等你私聊机器人来验证连接。之后在群设置 → 机器人里把它加进群。
 
 钉钉和其他渠道相比有几处不同，都是开放接口本身的限制：
 
