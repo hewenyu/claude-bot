@@ -1,11 +1,12 @@
-// Package inbox is a file-backed queue between the listener (serve) and
-// Claude. Each message is one JSON file: in incoming/ until the listener has
-// screened it, in pending/ until Claude has handled it, then in done/. Files
-// appear by link and move by rename, both atomic, so no locking is needed.
+// Package inbox is the file-backed store between the listener (serve) and
+// Claude. Messages arrive in incoming/; once the listener has screened them
+// they are archived in done/ and what they say goes into tasks (tasks/pending
+// and tasks/done), the unit Claude works on. Message files appear by link and
+// move by rename, both atomic; tasks are read and written under a file lock.
+// pending/ holds messages from versions before tasks, until Migrate.
 package inbox
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"time"
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -45,15 +45,9 @@ func (b *Inbox) path(state, id string) string {
 	return filepath.Join(b.dir, state, channel.PathSafe(id)+".json")
 }
 
-// Put stores m as pending. It returns false if m was seen before (Lark
-// re-delivers events that were not acknowledged in time, possibly
-// concurrently).
-func (b *Inbox) Put(m channel.Message) (bool, error) {
-	return b.put(statePending, m)
-}
-
 // Hold stores m as incoming, for the listener to screen before Claude sees
-// it. Like Put, it returns false if m was seen before.
+// it. It returns false if m was seen before (Lark re-delivers events that
+// were not acknowledged in time, possibly concurrently).
 func (b *Inbox) Hold(m channel.Message) (bool, error) {
 	if _, err := os.Stat(b.path(statePending, m.ID)); err == nil {
 		return false, nil
@@ -97,14 +91,33 @@ func (b *Inbox) put(state string, m channel.Message) (bool, error) {
 	return true, nil
 }
 
-// Admit moves a screened incoming message to pending, as m.
-func (b *Inbox) Admit(m channel.Message) error {
-	return b.move(m, statePending)
+// Archive stores a screened incoming message, as m, in done: what it says
+// went into tasks.
+func (b *Inbox) Archive(m channel.Message) error {
+	return b.move(m, stateDone)
 }
 
-// Reject moves an incoming message with nothing left to handle to done, as m.
-func (b *Inbox) Reject(m channel.Message) error {
-	return b.move(m, stateDone)
+// Migrate sends messages left in pending/ by versions before tasks back to
+// incoming/, to be screened into tasks.
+func (b *Inbox) Migrate() (int, error) {
+	msgs, err := b.list(statePending)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(msgs) > 0 {
+		if err := os.MkdirAll(filepath.Join(b.dir, stateIncoming), dirPerm); err != nil {
+			return 0, fmt.Errorf("create inbox: %w", err)
+		}
+	}
+
+	for _, m := range msgs {
+		if err := os.Rename(b.path(statePending, m.ID), b.path(stateIncoming, m.ID)); err != nil {
+			return 0, fmt.Errorf("migrate %s: %w", m.ID, err)
+		}
+	}
+
+	return len(msgs), nil
 }
 
 // move writes m into state and removes it from incoming.
@@ -135,11 +148,6 @@ const messagePerm = 0o600
 // Incoming returns messages awaiting screening, oldest first.
 func (b *Inbox) Incoming() ([]channel.Message, error) {
 	return b.list(stateIncoming)
-}
-
-// Pending returns unhandled messages, oldest first.
-func (b *Inbox) Pending() ([]channel.Message, error) {
-	return b.list(statePending)
 }
 
 func (b *Inbox) list(state string) ([]channel.Message, error) {
@@ -176,25 +184,6 @@ func (b *Inbox) list(state string) ([]channel.Message, error) {
 	return msgs, nil
 }
 
-// Wait returns pending messages, polling until at least one exists or ctx ends.
-func (b *Inbox) Wait(ctx context.Context, every time.Duration) ([]channel.Message, error) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-
-	for {
-		msgs, err := b.Pending()
-		if err != nil || len(msgs) > 0 {
-			return msgs, err
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, nil // timing out with an empty inbox is the normal outcome
-		case <-t.C:
-		}
-	}
-}
-
 // Find returns a message by id from pending or done.
 func (b *Inbox) Find(id string) (channel.Message, error) {
 	for _, state := range []string{statePending, stateDone} {
@@ -209,27 +198,6 @@ func (b *Inbox) Find(id string) (channel.Message, error) {
 	}
 
 	return channel.Message{}, fmt.Errorf("%w: %s", ErrNotFound, id)
-}
-
-// Done marks a message handled. Marking an already-done message is a no-op.
-func (b *Inbox) Done(id string) error {
-	if _, err := os.Stat(b.path(stateDone, id)); err == nil {
-		return nil
-	}
-
-	if err := os.MkdirAll(filepath.Join(b.dir, stateDone), dirPerm); err != nil {
-		return fmt.Errorf("create inbox: %w", err)
-	}
-
-	if err := os.Rename(b.path(statePending, id), b.path(stateDone, id)); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%w: %s", ErrNotFound, id)
-		}
-
-		return fmt.Errorf("mark done: %w", err)
-	}
-
-	return nil
 }
 
 func read(path string) (channel.Message, error) {

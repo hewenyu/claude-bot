@@ -390,7 +390,8 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 			return fmt.Errorf("received your message but replying failed: %w", err)
 		}
 
-		if err := a.inbox.Done(m.ID); err != nil {
+		// Answered here; it must not become a task.
+		if err := a.inbox.Archive(m); err != nil {
 			return err
 		}
 

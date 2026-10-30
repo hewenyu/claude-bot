@@ -60,10 +60,20 @@ type Piece struct {
 	jevText    string // what Jev reads
 }
 
-// Task is a group of pieces about the same thing. Messages lists, oldest
-// first, every message it draws on; a message with nothing to read (a
-// sticker) is a task of its own with no pieces.
+// Thread is a task already in the inbox that new pieces may continue.
+type Thread struct {
+	ID string
+	// Transcript is its conversation so far, people and bot, as Jev reads
+	// it; Asked is only what people said, the context of a legality check.
+	Transcript, Asked string
+}
+
+// Task is a group of pieces about the same thing. Thread, if set, is the
+// task in the inbox they continue. Messages lists, oldest first, every
+// message it draws on; a message with nothing to read (a sticker) is a task
+// of its own with no pieces.
 type Task struct {
+	Thread   string
 	Messages []string
 	Pieces   []Piece
 	// Scores is the probability of each illegal category.
@@ -82,21 +92,40 @@ func (t Task) Refused() bool {
 }
 
 // Screen cuts the items into pieces, groups each conversation's pieces into
-// tasks, and scores every task for legality. Tasks come out in the order of
-// their first piece.
-func Screen(ctx context.Context, ask Asker, items []Item) ([]Task, error) {
+// tasks, joining a group to one of the conversation's threads when it
+// continues it, and scores every task for legality, in the context of the
+// thread it continues. Tasks come out in the order of their first piece.
+func Screen(ctx context.Context, ask Asker, items []Item, threads func(channel.Message) []Thread) ([]Task, error) {
 	var tasks []Task
 
 	for _, conv := range conversations(items) {
 		pieces := cutConversation(conv)
+		open := threads(conv[0].Msg)
 
-		groups, err := group(ctx, ask, pieces)
+		groups, err := group(ctx, ask, pieces, open)
 		if err != nil {
 			return nil, err
 		}
 
 		for _, g := range groups {
-			tasks = append(tasks, Task{Pieces: g})
+			t := Task{Thread: g.thread, Pieces: g.pieces}
+
+			var asked string
+			if i := slices.IndexFunc(open, func(th Thread) bool { return th.ID == g.thread }); i >= 0 {
+				asked = open[i].Asked
+			}
+
+			for _, p := range t.Pieces {
+				if !slices.Contains(t.Messages, p.Message) {
+					t.Messages = append(t.Messages, p.Message)
+				}
+			}
+
+			if t.Scores, err = score(ctx, ask, asked, t.Pieces); err != nil {
+				return nil, err
+			}
+
+			tasks = append(tasks, t)
 		}
 
 		for _, it := range conv {
@@ -104,26 +133,6 @@ func Screen(ctx context.Context, ask Asker, items []Item) ([]Task, error) {
 				tasks = append(tasks, Task{Messages: []string{it.Msg.ID}})
 			}
 		}
-	}
-
-	for i := range tasks {
-		t := &tasks[i]
-		if len(t.Pieces) == 0 {
-			continue
-		}
-
-		for _, p := range t.Pieces {
-			if !slices.Contains(t.Messages, p.Message) {
-				t.Messages = append(t.Messages, p.Message)
-			}
-		}
-
-		scores, err := score(ctx, ask, t.Pieces)
-		if err != nil {
-			return nil, err
-		}
-
-		t.Scores = scores
 	}
 
 	return tasks, nil

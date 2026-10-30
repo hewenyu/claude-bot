@@ -211,16 +211,18 @@ func TestDone_continuesPastUnknownID(t *testing.T) {
 	t.Setenv("LARK_APP_SECRET", "secret")
 
 	b := inbox.New(filepath.Join(root, ".claude-bot", "inbox"))
-	if _, err := b.Put(channel.Message{ID: "lark:om_b", CreatedAt: time.Now()}); err != nil {
+	tk := inbox.Task{ID: "task:b", Channel: "lark", Entries: []inbox.Entry{{Kind: inbox.EntryUser, Message: "lark:om_b", At: time.Now()}}}
+
+	if err := b.Locked(func() error { return b.SaveTask(tk, true) }); err != nil {
 		t.Fatal(err)
 	}
 
-	if code := run(t.Context(), []string{"-C", root, "done", "lark:om_missing", "lark:om_b"}); code != 1 {
+	if code := run(t.Context(), []string{"-C", root, "done", "task:missing", "task:b"}); code != 1 {
 		t.Errorf("exit = %d, want 1 for the unknown id", code)
 	}
 
-	if pending, err := b.Pending(); err != nil || len(pending) != 0 {
-		t.Errorf("pending = %d, %v; the known id must still be marked done", len(pending), err)
+	if pending, err := b.PendingTasks(); err != nil || len(pending) != 0 {
+		t.Errorf("pending = %d, %v; the known task must still be closed", len(pending), err)
 	}
 }
 

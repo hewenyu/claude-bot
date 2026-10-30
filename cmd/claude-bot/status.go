@@ -19,7 +19,7 @@ type status struct {
 	Project  string          `json:"project"`
 	Channels []string        `json:"channels"`
 	Listener listenerStatus  `json:"listener"`
-	Pending  int             `json:"pending"`
+	Pending  int             `json:"pending"`   // tasks waiting for Claude
 	Jev      bool            `json:"jev"`       // a TypeSafe key is set up; messages wait for Jev without one
 	Incoming int             `json:"screening"` // messages waiting for Jev, which Claude cannot see yet
 	Lark     *larkStatus     `json:"lark,omitempty"`
@@ -95,7 +95,7 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	pending, err := a.inbox.Pending()
+	pending, err := a.inbox.PendingTasks()
 	if err != nil {
 		return err
 	}
