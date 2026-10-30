@@ -18,11 +18,12 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - **五个聊天渠道 + GitHub**：飞书 / Lark、Discord、Telegram、Slack、钉钉，私聊和群里 @bot 都支持；GitHub 的 issue、PR、评论和 review 也能接成渠道。一个仓库里可以同时接多个。
 - **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，不用配域名、HTTPS 和回调地址。
 - **一个 gateway 管所有项目**：本机只跑一个 `claude-bot gateway` 进程，服务所有登记过的项目。每个项目有自己的 bot（一个应用只属于一个项目），可以同时接多个渠道。配置统一存在本地 SQLite（`~/.claude-bot/gateway.db`），TypeSafe key 和 GitHub token 只配一次；消息仍进各项目自己的 `.claude-bot/inbox/`，多个项目同时值守、互不影响。
+- **本地网页看全局**：gateway 自带一个只在本机打开的网页（`claude-bot gateway open`）：每个项目和它的渠道连没连上、出了什么错；每个项目处理过哪些事，点开看整段对话和 bot 的回复；在页面上添加、修改渠道凭证并测试连接，改完 gateway 几秒内自动重连。凭证只进不出，页面上只显示末几位。
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就建好应用；其他渠道粘贴 token 即可。
 - **改代码一律走 PR**：Claude 自己开的 PR 验证后合并、打 tag 发版；别人的 PR 先判断值不值得要，再在本地实际跑过才合并。
 - **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理，按顺序串行处理。
 - **Jev 先过一遍**：每条消息先由 [TypeSafe](https://typesafe.ai) 的 Jev 模型筛选：把消息和附件裁剪、归组成一件件事，追问（24 小时内）并回原来那件事，附件下载好并标明存在哪里；非法请求直接回复「现在暂时不支持。」，不交给 Claude。Claude 一次开一个子 Agent 处理一件事，带着这件事的整段对话，不同人的事上下文互不干扰。`init` 时填入 TypeSafe API key。见 [PROTOCOL.md §1.1](PROTOCOL.md#11-jev-筛选)。
-- **工具保持简单**：单个 Go 二进制，没有数据库和额外服务。值守流程是一个 Markdown 文件（`.claude/commands/bot.md`），可以按项目约定修改。
+- **工具保持简单**：单个 Go 二进制，数据库是一个本地 SQLite 文件，网页也打包在二进制里，没有额外的服务要装。值守流程是一个 Markdown 文件（`.claude/commands/bot.md`），可以按项目约定修改。
 
 ```
  私聊 / 群里 @bot、GitHub 动态 ──▶ claude-bot gateway ──▶ 各项目的 .claude-bot/inbox/
@@ -56,6 +57,7 @@ go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
 cd your-project
 claude-bot init           # 填 TypeSafe API key、选渠道、把项目登记进 gateway、生成 .claude/commands/bot.md、验证收发
 claude-bot gateway start  # 在后台启动 gateway，一个进程服务所有项目（stop 停止，restart 重启）
+claude-bot gateway open   # 在浏览器里打开 gateway 的网页，看各项目的状态和处理过的事
 ```
 
 然后在 Claude Code 里挂上 loop：

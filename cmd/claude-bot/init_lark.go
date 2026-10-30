@@ -215,11 +215,11 @@ func openBrowser(ctx context.Context, link string) {
 
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.CommandContext(ctx, "open", link) //nolint:gosec // link was validated as an official Lark URL
+		cmd = exec.CommandContext(ctx, "open", link) //nolint:gosec // callers pass a validated Lark URL or the gateway page on loopback
 	case "windows":
-		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", link) //nolint:gosec // link was validated as an official Lark URL
+		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", link) //nolint:gosec // callers pass a validated Lark URL or the gateway page on loopback
 	default:
-		cmd = exec.CommandContext(ctx, "xdg-open", link) //nolint:gosec // link was validated as an official Lark URL
+		cmd = exec.CommandContext(ctx, "xdg-open", link) //nolint:gosec // callers pass a validated Lark URL or the gateway page on loopback
 	}
 
 	_ = cmd.Start() // best effort; the link is printed too

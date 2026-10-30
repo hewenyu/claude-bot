@@ -102,6 +102,16 @@ func FromStore(ctx context.Context, s *store.Store, p store.Project) (Config, er
 	return cfg, nil
 }
 
+// ChannelConfig returns a Config with only the channel name set, from its
+// stored JSON.
+func ChannelConfig(name string, raw json.RawMessage) (Config, error) {
+	var c Config
+
+	err := c.decode(store.Channel{Name: name, Config: raw})
+
+	return c, err
+}
+
 func (c *Config) decode(ch store.Channel) error {
 	var target any
 

@@ -21,6 +21,7 @@ claude-bot [-C <repo>] <command> [args]
 | `gateway status` | 以 JSON 输出 gateway 和每个登记过的项目：状态（`running`；`starting` 正在连；`busy` 被项目自己的监听进程占着；`failed`；`idle` 没有渠道；`stopped` gateway 没在运行）、出错原因、配置的和连上的渠道、停掉的渠道和原因、待处理的事、等待 Jev 的消息数 |
 | `gateway import [<repo>...]` | 把以前版本的 `.claude-bot/config.json` 迁进 gateway（默认当前仓库），原文件改名为 `config.json.imported`。gateway 已有 TypeSafe key 或 GitHub token 时沿用它的 |
 | `gateway remove <项目名或目录>` | 把项目从 gateway 里去掉，它的配置写回 `.claude-bot/config.json` |
+| `gateway open [--print]` | 在浏览器里打开 gateway 的网页（带访问令牌的地址）；`--print` 只打印地址。网页只监听本机（默认 `127.0.0.1:7600`），见下面的「gateway 的网页」 |
 | `gateway serve` | 在前台运行 gateway |
 | `start` / `stop` / `restart` | 还没迁进 gateway 的项目：在后台启动、停止、重启它自己的监听进程。已登记的项目里，`stop` 只停它以前自己的监听进程（迁移时用），不会停 gateway |
 | `serve` | 在前台运行还没迁进 gateway 的项目自己的监听进程 |
@@ -67,8 +68,8 @@ claude-bot [-C <repo>] <command> [args]
 
 ```
 ~/.claude-bot/               gateway 的目录（可以用 CLAUDE_BOT_HOME 换），0700
-  gateway.db                 SQLite：登记的项目、各项目的渠道凭证、共用的 TypeSafe key 和 GitHub token；0600，不加密
-  gateway.json               gateway 心跳，带各项目的状态
+  gateway.db                 SQLite：登记的项目、各项目的渠道凭证、共用的 TypeSafe key 和 GitHub token、网页的地址和访问令牌；0600，不加密
+  gateway.json               gateway 心跳，带各项目的状态和网页地址（不带令牌）
   gateway.log                gateway 日志（各项目的行带 project=<项目名>）
   gateway.lock               单实例锁，里面是 gateway 的 pid
 
@@ -85,6 +86,24 @@ claude-bot [-C <repo>] <command> [args]
   serve.log                  项目自己的监听进程的日志（gateway 的在 ~/.claude-bot/gateway.log）
   serve.lock                 这个项目的单实例锁，里面是服务它的进程（gateway 或项目自己的监听进程）的 pid
   refused.jsonl              Jev 拒绝的请求，供人复查误拒
+```
+
+### gateway 的网页
+
+gateway 启动时在 `127.0.0.1:7600` 上提供一个网页，`claude-bot gateway start` 会打印地址，`claude-bot gateway open` 直接打开：
+
+- **项目**：左边列出所有登记过的项目和状态（运行中、连接中、被占用、出错、没有渠道），有待处理的事时显示数量；每个渠道连没连上、停掉的原因。
+- **任务**：这个项目经 Jev 归好的每一件事：待处理、处理中（Claude 正在做）、已回复、已关闭，可以筛选和搜索；点开看整段对话、附件存在哪、bot 的每次回复，还没处理的部分单独标出来。GitHub 的事可以直接跳到 issue / PR。
+- **渠道**：添加、修改、移除这个项目的渠道，「测试连接」只向平台核对凭证（问「我是谁」），不建立长连接，不会和正在运行的连接抢消息；保存后 gateway 几秒内用新配置重连。一个应用已经属于别的项目时拒绝保存。也可以在这里把项目从 gateway 移除（配置写回它的 `config.json`）。
+- **共用设置**：TypeSafe API key 和 GitHub token，保存前先验证（GitHub token 要能访问每个接了 GitHub 的项目的仓库）。
+
+安全上：网页只监听本机回环地址，只接受 `127.0.0.1`、`localhost`、`[::1]` 的 Host（防 DNS rebinding）；每个接口都要带访问令牌（存在 `gateway.db` 里，`gateway open` 打开的地址带着它，浏览器记下后不用再带）。凭证只能写进去，读出来只有「已设置」和末几位。
+
+端口被占用时 gateway 照常服务各项目，只是日志里记一条 `page not served`。要换地址（只能是本机回环地址），改 `gateway.db` 里的 `ui_addr` 后重启 gateway：
+
+```bash
+sqlite3 ~/.claude-bot/gateway.db "INSERT OR REPLACE INTO settings(key, value) VALUES ('ui_addr', '127.0.0.1:7610')"
+claude-bot gateway restart
 ```
 
 ### 环境变量
