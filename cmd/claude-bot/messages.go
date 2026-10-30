@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -34,6 +33,10 @@ func cmdInbox(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
+	if a.typesafe == nil {
+		return errNoJev
+	}
+
 	var msgs []channel.Message
 
 	if *wait > 0 {
@@ -55,12 +58,17 @@ func cmdInbox(ctx context.Context, project string, args []string) error {
 		return nil
 	}
 
+	return writeLines(tasksOf(msgs))
+}
+
+// writeLines prints values as JSON lines.
+func writeLines[T any](values []T) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 
-	for _, m := range msgs {
-		if err := enc.Encode(m); err != nil {
-			return fmt.Errorf("write message: %w", err)
+	for _, v := range values {
+		if err := enc.Encode(v); err != nil {
+			return fmt.Errorf("write inbox: %w", err)
 		}
 	}
 
@@ -229,9 +237,7 @@ func cmdDownload(ctx context.Context, project string, args []string) error {
 		return fmt.Errorf("message %s has no attachments", msg.ID)
 	}
 
-	// One directory per message: attachments of different messages often
-	// share a name (image.png, crash.log).
-	dir := filepath.Join(a.path(filesDir), channel.PathSafe(msg.ID))
+	dir := a.attachmentDir(msg)
 	for _, att := range msg.Attachments {
 		path, err := ch.Download(ctx, msg, att, dir)
 		if err != nil {

@@ -8,8 +8,8 @@ claude-bot [-C <repo>] <command> [args]
 
 | 命令 | 说明 |
 |---|---|
-| `init` | 创建或接入 bot 应用，保存凭证，生成 `/bot` 命令，验证连接 |
-| `inbox [--wait 55m]` | 以 JSON Lines 输出待处理消息；监听进程没在运行时报错 |
+| `init` | 接入 Jev（必需），创建或接入 bot 应用，保存凭证，生成 `/bot` 命令，验证连接 |
+| `inbox [--wait 55m]` | 以 JSON Lines 输出 Jev 筛过的待处理消息，一行一件事；监听进程没在运行、或者没接入 Jev 时报错 |
 | `reply [--keep] <id> [text\|-]` | 在原消息下回复（Markdown），并标记为已处理 |
 | `done <id>...` | 标记为已处理，不回复 |
 | `get <id>` | 获取任意一条消息，比如 `reply_to` 指向的那条 |
@@ -20,7 +20,7 @@ claude-bot [-C <repo>] <command> [args]
 | `stop` | 停止监听进程 |
 | `restart` | 重启监听进程，升级 claude-bot 或新接了渠道之后用 |
 | `serve` | 在前台运行监听进程 |
-| `status` | 查看 bot 身份、监听进程状态和待处理消息数 |
+| `status` | 查看 bot 身份、监听进程状态、待处理消息数、是否接入了 Jev（`jev`）和等待 Jev 筛选的消息数（`screening`） |
 | `version` | 查看版本 |
 
 文本参数可以写在命令行上，也可以用 `-` 或省略，改为从 stdin 读取，适合多行内容配合 heredoc 使用。退出码：`0` 成功，`1` 失败，`2` 用法错误。
@@ -29,6 +29,7 @@ claude-bot [-C <repo>] <command> [args]
 
 | 参数 | 说明 |
 |---|---|
+| `--typesafe-key` | [TypeSafe](https://console.typesafe.ai/keys) 的 API key，供 Jev 筛选每条消息。**必需**：第一次 `init` 时没给就在终端里提示输入，验证有效后存进 `config.json`。渠道都接好了的话，单独运行 `init --typesafe-key <key>` 只换 key |
 | `--channel lark\|discord\|telegram\|slack\|github\|dingtalk` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
 | `--bot-md` | 只用当前版本覆盖 `.claude/commands/bot.md`，不动任何配置。升级 claude-bot 后用它更新值守流程 |
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
@@ -63,13 +64,15 @@ claude-bot [-C <repo>] <command> [args]
 ```
 .claude/commands/bot.md      值守流程（init 生成，提交进仓库，团队共享）
 .claude-bot/                 已加入 .gitignore
-  config.json                凭证，0600
-  inbox/pending/             待处理消息，每条一个 JSON 文件
+  config.json                凭证和 TypeSafe API key，0600
+  inbox/incoming/            刚收到、还没经过 Jev 筛选的消息，Claude 看不到
+  inbox/pending/             筛过的待处理消息，每条一个 JSON 文件（裁剪过、标好了属于哪件事、附件存在哪）
   inbox/done/                已处理消息
-  files/                     下载的附件
+  files/                     附件，监听进程收到消息时就下载到 files/<消息>/
   serve.json                 监听进程心跳
   serve.log                  监听进程日志
   serve.lock                 单实例锁，里面是监听进程的 pid
+  refused.jsonl              Jev 拒绝的请求，供人复查误拒
 ```
 
 ### 环境变量
@@ -83,7 +86,7 @@ claude-bot [-C <repo>] <command> [args]
 | `SLACK_APP_TOKEN`、`SLACK_BOT_TOKEN` | 同上，Slack 的两个 token（两个都设置时生效） |
 | `DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET` | 同上，钉钉应用的 Client ID 和 Client Secret（两个都设置时生效） |
 
-环境变量只替换凭证，`config.json` 里同一渠道的代理、域名等其他设置照样生效。`init` 只读写 `config.json`，不会把环境变量里的凭证写进去。
+环境变量只替换凭证，`config.json` 里同一渠道的代理、域名等其他设置照样生效。TypeSafe API key 只认 `config.json`，没有对应的环境变量。`init` 只读写 `config.json`，不会把环境变量里的凭证写进去。
 
 ### 代理
 

@@ -12,6 +12,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
+	"github.com/hewenyu/claude-bot/internal/jev"
 )
 
 func TestSaveLoad(t *testing.T) {
@@ -28,6 +29,7 @@ func TestSaveLoad(t *testing.T) {
 		Discord:  &discord.Config{Token: "t", Proxy: "direct"},
 		Telegram: &telegram.Config{Token: "1:t"},
 		Slack:    &slack.Config{AppToken: "xapp-1", BotToken: "xoxb-1", Proxy: "env"},
+		TypeSafe: &jev.Config{APIKey: "ts-1"},
 	}
 
 	if err := Save(dir, want); err != nil {
@@ -164,6 +166,15 @@ func TestDir_explicitMissing(t *testing.T) {
 
 	if _, err := Dir(t.Context(), filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Error("Dir() with a missing -C directory should fail")
+	}
+}
+
+func TestLoad_typesafeKeyOnlyFromConfig(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "ts-env")
+
+	got, err := Load(t.TempDir())
+	if err != nil || got.TypeSafe != nil {
+		t.Errorf("Load = %+v, %v; want no TypeSafe key from the environment", got.TypeSafe, err)
 	}
 }
 

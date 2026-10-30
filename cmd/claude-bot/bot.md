@@ -29,11 +29,13 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 ### 2. 收消息
 
-运行 `claude-bot inbox`，马上取出所有待处理的消息。每行输出是一条待处理消息（JSON）；没有输出说明没人找你，直接到第 3 步。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；其他报错按错误信息排查，比如看 `claude-bot status`。
+运行 `claude-bot inbox`，马上取出所有待处理的事。每行输出是一件事（JSON，见下）；没有输出说明没人找你，直接到第 3 步。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；其他报错按错误信息排查，比如看 `claude-bot status`。
 
-`id` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`、`dingtalk:<会话>/<消息>`、`github:<owner>/<repo>/<编号>`。逐条处理：
+`inbox` 每行是**一件事**（`task`），不是一条消息：监听进程已经用 Jev 把消息和附件裁剪、归好组，非法请求已经直接回复「现在暂时不支持。」并删掉了，你看不到也不用管。按件处理：`pieces` 是这件事的全部内容（`text` 是原话里的一段；`file` 是已经下载好的附件，直接读，`text` 里写着它是什么、存在哪），`messages` 是涉及的消息（`id`、`reply_to`、发送者等）。一件事处理完回复一次，回在 `messages` 的最后一条上；几件事落在同一条消息上的，可以合成一条回复。回复完把 `messages` 里其余的消息 `claude-bot done` 掉。分组看着不对的（明显是一件事被拆开了，或者两件事被合在一起），按你自己的判断处理。`inbox` 报 Jev 没接入时，告诉用户运行 `claude-bot init --typesafe-key <key>` 再 `claude-bot restart`；`status` 里 `screening` 一直不为 0，说明 Jev 调用在失败，让用户看 `.claude-bot/serve.log`。
 
-1. **补全上下文**：有 `reply_to` 的，用 `claude-bot get <reply_to>` 看对方回复的是哪条；有 `attachments`（截图、日志）的，用 `claude-bot download <id>` 下载下来看。
+`id` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`、`dingtalk:<会话>/<消息>`、`github:<owner>/<repo>/<编号>`。逐件处理：
+
+1. **补全上下文**：有 `reply_to` 的，用 `claude-bot get <reply_to>` 看对方回复的是哪条；附件已经下载好了，路径在 `pieces` 的 `file` 里。
 2. **GitHub 的消息**：`text` 第一行说明是什么：`Issue #42: 标题`、`PR #43: 标题`（新开的）、`Comment on …`（评论）、`Review comment on PR #43, 文件:行号`（行内 review 评论）、`Review on PR #43: changes requested`（review）。评论和 review 的 `reply_to` 指向所属的 issue 或 PR，`claude-bot get <reply_to>` 会给出标题、正文和最近的评论。按「处理 issue」「处理 PR」做。
 3. **聊天里的问题**：能直接回答的就查清楚再答；要改代码的（报 bug、提需求），和 issue 一样按「改代码」走 PR，回复里带上 PR 链接和版本号。
 4. **回复**：

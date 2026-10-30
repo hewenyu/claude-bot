@@ -20,6 +20,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
+	"github.com/hewenyu/claude-bot/internal/jev"
 )
 
 // app bundles what every command needs.
@@ -28,6 +29,9 @@ type app struct {
 	inbox    *inbox.Inbox
 	channels map[string]channel.Channel
 	log      *slog.Logger
+	typesafe *jev.Config // nil until init sets it up
+	// screen, in the listener, wakes the screener when a message arrives.
+	screen chan struct{}
 }
 
 // Layout of the project's .claude-bot directory.
@@ -73,7 +77,10 @@ func newApp(ctx context.Context, project string) (*app, error) {
 		return nil, errNotConfigured
 	}
 
-	return assemble(dir, log, channels...), nil
+	a := assemble(dir, log, channels...)
+	a.typesafe = cfg.TypeSafe
+
+	return a, nil
 }
 
 // openChannels builds the adapters of the configured channels.
