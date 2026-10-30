@@ -42,7 +42,7 @@ claude-bot [-C <repo>] <command> [args]
 | `--proxy direct\|env\|<url>` | 网络代理，见[代理](#代理) |
 | `--name` | bot 名称，默认 `<仓库名> Bot` |
 | `--reregister` | 即使已经配置过，也重新创建应用 |
-| `--no-open` | 只打印授权链接，不自动打开浏览器 |
+| `--no-open` | 只打印授权链接和二维码，不自动打开浏览器 |
 | `--no-verify` | 跳过发消息的连接验证 |
 | `--force` | 接入渠道的同时覆盖已有的 `.claude/commands/bot.md` |
 

@@ -3,14 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/config"
+	"golang.org/x/term"
 )
 
 // A freshly registered app can take a few seconds before its token works.
@@ -28,8 +29,8 @@ type larkApp struct {
 
 // setupLark obtains a working Lark app (registering one through the browser
 // when needed) and records it in cfg.
-func setupLark(ctx context.Context, cfg *config.Config, o initOptions, root string) (setup, error) {
-	la, err := obtainApp(ctx, cfg.Lark, o, root)
+func setupLark(ctx context.Context, cfg *config.Config, o initOptions) (setup, error) {
+	la, err := obtainApp(ctx, cfg.Lark, o)
 	if err != nil {
 		return setup{}, err
 	}
@@ -55,7 +56,7 @@ func reportScopes(ctx context.Context, ch *lark.Channel) {
 
 // obtainApp returns working credentials: from flags, from the existing
 // config, or by registering a new app through the browser.
-func obtainApp(ctx context.Context, existing *lark.Config, o initOptions, root string) (larkApp, error) {
+func obtainApp(ctx context.Context, existing *lark.Config, o initOptions) (larkApp, error) {
 	if o.appID != "" {
 		la, err := connect(ctx, lark.Config{AppID: o.appID, AppSecret: o.secret, Domain: o.domain, Proxy: o.proxy})
 		if err != nil {
@@ -80,7 +81,7 @@ func obtainApp(ctx context.Context, existing *lark.Config, o initOptions, root s
 		}
 	}
 
-	lc, err := register(ctx, o, root, upgrade)
+	lc, err := register(ctx, o, upgrade)
 	if err != nil {
 		return larkApp{}, err
 	}
@@ -128,7 +129,7 @@ func connectRegistered(ctx context.Context, cfg lark.Config) (larkApp, error) {
 	}
 }
 
-func register(ctx context.Context, o initOptions, root, upgradeAppID string) (lark.Config, error) {
+func register(ctx context.Context, o initOptions, upgradeAppID string) (lark.Config, error) {
 	proxy, err := (lark.Config{Proxy: o.proxy}).ProxyFunc()
 	if err != nil {
 		return lark.Config{}, err
@@ -136,7 +137,9 @@ func register(ctx context.Context, o initOptions, root, upgradeAppID string) (la
 
 	r := lark.NewRegistrar(proxy)
 	r.Name = o.name
-	r.Desc = "项目 " + filepath.Base(root) + " 的 Claude Code 值守机器人：私聊或在群里 @ 它，提问题、报 bug、提需求。"
+	// Kept short (the name already says which project): it travels in the
+	// link, and a longer link makes the QR code too wide for the terminal.
+	r.Desc = "Claude Code 值守机器人"
 	r.AppID = upgradeAppID
 	r.OnLink = func(link string, expires time.Time) {
 		action := "创建飞书应用"
@@ -145,6 +148,8 @@ func register(ctx context.Context, o initOptions, root, upgradeAppID string) (la
 		}
 
 		fmt.Printf("请在浏览器中登录飞书并确认，以%s（%s 前有效）：\n\n  %s\n\n", action, expires.Format("15:04"), link)
+
+		printLinkQR(link)
 
 		if !o.noOpen {
 			openBrowser(ctx, link)
@@ -162,6 +167,30 @@ func register(ctx context.Context, o initOptions, root, upgradeAppID string) (la
 	}
 
 	return lark.Config{AppID: reg.AppID, AppSecret: reg.AppSecret, Domain: reg.Domain, Proxy: o.proxy}, nil
+}
+
+// printLinkQR shows link as a QR code for the Lark mobile app, when stdout is
+// a terminal wide enough to draw it without wrapping.
+func printLinkQR(link string) {
+	fd := int(os.Stdout.Fd())
+	if !term.IsTerminal(fd) {
+		return
+	}
+
+	code, width, err := renderQR(link)
+	if err != nil {
+		fmt.Printf("（二维码生成失败：%v）\n\n", err)
+
+		return
+	}
+
+	if cols, _, err := term.GetSize(fd); err == nil && cols < width {
+		fmt.Printf("（终端宽度不足 %d 列，放不下二维码；拉宽窗口后重新运行可用手机扫码）\n\n", width)
+
+		return
+	}
+
+	fmt.Printf("也可以用飞书 App 扫码：\n\n%s\n", code)
 }
 
 // connect builds a channel for cfg and fetches its bot, which proves the

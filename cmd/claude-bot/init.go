@@ -253,7 +253,7 @@ func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root s
 		return setupDingTalk(ctx, cfg, o)
 	}
 
-	return setupLark(ctx, cfg, o, root)
+	return setupLark(ctx, cfg, o)
 }
 
 func parseInitFlags(args []string) (initOptions, error) {
