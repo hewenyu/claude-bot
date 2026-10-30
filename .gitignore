@@ -46,3 +46,6 @@ tmp/
 
 # local /bot slash command
 .claude/commands/bot.md
+
+# gateway page sources: dependencies (the built page in internal/webui/static is committed)
+web/node_modules/

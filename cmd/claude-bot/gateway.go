@@ -53,6 +53,7 @@ const gatewayUsage = `Usage: claude-bot gateway <command>
   restart             replace it, e.g. after upgrading claude-bot
   status              the gateway and every registered project, as JSON
   import [<repo>...]  move projects' .claude-bot/config.json into the gateway (default: this repository)
+  open [--print]      show the gateway's page in the browser (--print: only print its address)
   remove <project>    unregister a project, writing its configuration back to its config.json
   serve               run the gateway in the foreground`
 
@@ -82,6 +83,8 @@ func cmdGateway(ctx context.Context, project string, args []string) error {
 		return gatewayImport(ctx, project, rest)
 	case "remove":
 		return gatewayRemove(ctx, rest)
+	case "open":
+		return gatewayOpen(ctx, rest)
 	case "-h", "--help", "help":
 		fmt.Println(gatewayUsage)
 
@@ -127,6 +130,7 @@ type gatewayHeartbeat struct {
 	StartedAt time.Time    `json:"started_at"`
 	BeatAt    time.Time    `json:"beat_at"`
 	Version   string       `json:"version"`
+	UI        string       `json:"ui,omitempty"` // the page, without its token
 	Projects  []runOutcome `json:"projects"`
 }
 
@@ -192,6 +196,15 @@ func gatewayServe(ctx context.Context, args []string) error {
 	g := newGateway(s, newLogger())
 	g.log.Info("gateway started", "pid", os.Getpid(), "version", Version, "home", home)
 
+	// The page is a view: without it the projects are served all the same.
+	if addr, token, err := uiSettings(ctx, s); err != nil {
+		g.log.Error("page not served", "err", err)
+	} else if g.ui, err = g.serveWeb(ctx, addr, token); err != nil {
+		g.log.Error("page not served", "err", err)
+	} else {
+		g.log.Info("page", "url", g.ui)
+	}
+
 	return g.loop(ctx, filepath.Join(home, gatewayBeat))
 }
 
@@ -206,6 +219,7 @@ type gateway struct {
 
 	started time.Time
 	tick    time.Duration // how often it reconciles
+	ui      string        // the page's URL, "" if it is not served
 
 	mu   sync.Mutex
 	runs map[int64]*projectRun
@@ -257,7 +271,7 @@ func (g *gateway) loop(ctx context.Context, beatPath string) error {
 			}
 		}
 
-		hb := gatewayHeartbeat{PID: os.Getpid(), StartedAt: g.started, BeatAt: time.Now().UTC(), Version: Version, Projects: g.outcomes()}
+		hb := gatewayHeartbeat{PID: os.Getpid(), StartedAt: g.started, BeatAt: time.Now().UTC(), Version: Version, UI: g.ui, Projects: g.outcomes()}
 		if err := writeJSON(beatPath, hb); err != nil {
 			g.log.Warn("write heartbeat", "err", err)
 		}

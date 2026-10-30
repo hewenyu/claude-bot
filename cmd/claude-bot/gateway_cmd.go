@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,7 +60,56 @@ func gatewayStart(ctx context.Context, args []string) error {
 
 	fmt.Printf("started gateway (pid %d), log: %s\n", pid, logPath)
 
-	return reportSettled(ctx)
+	if err := reportSettled(ctx); err != nil {
+		return err
+	}
+
+	if hb, _ := readGatewayHeartbeat(); hb.UI != "" {
+		fmt.Printf("page: %s (open it with `claude-bot gateway open`, which adds the access token)\n", hb.UI)
+	} else {
+		fmt.Printf("! the page is not served; see %s\n", logPath)
+	}
+
+	return nil
+}
+
+// gatewayOpen opens the page with its token, which the page keeps.
+func gatewayOpen(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("gateway open", flag.ContinueOnError)
+	printOnly := fs.Bool("print", false, "only print the address")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+
+	hb, alive := readGatewayHeartbeat()
+	if !alive {
+		return errors.New("gateway not running: run `claude-bot gateway start` first")
+	}
+
+	if hb.UI == "" {
+		return fmt.Errorf("the gateway does not serve its page; see %s", gatewayLogPath())
+	}
+
+	s, err := config.OpenStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer s.Close() //nolint:errcheck // read-only use
+
+	token, err := s.Setting(ctx, store.SettingUIToken)
+	if err != nil {
+		return err
+	}
+
+	link := hb.UI + "#token=" + token
+	fmt.Println(link)
+
+	if !*printOnly {
+		openBrowser(ctx, link)
+	}
+
+	return nil
 }
 
 // reportSettled gives the projects a moment to connect, then says how they

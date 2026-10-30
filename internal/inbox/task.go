@@ -218,6 +218,11 @@ func (b *Inbox) PendingTasks() ([]Task, error) {
 	return tasks, err
 }
 
+// DoneTasks returns the tasks that were handled, in no particular order.
+func (b *Inbox) DoneTasks() ([]Task, error) {
+	return b.tasks(taskDone)
+}
+
 // waitingSince is when the first unhandled user entry arrived.
 func waitingSince(t Task) time.Time {
 	for _, e := range t.Entries[min(t.Handled, len(t.Entries)):] {

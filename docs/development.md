@@ -5,6 +5,8 @@ make test     # go test -race ./...
 make lint     # golangci-lint run
 make fmt      # golangci-lint fmt
 make build    # bin/claude-bot
+make web     # 用 web/ 重新构建 gateway 的网页到 internal/webui/static（要 Node）
+make web-check  # 重新构建，确认提交的 internal/webui/static 和 web/ 一致
 ```
 
 代码结构：
@@ -26,7 +28,18 @@ internal/config/            项目定位，配置的读写（gateway 数据库�
 internal/store/             gateway 的 SQLite 数据库（纯 Go 的 modernc.org/sqlite，不用 cgo）：共用设置、登记的项目、各项目的渠道
 internal/transport/         各适配器共用的 HTTP / WebSocket 客户端、代理、WebSocket 保活、限长下载、重连退避
 internal/atomicfile/        原子写文件
+internal/webui/            gateway 网页的静态文件（go:embed），由 web/ 构建后提交，所以 go install 不需要 Node
+web/                        gateway 网页的源码：React + TypeScript + Vite，接口在 cmd/claude-bot/gateway_web.go
 ```
+
+改网页：改 `web/src/` 后运行 `make web`，把 `internal/webui/static/` 的变化一起提交。开发时可以起一个假数据的 gateway（临时目录、假渠道，每种状态的项目都有，不连任何平台）：
+
+```bash
+CLAUDE_BOT_PAGE_DEMO=127.0.0.1:7601 go test -run TestPageDemo -timeout 0 ./cmd/claude-bot
+# 打开 http://127.0.0.1:7601/#token=de30de30
+```
+
+要热更新，把 `web/vite.config.ts` 里代理的端口改成 7601，在 `web/` 里 `npm run dev`。
 
 各适配器只依赖 `channel`、`transport`、`markdown` 这几个公共包，互相之间没有依赖；CLI 收发消息只通过 `channel.Channel` 接口，用到具体渠道类型的只有按配置创建适配器（`app.go`）和 `init`、`status`、`github` 这几个命令。接入新的平台只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](../PROTOCOL.md#3-渠道适配器)。
 
