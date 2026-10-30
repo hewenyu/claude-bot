@@ -21,7 +21,8 @@ const usage = `claude-bot — chat channel for a Claude Code session
 Usage: claude-bot [-C <repo>] <command> [args]
   -C <repo>   act on that repository (default: the git repo of the current directory)
 
-Setup (once per project; config stays in <repo>/.claude-bot/, git-ignored):
+Setup (once per project; the configuration goes into the gateway, ~/.claude-bot/gateway.db,
+and messages into <repo>/.claude-bot/, git-ignored):
   claude-bot init                     pick a channel (on a terminal; Lark otherwise), set it up, save credentials,
                                       generate .claude/commands/bot.md, verify with a test message
   claude-bot init --channel <name>    set up lark, discord, telegram, slack, dingtalk or github, asking for its tokens
@@ -33,10 +34,16 @@ Setup (once per project; config stays in <repo>/.claude-bot/, git-ignored):
   claude-bot init --github-token t [--github-repo o/r]   receive the repository's issues, PRs, comments and reviews
   claude-bot init --bot-md            only overwrite .claude/commands/bot.md with this version's
 
-Listener (run these yourself, in your own terminal, so it keeps your environment):
-  claude-bot start                    run the listener in the background (log: .claude-bot/serve.log)
-  claude-bot stop                     shut it down
-  claude-bot restart                  replace it, e.g. after upgrading claude-bot or adding a channel
+Gateway (run these yourself, in your own terminal, so it keeps your environment):
+  claude-bot gateway start            run the gateway in the background: one process serving every registered project
+  claude-bot gateway stop             shut it down
+  claude-bot gateway restart          replace it, e.g. after an upgrade
+  claude-bot gateway status           the gateway and every registered project
+  claude-bot gateway import [<repo>...]   move a project set up before the gateway into it
+  claude-bot gateway remove <project> unregister a project (its configuration goes back to its config.json)
+
+Listener of a project not registered with the gateway (set up before it):
+  claude-bot start | stop | restart   run, shut down or replace the project's own listener (log: .claude-bot/serve.log)
 
 For Claude (inside /loop):
   claude-bot inbox [--wait 55m]       pending messages as JSON lines (fails if the listener is not running)
@@ -50,7 +57,8 @@ For Claude (inside /loop):
   claude-bot github review <id> approve|request-changes|comment [text|-]   review the PR
 
 Operations:
-  claude-bot serve                    run the listener in the foreground
+  claude-bot serve                    run the project's own listener in the foreground
+  claude-bot gateway serve            run the gateway in the foreground
   claude-bot status                   bot identity, listener health, pending count
   claude-bot version
 `
@@ -91,6 +99,7 @@ func run(ctx context.Context, args []string) int {
 		"send":     cmdSend,
 		"github":   cmdGitHub,
 		"status":   cmdStatus,
+		"gateway":  cmdGateway,
 		"version": func(context.Context, string, []string) error {
 			fmt.Println(Version)
 

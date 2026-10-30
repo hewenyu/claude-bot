@@ -3,7 +3,7 @@
 claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop /bot`）提供一个**能收能发的聊天通道**。理解问题、排查、修复、怎么回复，全部由 Claude 自己判断。
 
 ```
- 飞书群 / 私聊 ──长连接──▶ claude-bot serve ──Jev 筛选、归组──▶ .claude-bot/inbox/tasks/pending/*.json
+ 飞书群 / 私聊 ──长连接──▶ claude-bot gateway ──Jev 筛选、归组──▶ 各项目的 .claude-bot/inbox/tasks/pending/*.json
                                                               │
  Claude Code (/loop /bot) ◀── claude-bot inbox --wait ────────┘
           │
@@ -82,8 +82,10 @@ Jev 调用失败（网络、限流、key 失效）时，消息留在 `incoming/`
 | `download <id>` | 把附件下载到 `.claude-bot/files/`，并输出文件路径 |
 | `send <channel>:<chat_id> [text\|-]` | 主动发消息，比如发版通知 |
 | `github close\|merge\|review <id> …` | 只用于 GitHub：关 issue 或 PR（`--not-planned`）、合并 PR（`--method squash\|merge\|rebase`）、提交 review（`approve\|request-changes\|comment [text\|-]`）。不改变收件箱里消息的状态 |
-| `start` / `stop` / `restart` | 在后台启动、停止、重启监听进程，由用户在自己的终端里运行 |
-| `serve` / `status` | 在前台运行监听进程 / 查看状态 |
+| `gateway start` / `stop` / `restart` | 在后台启动、停止、重启 gateway（一个进程服务所有登记过的项目），由用户在自己的终端里运行 |
+| `gateway status` / `import` / `remove` | 查看 gateway 和各项目的状态 / 把以前的 `config.json` 迁进 gateway / 把项目从 gateway 里去掉 |
+| `start` / `stop` / `restart` / `serve` | 还没迁进 gateway 的项目自己的监听进程 |
+| `status` | 查看这个项目的状态 |
 
 数据输出到 stdout，日志和提示输出到 stderr。退出码：`0` 成功，`1` 失败，`2` 用法错误。文本参数可以直接写在命令行上，也可以写 `-` 或者不写，从 stdin 读取（适合多行内容配合 heredoc 使用）。
 
@@ -108,7 +110,7 @@ type Channel interface {
 - **`Sender.Mention` 必须是平台原生语法**，确保对方真的能收到通知：飞书是 `<at user_id="ou_xxx"></at>`，Discord 和 Slack 是 `<@123>`，Telegram 是 `@username`（没有用户名的人是 `[名字](tg://user?id=123)`），GitHub 是 `@login`。钉钉的开放接口发不了 @，只能写成 `@昵称` 这样的纯文本。
 - **`Reply` 在原消息下回复**，群聊里要 @ 发送者，话题消息要回在原话题里。
 - **`deliver` 必须快速返回**（平台有超时重推机制），重复投递由收件箱负责去重。
-- **`ready` 在连接建立后调用**。监听进程等所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断监听进程是否健康。心跳里记着监听的渠道和版本，跟当前配置的渠道或者 CLI 的版本对不上时，`inbox` 会提示用户运行 `claude-bot restart`。
+- **`ready` 在连接建立后调用**。gateway（或项目自己的监听进程）等这个项目的所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断是否健康。心跳里记着监听的渠道和版本，跟 CLI 的版本对不上时，`inbox` 会提示用户运行 `claude-bot gateway restart`。
 - `Ack` 是"已收到"的反馈（比如表情回应），尽力而为即可，失败不影响收消息。
 
 可以直接用的公共部分：
@@ -116,7 +118,7 @@ type Channel interface {
 - `channel`：消息只能在会话内定位的平台，用 `ScopedID` / `LocateScoped` 拼、拆 `<会话>/<消息>` 形式的 ID；附件用 `BaseName` 取文件名，用 `SaveFile` 落盘。
 - `markdown.Split`：按平台的长度上限拆分回复，被切开的代码块会补上闭合和重新开启的 fence。
 
-然后在 `internal/config` 里加上这个渠道的配置字段，在 `cmd/claude-bot/app.go` 的 `newApp` 里注册，在 `cmd/claude-bot/init_token.go`（或单独的文件）里加上 `init` 的接入流程。Claude 那一侧的用法完全不用改。
+然后在 `internal/config` 里加上这个渠道的配置字段（以及它在 gateway 数据库里的读写和 `AppKey`：标识这个应用、不含密钥的 key，用来保证一个应用只属于一个项目），在 `cmd/claude-bot/app.go` 的 `newApp` 里注册，在 `cmd/claude-bot/init_token.go`（或单独的文件）里加上 `init` 的接入流程。Claude 那一侧的用法完全不用改。
 
 ## 4. 项目里的文件
 
@@ -125,12 +127,13 @@ type Channel interface {
 ```
 .claude/commands/bot.md        值守流程（init 生成，可以按项目修改）
 .claude-bot/                   已加入 .gitignore
-  config.json                  各平台 bot 的凭证（权限 0600），比如 {"lark": {...}, "discord": {...}, "telegram": {...}, "slack": {...}, "dingtalk": {...}, "github": {...}}
+  config.json                  还没迁进 gateway 的项目的凭证（权限 0600），比如 {"lark": {...}, "discord": {...}, "telegram": {...}, "slack": {...}, "dingtalk": {...}, "github": {...}}；登记进 gateway 的项目的凭证在 ~/.claude-bot/gateway.db
   inbox/incoming/              刚收到、还没经过 Jev 筛选的消息
   inbox/tasks/pending/  inbox/tasks/done/   待处理、已处理的事，每件一个 JSON 文件
   inbox/tasks.lock             读写事情时的锁
   inbox/done/                  筛过的消息存档（去重、get、download 用）
   refused.jsonl                被拒的内容，供人复查
   files/                       下载的附件
-  serve.json  serve.log  serve.lock   监听进程的心跳、日志、单实例锁
+  serve.json  serve.lock        这个项目的监听心跳、单实例锁（gateway 或项目自己的监听进程持有）
+  serve.log                    项目自己的监听进程的日志（gateway 的在 ~/.claude-bot/gateway.log）
 ```

@@ -29,9 +29,9 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 ### 2. 收消息，一件事交给一个子 Agent
 
-运行 `claude-bot inbox`，马上取出所有待处理的事；没有输出说明没人找你，直接到第 3 步。监听进程由用户在自己的终端里用 `claude-bot start` / `stop` / `restart` 启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报监听进程没在运行或没连上，或者提示要 `claude-bot restart`（比如升级了 claude-bot、新接了渠道）时，告诉用户在终端里运行对应的命令；报 Jev 没接入时，告诉用户运行 `claude-bot init --typesafe-key <key>` 再 `claude-bot restart`；其他报错按错误信息排查，比如看 `claude-bot status`（`screening` 一直不为 0 说明 Jev 调用在失败，让用户看 `.claude-bot/serve.log`）。
+运行 `claude-bot inbox`，马上取出所有待处理的事；没有输出说明没人找你，直接到第 3 步。收消息的是 gateway（一个进程服务本机所有登记过的项目；还没迁进 gateway 的老项目是它自己的监听进程），由用户在自己的终端里用 `claude-bot gateway start` / `stop` / `restart`（老项目是 `claude-bot start` / `stop` / `restart`）启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报 gateway 或监听进程没在运行、没连上，或者提示要 restart（比如升级了 claude-bot）时，把它提示的命令原样告诉用户在终端里运行；报 Jev 没接入时，告诉用户运行 `claude-bot init --typesafe-key <key>`；其他报错按错误信息排查，比如看 `claude-bot status` 和 `claude-bot gateway status`（`screening` 一直不为 0 说明 Jev 调用在失败，让用户看 `~/.claude-bot/gateway.log`，老项目是 `.claude-bot/serve.log`）。
 
-`inbox` 每行是**一件事**（task）的 JSON，带着它的完整上下文。监听进程已经用 Jev 把消息和附件裁剪、归好组：同一件事的追问（24 小时内，包括群里别人补充的同一件事）会并回原来那件事，非法请求已经直接回复「现在暂时不支持。」并删掉了，你看不到也不用管。
+`inbox` 每行是**一件事**（task）的 JSON，带着它的完整上下文。gateway 已经用 Jev 把消息和附件裁剪、归好组：同一件事的追问（24 小时内，包括群里别人补充的同一件事）会并回原来那件事，非法请求已经直接回复「现在暂时不支持。」并删掉了，你看不到也不用管。
 
 **你（主会话）只做调度，不亲自处理事情**：不同的人、不同的事，上下文不能互相干扰。按 `inbox` 输出的顺序，**一次一件**：用 Agent 工具开一个子 Agent，把这一行 JSON 原样交给它，连同下面「子 Agent 的任务说明」；等它返回一句话的结果，再开下一件。不要并行开多个，也不要把几件事交给同一个子 Agent。
 

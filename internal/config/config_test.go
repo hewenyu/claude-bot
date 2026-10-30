@@ -15,7 +15,8 @@ import (
 	"github.com/hewenyu/claude-bot/internal/jev"
 )
 
-func TestSaveLoad(t *testing.T) {
+func TestWriteFileLoad(t *testing.T) {
+	isolate(t)
 	t.Setenv("LARK_APP_ID", "")
 	t.Setenv("LARK_APP_SECRET", "")
 	t.Setenv("DISCORD_BOT_TOKEN", "")
@@ -32,7 +33,7 @@ func TestSaveLoad(t *testing.T) {
 		TypeSafe: &jev.Config{APIKey: "ts-1"},
 	}
 
-	if err := Save(dir, want); err != nil {
+	if err := WriteFile(dir, want); err != nil {
 		t.Fatal(err)
 	}
 
@@ -45,7 +46,7 @@ func TestSaveLoad(t *testing.T) {
 		t.Errorf("config.json mode = %o, want 600 (it holds the app secret)", perm)
 	}
 
-	got, err := Load(dir)
+	got, err := Load(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +69,7 @@ func TestSaveLoad(t *testing.T) {
 }
 
 func TestLoad_envOverrides(t *testing.T) {
+	isolate(t)
 	t.Setenv("LARK_APP_ID", "cli_env")
 	t.Setenv("LARK_APP_SECRET", "env_secret")
 	t.Setenv("LARK_DOMAIN", "")
@@ -76,7 +78,7 @@ func TestLoad_envOverrides(t *testing.T) {
 	t.Setenv("SLACK_APP_TOKEN", "xapp-env")
 	t.Setenv("SLACK_BOT_TOKEN", "xoxb-env")
 
-	got, err := Load(t.TempDir()) // no config.json
+	got, err := Load(t.Context(), t.TempDir()) // no config.json
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,29 +101,31 @@ func TestLoad_envOverrides(t *testing.T) {
 }
 
 func TestLoad_dingtalkEnv(t *testing.T) {
+	isolate(t)
 	t.Setenv("DINGTALK_CLIENT_ID", "ding-env")
 	t.Setenv("DINGTALK_CLIENT_SECRET", "")
 
-	if got, err := Load(t.TempDir()); err != nil || got.DingTalk != nil {
+	if got, err := Load(t.Context(), t.TempDir()); err != nil || got.DingTalk != nil {
 		t.Errorf("Load() with only the client id = %+v, %v; want no DingTalk", got.DingTalk, err)
 	}
 
 	t.Setenv("DINGTALK_CLIENT_SECRET", "ding-secret")
 
-	got, err := Load(t.TempDir())
+	got, err := Load(t.Context(), t.TempDir())
 	if err != nil || got.DingTalk == nil || got.DingTalk.ClientID != "ding-env" || got.DingTalk.ClientSecret != "ding-secret" {
 		t.Errorf("Load() = %+v, %v", got.DingTalk, err)
 	}
 }
 
 func TestLoad_missing(t *testing.T) {
+	isolate(t)
 	t.Setenv("LARK_APP_ID", "")
 	t.Setenv("DISCORD_BOT_TOKEN", "")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "")
 	t.Setenv("SLACK_APP_TOKEN", "")
 	t.Setenv("DINGTALK_CLIENT_ID", "")
 
-	got, err := Load(t.TempDir())
+	got, err := Load(t.Context(), t.TempDir())
 	if err != nil || got.Lark != nil || got.Discord != nil || got.Telegram != nil || got.Slack != nil {
 		t.Errorf("Load() on empty dir = %+v, %v", got, err)
 	}
@@ -170,15 +174,17 @@ func TestDir_explicitMissing(t *testing.T) {
 }
 
 func TestLoad_typesafeKeyOnlyFromConfig(t *testing.T) {
+	isolate(t)
 	t.Setenv("TYPESAFE_API_KEY", "ts-env")
 
-	got, err := Load(t.TempDir())
+	got, err := Load(t.Context(), t.TempDir())
 	if err != nil || got.TypeSafe != nil {
 		t.Errorf("Load = %+v, %v; want no TypeSafe key from the environment", got.TypeSafe, err)
 	}
 }
 
 func TestLoad_envKeepsSettings(t *testing.T) {
+	isolate(t)
 	t.Setenv("LARK_APP_ID", "cli_env")
 	t.Setenv("LARK_APP_SECRET", "env_secret")
 	t.Setenv("LARK_DOMAIN", "")
@@ -190,11 +196,11 @@ func TestLoad_envKeepsSettings(t *testing.T) {
 		Telegram: &telegram.Config{Token: "1:file", Proxy: "http://127.0.0.1:7890"},
 	}
 
-	if err := Save(dir, saved); err != nil {
+	if err := WriteFile(dir, saved); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := Load(dir)
+	got, err := Load(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +214,7 @@ func TestLoad_envKeepsSettings(t *testing.T) {
 	}
 
 	// init rewrites config.json from Read: the environment must not leak into it.
-	file, err := Read(dir)
+	file, err := Read(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,4 +237,15 @@ func TestHas(t *testing.T) {
 			t.Errorf("Has(%q) = %v, want %v", name, got, want)
 		}
 	}
+}
+
+// isolate points the gateway home at an empty directory, so that a test
+// never reads the user's.
+func isolate(t *testing.T) string {
+	t.Helper()
+
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv(HomeEnv, home)
+
+	return home
 }

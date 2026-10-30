@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/hewenyu/claude-bot/internal/config"
 )
 
 // listenerHelperEnv makes the test binary act as a listener: it holds the
@@ -26,21 +28,36 @@ func TestMain(m *testing.M) {
 		os.Exit(fakeListener(lock))
 	}
 
-	os.Exit(m.Run())
+	// No test may touch the user's gateway.
+	home, err := os.MkdirTemp("", "claude-bot-home-")
+	if err != nil {
+		panic(err)
+	}
+
+	os.Setenv(config.HomeEnv, home) //nolint:errcheck // before any test runs
+
+	code := m.Run()
+
+	_ = os.RemoveAll(home)
+
+	os.Exit(code)
 }
 
-func fakeListener(lock string) int {
+// fakeListener holds each lock in locks (a path list), with its pid in it.
+func fakeListener(locks string) int {
 	term := make(chan os.Signal, 1)
 	signal.Notify(term, syscall.SIGTERM)
 
-	unlock, err := lockFile(lock)
-	if err != nil {
-		return 1
-	}
-	defer unlock()
+	for lock := range strings.SplitSeq(locks, string(os.PathListSeparator)) {
+		unlock, err := lockFile(lock)
+		if err != nil {
+			return 1
+		}
+		defer unlock()
 
-	if err := os.WriteFile(lock, []byte(strconv.Itoa(os.Getpid())), privatePerm); err != nil {
-		return 1
+		if err := os.WriteFile(lock, []byte(strconv.Itoa(os.Getpid())), privatePerm); err != nil {
+			return 1
+		}
 	}
 
 	os.Stdout.WriteString("ready\n") //nolint:errcheck // the test waits for it
@@ -110,8 +127,9 @@ func TestStopListener(t *testing.T) {
 	}
 }
 
-// startFakeListener runs the test binary as a listener holding lock and
-// returns its pid, and a channel that yields its exit.
+// startFakeListener runs the test binary as a listener holding lock (or
+// several, as a path list) and returns its pid, and a channel that yields
+// its exit.
 func startFakeListener(t *testing.T, lock string) (int, <-chan error) {
 	t.Helper()
 

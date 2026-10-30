@@ -364,7 +364,7 @@ func TestLiveScreenIncoming(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := config.Read(dir)
+	cfg, err := config.Read(t.Context(), dir)
 	if err != nil || cfg.TypeSafe == nil {
 		t.Fatalf("no TypeSafe key in %s: %v", dir, err)
 	}

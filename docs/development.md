@@ -22,14 +22,15 @@ internal/markdown/          各适配器共用的 Markdown 拆分
 internal/inbox/             基于文件的收件箱：待筛选的消息、事情（task）和它们的锁
 internal/jev/               TypeSafe Jev 的最小客户端（只问是非题）
 internal/screen/            用 Jev 把新消息裁剪归组、接上以前的事、拒绝非法请求
-internal/config/            项目定位和凭证加载
+internal/config/            项目定位，配置的读写（gateway 数据库，或者以前的 config.json）和迁移
+internal/store/             gateway 的 SQLite 数据库（纯 Go 的 modernc.org/sqlite，不用 cgo）：共用设置、登记的项目、各项目的渠道
 internal/transport/         各适配器共用的 HTTP / WebSocket 客户端、代理、WebSocket 保活、限长下载、重连退避
 internal/atomicfile/        原子写文件
 ```
 
 各适配器只依赖 `channel`、`transport`、`markdown` 这几个公共包，互相之间没有依赖；CLI 收发消息只通过 `channel.Channel` 接口，用到具体渠道类型的只有按配置创建适配器（`app.go`）和 `init`、`status`、`github` 这几个命令。接入新的平台只需要实现 `channel.Channel` 接口，详见 [PROTOCOL.md §3](../PROTOCOL.md#3-渠道适配器)。
 
-`internal/screen` 的效果用真实的 Jev 测（用本仓库 `.claude-bot/config.json` 里的 TypeSafe key，花 token，不在 `make test` 里跑）：
+`internal/screen` 的效果用真实的 Jev 测（用本仓库配置里的 TypeSafe key，花 token，不在 `make test` 里跑）：
 
 ```bash
 JEV_LIVE=1 go test -run Live -v ./internal/screen

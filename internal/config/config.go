@@ -1,5 +1,7 @@
 // Package config locates the project's .claude-bot directory and loads the
-// bot credentials from .claude-bot/config.json, with environment overrides.
+// project's bot configuration: from the gateway database once the project is
+// registered there, else from .claude-bot/config.json; either way with
+// environment overrides.
 package config
 
 import (
@@ -21,6 +23,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/slack"
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/jev"
+	"github.com/hewenyu/claude-bot/internal/store"
 )
 
 // DirName is the per-project state directory (git-ignored).
@@ -57,6 +60,9 @@ type Config struct {
 	// TypeSafe, if set, has the listener screen messages with Jev before
 	// they reach the inbox. Only config.json sets it, never the environment.
 	TypeSafe *jev.Config `json:"typesafe,omitempty"`
+	// Gateway is the project's registration when its configuration lives
+	// in the gateway database rather than in config.json.
+	Gateway *store.Project `json:"-"`
 }
 
 // Dir returns <project root>/.claude-bot. The project root is, in order: the
@@ -135,9 +141,54 @@ func (c Config) Has(name string) bool {
 	return false
 }
 
-// Read reads dir/config.json alone, without the environment: what init
-// rewrites, so credentials given through the environment are not saved.
-func Read(dir string) (Config, error) {
+// Read returns the project's configuration without the environment: what
+// init rewrites, so credentials given through the environment are not saved.
+// A project registered with the gateway reads it from the gateway database,
+// any other from dir/config.json (as before the gateway). The settings every
+// project shares, the TypeSafe API key, come from the gateway either way.
+func Read(ctx context.Context, dir string) (Config, error) {
+	s, ok, err := openGateway(ctx)
+	if err != nil {
+		return Config{}, err
+	}
+
+	if !ok {
+		return ReadFile(dir)
+	}
+
+	defer s.Close() //nolint:errcheck // read-only use
+
+	p, err := s.ProjectByDir(ctx, filepath.Dir(dir))
+
+	switch {
+	case err == nil:
+		return FromStore(ctx, s, p)
+	case !errors.Is(err, store.ErrNotFound):
+		return Config{}, err
+	}
+
+	cfg, err := ReadFile(dir)
+	if err != nil {
+		return cfg, err
+	}
+
+	if cfg.TypeSafe == nil {
+		key, err := s.Setting(ctx, store.SettingTypeSafeKey)
+		if err != nil {
+			return cfg, err
+		}
+
+		if key != "" {
+			cfg.TypeSafe = &jev.Config{APIKey: key}
+		}
+	}
+
+	return cfg, nil
+}
+
+// ReadFile reads dir/config.json alone, the configuration of a project that
+// is not registered with the gateway.
+func ReadFile(dir string) (Config, error) {
 	var cfg Config
 
 	raw, err := os.ReadFile(filepath.Join(dir, configFile)) //nolint:gosec // fixed file in the project bot dir
@@ -154,17 +205,23 @@ func Read(dir string) (Config, error) {
 	return cfg, nil
 }
 
-// Load reads dir/config.json and applies LARK_APP_ID, LARK_APP_SECRET,
-// LARK_DOMAIN, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN,
-// SLACK_BOT_TOKEN, DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET from the
-// environment. They replace the credentials of config.json; its other
-// settings (proxy, domain) stay.
-func Load(dir string) (Config, error) {
-	cfg, err := Read(dir)
+// Load reads the project's configuration (see Read) and applies
+// LARK_APP_ID, LARK_APP_SECRET, LARK_DOMAIN, DISCORD_BOT_TOKEN,
+// TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_BOT_TOKEN, DINGTALK_CLIENT_ID
+// and DINGTALK_CLIENT_SECRET from the environment. They replace the stored
+// credentials; the other settings (proxy, domain) stay.
+func Load(ctx context.Context, dir string) (Config, error) {
+	cfg, err := Read(ctx, dir)
 	if err != nil {
 		return cfg, err
 	}
 
+	applyEnv(&cfg)
+
+	return cfg, nil
+}
+
+func applyEnv(cfg *Config) {
 	if id, secret := os.Getenv(larkAppIDEnv), os.Getenv(larkSecretEnv); id != "" && secret != "" {
 		override(&cfg.Lark, func(c *lark.Config) {
 			c.AppID, c.AppSecret = id, secret
@@ -189,8 +246,6 @@ func Load(dir string) (Config, error) {
 	if id, secret := os.Getenv(dingtalkIDEnv), os.Getenv(dingtalkSecretEnv); id != "" && secret != "" {
 		override(&cfg.DingTalk, func(c *dingtalk.Config) { c.ClientID, c.ClientSecret = id, secret })
 	}
-
-	return cfg, nil
 }
 
 // override applies set to the channel config *c points at, creating it if
@@ -203,9 +258,10 @@ func override[C any](c **C, set func(*C)) {
 	set(*c)
 }
 
-// Save writes cfg to dir/config.json, readable only by the owner. The file is
-// replaced atomically, so a crash never leaves half-written credentials.
-func Save(dir string, cfg Config) error {
+// WriteFile writes cfg to dir/config.json, readable only by the owner, the
+// way projects were configured before the gateway. The file is replaced
+// atomically, so a crash never leaves half-written credentials.
+func WriteFile(dir string, cfg Config) error {
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)

@@ -16,11 +16,15 @@ claude-bot [-C <repo>] <command> [args]
 | `download <id>` | 下载消息附件到 `.claude-bot/files/<消息>/`，输出文件路径 |
 | `send <channel>:<chat_id> [text\|-]` | 主动发消息到某个会话；GitHub 上是在 `github:<owner>/<repo>/<编号>` 下发评论 |
 | `github close\|merge\|review <id> …` | 关 issue 或 PR、合并 PR、提交 review，见[渠道接入 · GitHub](channels.md#github) |
-| `start` | 在后台启动监听进程，等它连上所有渠道后返回 |
-| `stop` | 停止监听进程 |
-| `restart` | 重启监听进程，升级 claude-bot 或新接了渠道之后用 |
-| `serve` | 在前台运行监听进程 |
-| `status` | 查看 bot 身份、监听进程状态、待处理的事（`pending`）、是否接入了 Jev（`jev`）和等待 Jev 筛选的消息数（`screening`） |
+| `gateway start` | 在后台启动 gateway（一个进程服务所有登记过的项目），连上后列出各项目的状态 |
+| `gateway stop` / `gateway restart` | 停止 / 重启 gateway，升级 claude-bot 之后重启 |
+| `gateway status` | 以 JSON 输出 gateway 和每个登记过的项目：状态（`running`；`starting` 正在连；`busy` 被项目自己的监听进程占着；`failed`；`idle` 没有渠道；`stopped` gateway 没在运行）、出错原因、配置的和连上的渠道、停掉的渠道和原因、待处理的事、等待 Jev 的消息数 |
+| `gateway import [<repo>...]` | 把以前版本的 `.claude-bot/config.json` 迁进 gateway（默认当前仓库），原文件改名为 `config.json.imported`。gateway 已有 TypeSafe key 或 GitHub token 时沿用它的 |
+| `gateway remove <项目名或目录>` | 把项目从 gateway 里去掉，它的配置写回 `.claude-bot/config.json` |
+| `gateway serve` | 在前台运行 gateway |
+| `start` / `stop` / `restart` | 还没迁进 gateway 的项目：在后台启动、停止、重启它自己的监听进程。已登记的项目里，`stop` 只停它以前自己的监听进程（迁移时用），不会停 gateway |
+| `serve` | 在前台运行还没迁进 gateway 的项目自己的监听进程 |
+| `status` | 查看 bot 身份、监听进程状态、是否由 gateway 服务（`gateway`）、待处理的事（`pending`）、是否接入了 Jev（`jev`）和等待 Jev 筛选的消息数（`screening`） |
 | `version` | 查看版本 |
 
 文本参数可以写在命令行上，也可以用 `-` 或省略，改为从 stdin 读取，适合多行内容配合 heredoc 使用。退出码：`0` 成功，`1` 失败，`2` 用法错误。
@@ -29,7 +33,7 @@ claude-bot [-C <repo>] <command> [args]
 
 | 参数 | 说明 |
 |---|---|
-| `--typesafe-key` | [TypeSafe](https://console.typesafe.ai/keys) 的 API key，供 Jev 筛选每条消息。**必需**：第一次 `init` 时没给就在终端里提示输入，验证有效后存进 `config.json`。渠道都接好了的话，单独运行 `init --typesafe-key <key>` 只换 key |
+| `--typesafe-key` | [TypeSafe](https://console.typesafe.ai/keys) 的 API key，供 Jev 筛选每条消息。**必需**：gateway 里还没有时，第一次 `init` 没给就在终端里提示输入，验证有效后存进 gateway，所有项目共用。渠道都接好了的话，单独运行 `init --typesafe-key <key>` 只换 key |
 | `--channel lark\|discord\|telegram\|slack\|github\|dingtalk` | 直接指定渠道，不弹菜单；没给 token 参数时在终端里提示输入 |
 | `--bot-md` | 只用当前版本覆盖 `.claude/commands/bot.md`，不动任何配置。升级 claude-bot 后用它更新值守流程 |
 | `--app-id`、`--app-secret` | 使用已有应用，不新建 |
@@ -37,7 +41,7 @@ claude-bot [-C <repo>] <command> [args]
 | `--telegram-token` | 接入 Telegram bot |
 | `--slack-app-token`、`--slack-bot-token` | 接入 Slack 应用，两个一起用 |
 | `--dingtalk-client-id`、`--dingtalk-client-secret` | 接入钉钉应用的机器人，两个一起用 |
-| `--github-token`、`--github-repo` | 接入 GitHub 渠道；仓库默认取 `origin` |
+| `--github-token`、`--github-repo` | 接入 GitHub 渠道；仓库默认取 `origin`。token 所有项目共用：gateway 里已有就不用再给，给了新的就替换掉共用的 |
 | `--domain feishu\|lark` | 配合 `--app-id` 使用，指定国内版或国际版，默认 `feishu` |
 | `--proxy direct\|env\|<url>` | 网络代理，见[代理](#代理) |
 | `--name` | bot 名称，默认 `<仓库名> Bot` |
@@ -62,18 +66,24 @@ claude-bot [-C <repo>] <command> [args]
 ### 文件
 
 ```
+~/.claude-bot/               gateway 的目录（可以用 CLAUDE_BOT_HOME 换），0700
+  gateway.db                 SQLite：登记的项目、各项目的渠道凭证、共用的 TypeSafe key 和 GitHub token；0600，不加密
+  gateway.json               gateway 心跳，带各项目的状态
+  gateway.log                gateway 日志（各项目的行带 project=<项目名>）
+  gateway.lock               单实例锁，里面是 gateway 的 pid
+
 .claude/commands/bot.md      值守流程（init 生成，提交进仓库，团队共享）
 .claude-bot/                 已加入 .gitignore
-  config.json                凭证和 TypeSafe API key，0600
+  config.json                还没迁进 gateway 的项目的凭证和 TypeSafe API key，0600；迁移后改名为 config.json.imported
   inbox/incoming/            刚收到、还没经过 Jev 筛选的消息，Claude 看不到
   inbox/tasks/pending/       待处理的事，每件一个 JSON 文件（整段对话：用户的话、附件存在哪、bot 的回复）
   inbox/tasks/done/          已处理的事，24 小时内有追问会重新打开
   inbox/tasks.lock           监听进程和命令读写事情时的锁
   inbox/done/                筛过的消息存档（裁剪过、标好了进了哪件事）
   files/                     附件，监听进程收到消息时就下载到 files/<消息>/
-  serve.json                 监听进程心跳
-  serve.log                  监听进程日志
-  serve.lock                 单实例锁，里面是监听进程的 pid
+  serve.json                 这个项目的监听心跳（gateway 或项目自己的监听进程写）
+  serve.log                  项目自己的监听进程的日志（gateway 的在 ~/.claude-bot/gateway.log）
+  serve.lock                 这个项目的单实例锁，里面是服务它的进程（gateway 或项目自己的监听进程）的 pid
   refused.jsonl              Jev 拒绝的请求，供人复查误拒
 ```
 
@@ -81,6 +91,7 @@ claude-bot [-C <repo>] <command> [args]
 
 | 变量 | 说明 |
 |---|---|
+| `CLAUDE_BOT_HOME` | gateway 的目录，默认 `~/.claude-bot` |
 | `LARK_APP_ID`、`LARK_APP_SECRET` | 不使用 `init`，直接用环境变量提供凭证（两个都设置时覆盖 `config.json`） |
 | `LARK_DOMAIN` | 设为 `lark` 表示国际版，默认是飞书 |
 | `DISCORD_BOT_TOKEN` | 不使用 `init`，直接用环境变量提供 Discord bot token（覆盖 `config.json`） |
@@ -88,7 +99,7 @@ claude-bot [-C <repo>] <command> [args]
 | `SLACK_APP_TOKEN`、`SLACK_BOT_TOKEN` | 同上，Slack 的两个 token（两个都设置时生效） |
 | `DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET` | 同上，钉钉应用的 Client ID 和 Client Secret（两个都设置时生效） |
 
-环境变量只替换凭证，`config.json` 里同一渠道的代理、域名等其他设置照样生效。TypeSafe API key 只认 `config.json`，没有对应的环境变量。`init` 只读写 `config.json`，不会把环境变量里的凭证写进去。
+环境变量只替换凭证，同一渠道的代理、域名等其他设置照样生效；它们只对在项目里运行的命令和项目自己的监听进程生效，gateway 服务很多项目，不读这些变量。TypeSafe API key 只认存下来的配置，没有对应的环境变量。`init` 不会把环境变量里的凭证写进去。
 
 ### 代理
 

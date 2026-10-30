@@ -45,7 +45,8 @@ type initOptions struct {
 	dingtalkID, dingtalkSecret          string
 	typesafeKey                         string
 	reregister, noOpen, noVerify, force bool
-	botMD                               bool // only rewrite the /bot command
+	botMD                               bool   // only rewrite the /bot command
+	sharedGitHubToken                   string // the gateway's, used unless --github-token gives another
 }
 
 func cmdInit(ctx context.Context, project string, args []string) error {
@@ -68,8 +69,13 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		o.name = filepath.Base(root) + " Bot"
 	}
 
-	cfg, err := config.Read(dir)
+	cfg, err := config.Read(ctx, dir)
 	if err != nil {
+		return err
+	}
+
+	// Every project shares the gateway's GitHub token.
+	if o.sharedGitHubToken, err = config.SharedGitHubToken(ctx); err != nil {
 		return err
 	}
 
@@ -99,7 +105,15 @@ func finishInit(ctx context.Context, dir string, cfg config.Config, s setup, o i
 		return err
 	}
 
-	if err := config.Save(dir, cfg); err != nil {
+	// The gateway picks the saved configuration up within seconds; checking
+	// the connection here as well would put a second listener on the app.
+	gw, err := gatewayPID()
+	if err != nil {
+		return err
+	}
+
+	p, err := config.Save(ctx, dir, cfg)
+	if err != nil {
 		return err
 	}
 
@@ -107,18 +121,29 @@ func finishInit(ctx context.Context, dir string, cfg config.Config, s setup, o i
 		return err
 	}
 
-	fmt.Printf("✓ bot「%s」已接入 %s\n", s.name, root)
+	fmt.Printf("✓ bot「%s」已接入 %s（gateway 里的项目名：%s）\n", s.name, root, p.Name)
 	s.report(ctx)
 
-	if !o.noVerify {
+	switch {
+	case o.noVerify:
+	case gw != 0:
+		fmt.Printf("✓ gateway 正在运行（pid %d），几秒内会接上这个项目，跳过连接验证\n", gw)
+	default:
 		if err := verifyConnection(ctx, dir, s.ch, s.prompt); err != nil {
 			return err
 		}
 	}
 
 	fmt.Println("\n下一步：")
-	fmt.Println("  1. 在终端里运行  claude-bot start  启动监听进程（已经在运行的话用  claude-bot restart  接上新渠道）")
+
+	if gw == 0 {
+		fmt.Println("  1. 在终端里运行  claude-bot gateway start  启动 gateway（一个进程服务所有项目）")
+	} else {
+		fmt.Println("  1. gateway 已在运行，会自动用上新配置；`claude-bot gateway status` 可以看它接上没有")
+	}
+
 	fmt.Println("  2. 在这个仓库里打开 Claude Code，运行  /loop /bot")
+	warnOwnListener(dir)
 	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
 	fmt.Printf("要再接入其他渠道，运行  claude-bot init --channel <%s>\n", channelNames("|"))
 
@@ -204,13 +229,24 @@ func initJev(ctx context.Context, dir, root string, cfg *config.Config, o initOp
 		return true, err
 	}
 
-	if err := config.Save(dir, *cfg); err != nil {
+	if _, err := config.Save(ctx, dir, *cfg); err != nil {
 		return true, err
 	}
 
-	fmt.Println("下一步：在终端里运行  claude-bot restart  让监听进程用上 Jev")
+	fmt.Println("✓ 已保存，所有项目共用这个 key；gateway 在运行的话几秒内自动用上，没在运行就运行  claude-bot gateway start")
+	warnOwnListener(dir)
 
 	return true, nil
+}
+
+// warnOwnListener tells the user to stop a listener the project ran before
+// the gateway, which keeps the gateway out.
+func warnOwnListener(dir string) {
+	if pid, err := assemble(dir, quiet).listenerPID(); err == nil && pid != 0 {
+		if gw, _ := gatewayPID(); gw != pid {
+			fmt.Printf("! 这个项目自己的监听进程（pid %d）还在运行，gateway 要等它停掉才接手：在这里运行  claude-bot stop\n", pid)
+		}
+	}
 }
 
 func botCommandPath(root string) string {
