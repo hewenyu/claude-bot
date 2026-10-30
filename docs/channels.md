@@ -147,7 +147,15 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
    claude-bot init --github-token <token>
    ```
 
-   仓库默认从 `origin` 远程地址读出来，不是 GitHub 地址时用 `--github-repo <owner>/<name>` 指定。它会检查 token 能不能访问这个仓库、有没有写权限。
+   仓库默认从 GitHub 上的 remote 读出来（先看 `origin`）。仓库还没有 GitHub 上的 remote（比如只在本地的仓库）时没有要监听的东西，菜单里不能选 GitHub；要监听别的仓库就用 `--github-repo <owner>/<name>` 指定。它会检查 token 能不能访问这个仓库、有没有写权限。
+
+token 存在 gateway 里，所有项目共用一个默认 token，第二个项目接 GitHub 时不用再给。有项目属于另一个账号（比如公司组织的仓库和你自己的仓库），给它单独一个有名字的 token：
+
+```bash
+claude-bot init --github-token <另一个账号的 token> --github-token-name work
+```
+
+之后别的项目要用这个 token 就 `claude-bot init --github-token-name work`。也可以在 gateway 的网页里管理：「共用设置」里添加 token、勾选它服务哪些项目，或者在项目的 GitHub 渠道里选用哪个 token。只有一个 token 时不用管这些，所有项目都用默认的。
 
 用谁的 token，回复就显示成谁发的。可以单独注册一个机器人账号，也可以直接用自己的。用自己的也没关系：bot 发的评论和开的 PR 末尾都带一个隐藏标记 `<!-- claude-bot -->`，只有带标记的才会被跳过，你自己手写的评论和 PR 照样会进收件箱，也会被当成别人的 PR 来审。
 

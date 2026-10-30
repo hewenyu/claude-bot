@@ -140,10 +140,11 @@ func setupDingTalk(ctx context.Context, cfg *config.Config, o initOptions) (setu
 func setupGitHub(ctx context.Context, cfg *config.Config, o initOptions, root string) (setup, error) {
 	repo := o.githubRepo
 	if repo == "" {
-		var err error
-		if repo, err = originRepo(ctx, root); err != nil {
-			return setup{}, err
-		}
+		repo = o.githubRemote
+	}
+
+	if repo == "" {
+		return setup{}, fmt.Errorf("%w: %s has no GitHub remote, so there is nothing on GitHub to watch; pass --github-repo <owner>/<name> to watch another repository", errUsage, root)
 	}
 
 	gcfg := github.Config{Token: o.githubToken, Repo: repo, Proxy: o.proxy}
@@ -158,7 +159,7 @@ func setupGitHub(ctx context.Context, cfg *config.Config, o initOptions, root st
 		return setup{}, fmt.Errorf("github token check failed (nothing written): %w", err)
 	}
 
-	cfg.GitHub = &gcfg
+	cfg.GitHub, cfg.GitHubTokenName = &gcfg, o.githubTokenName
 
 	return setup{
 		ch:     ch,
@@ -167,22 +168,46 @@ func setupGitHub(ctx context.Context, cfg *config.Config, o initOptions, root st
 	}, nil
 }
 
-// originRepo reads <owner>/<name> from the repository's origin remote.
-func originRepo(ctx context.Context, root string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+// githubRemote returns <owner>/<name> of the repository's remote on
+// github.com, origin first; "" if it has none, as a repository that was
+// never pushed: then there is nothing on GitHub to watch.
+func githubRemote(ctx context.Context, root string) string {
+	cmd := exec.CommandContext(ctx, "git", "remote", "-v") //nolint:gosec // fixed arguments; root only sets the directory
 	cmd.Dir = root
 
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("%w: no origin remote to take the repository from; pass --github-repo <owner>/<name>", errUsage)
+		return ""
 	}
 
-	repo, ok := github.RepoFromRemote(string(out))
-	if !ok {
-		return "", fmt.Errorf("%w: origin %s is not on github.com; pass --github-repo <owner>/<name>", errUsage, strings.TrimSpace(string(out)))
+	return repoOfRemotes(string(out))
+}
+
+// repoOfRemotes picks the GitHub repository from `git remote -v` output.
+func repoOfRemotes(out string) string {
+	var first string
+
+	for line := range strings.Lines(out) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		repo, ok := github.RepoFromRemote(fields[1])
+		if !ok {
+			continue
+		}
+
+		if fields[0] == "origin" {
+			return repo
+		}
+
+		if first == "" {
+			first = repo
+		}
 	}
 
-	return repo, nil
+	return first
 }
 
 func reportGitHub(acct github.Account) {

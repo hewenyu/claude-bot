@@ -381,6 +381,10 @@ func importProject(ctx context.Context, project string) error {
 		fmt.Printf("  这个项目自己的 %s 和 gateway 里已有的不同，沿用 gateway 的\n", k)
 	}
 
+	if imp.GitHubToken != "" {
+		fmt.Printf("  这个项目的 GitHub token 和 gateway 的默认 token 不同，存为「%s」，只给它用（网页的共用设置里可以改）\n", imp.GitHubToken)
+	}
+
 	// A listener of the project's own still holds it; the gateway takes over
 	// once it stops.
 	a := assemble(dir, newLogger())

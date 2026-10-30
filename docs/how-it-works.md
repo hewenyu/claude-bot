@@ -14,7 +14,8 @@
 
 - **怎么连出去**：飞书和 Discord 用长连接（WebSocket），Slack 用 Socket Mode，钉钉用 Stream 模式，Telegram 用长轮询，GitHub 每 30 秒轮询一次 REST API，都是从本机主动发起的。
 - **一个 gateway 服务所有项目**：每个项目有自己的 bot，一个 bot 可以接多个渠道；一个应用只属于一个项目（同一个应用连两次，飞书、钉钉、Slack 会随机分走消息，Telegram 互相抢，Discord 各回一遍），登记时就会拒绝。gateway 在一个进程里给每个登记过的项目连上它的渠道、用 Jev 筛选、把事情写进这个项目自己的 `.claude-bot/inbox/`，并在那里写心跳；各项目的 `/loop /bot`、`inbox`、`reply` 和以前单独跑监听进程时完全一样。某个项目或某个渠道出错只停它自己。
-- **配置在本地 SQLite 里**：`~/.claude-bot/gateway.db`（权限 0600，不加密）存着登记的项目、各项目的渠道凭证，以及所有项目共用的 TypeSafe key 和 GitHub token。`init` 改了配置，gateway 几秒内自动用上，不用重启。对话和附件仍是各项目 `.claude-bot/` 下的 JSON 文件和普通文件。
+- **配置在本地 SQLite 里**：`~/.claude-bot/gateway.db`（权限 0600，不加密）存着登记的项目、各项目的渠道凭证，以及所有项目共用的 TypeSafe key 和 GitHub token（默认一个给所有项目用；属于另一个账号的项目可以用一个有名字的 token）。`init` 改了配置，gateway 几秒内自动用上，不用重启。对话和附件仍是各项目 `.claude-bot/` 下的 JSON 文件和普通文件。
+- **每个项目一个 Claude Code**：gateway 只管收消息、写进各项目自己的收件箱。每个项目各开一个 Claude Code 跑 `/loop /bot`，它在项目里运行的 `inbox --wait`、`reply`、`done` 只读写这个项目的 `.claude-bot/`，回复也用这个项目自己的应用发出去，不会串到别的项目。
 - **本地网页只是看和改配置**：gateway 在本机回环地址上提供一个网页（`claude-bot gateway open`），读的就是数据库、各项目的心跳和收件箱里的 JSON；在网页上改渠道等于改数据库，gateway 照常几秒内重连。网页不参与处理消息，关掉或者端口被占用都不影响值守。
 - **gateway 由你启停**：在自己的终端里运行 `claude-bot gateway start`，它在后台启动，连上各项目后列出它们的状态；`claude-bot gateway stop` 停止，`claude-bot gateway restart` 重启（升级之后用）。这样它用的是你终端里的环境变量（比如代理设置），不会继承 Claude Code 会话里的。`inbox` 不会自己启动它：没在运行时直接报错，版本比当前命令旧时提示你 `claude-bot gateway restart`。
 - **还没迁进 gateway 的项目**（用以前版本 `init` 的，配置在 `.claude-bot/config.json`）照旧用 `claude-bot start` / `stop` / `restart` 跑它自己的监听进程。gateway 不会去连一个自己的监听进程还在跑的项目，等它停掉才接手。

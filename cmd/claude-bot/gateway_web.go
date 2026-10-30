@@ -62,8 +62,10 @@ type channelField struct {
 	Label       string   `json:"label"`
 	Secret      bool     `json:"secret,omitempty"`
 	Required    bool     `json:"required,omitempty"`
+	Select      bool     `json:"select,omitempty"` // a choice of Options, "" being the default
 	Options     []string `json:"options,omitempty"`
 	Placeholder string   `json:"placeholder,omitempty"`
+	Default     string   `json:"default,omitempty"` // the value to start a new channel with
 }
 
 // channelType describes a channel for the page.
@@ -73,6 +75,8 @@ type channelType struct {
 	Fields  []channelField `json:"fields"`
 	Note    string         `json:"note,omitempty"`     // shown on its form
 	AddNote string         `json:"add_note,omitempty"` // shown on its form when adding it
+	// Unavailable says why the project cannot add the channel.
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 var proxyField = channelField{Key: "proxy", Label: "代理", Placeholder: "留空用默认；direct、env 或 http://host:port"}
@@ -81,7 +85,7 @@ var channelTypes = []channelType{
 	{Name: lark.Name, Label: "飞书 / Lark", Fields: []channelField{
 		{Key: "app_id", Label: "App ID", Required: true, Placeholder: "cli_…"},
 		{Key: "app_secret", Label: "App Secret", Secret: true, Required: true},
-		{Key: "domain", Label: "版本", Options: []string{lark.DomainFeishu, lark.DomainLark}},
+		{Key: "domain", Label: "版本", Select: true, Options: []string{lark.DomainFeishu, lark.DomainLark}},
 		proxyField,
 	}, AddNote: "新建飞书应用更方便的办法：在项目里运行 claude-bot init，浏览器里点一下「确认」就建好了。"},
 	{Name: dingtalk.Name, Label: "钉钉", Fields: []channelField{
@@ -104,8 +108,9 @@ var channelTypes = []channelType{
 	}},
 	{Name: github.Name, Label: "GitHub", Fields: []channelField{
 		{Key: "repo", Label: "仓库", Required: true, Placeholder: "owner/name"},
+		{Key: "token_name", Label: "GitHub token", Select: true},
 		proxyField,
-	}, Note: "用设置里所有项目共用的 GitHub token。"},
+	}, Note: "token 在「共用设置」里管理：默认 token 给所有项目用；另一个账号的项目，在那里加一个 token 并指定给它。"},
 }
 
 func channelTypeOf(name string) (channelType, bool) {
@@ -123,6 +128,9 @@ type web struct {
 	token string
 	hosts []string // accepted Host headers
 	log   *slog.Logger
+	// checkGitHub checks a GitHub token against a repository; tests
+	// replace it.
+	checkGitHub func(ctx context.Context, token string, gh github.Config) error
 }
 
 // uiSettings returns the page's address and token, creating the token.
@@ -177,7 +185,7 @@ func (g *gateway) serveWeb(ctx context.Context, addr, token string) (string, err
 		return "", fmt.Errorf("page: %w", err)
 	}
 
-	w := &web{g: g, token: token, hosts: hosts, log: g.log}
+	w := &web{g: g, token: token, hosts: hosts, log: g.log, checkGitHub: checkGitHubAccess}
 	srv := &http.Server{Handler: w.routes(), ReadHeaderTimeout: webTimeout}
 
 	go func() {
@@ -201,7 +209,7 @@ func (g *gateway) serveWeb(ctx context.Context, addr, token string) (string, err
 func (w *web) routes() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/overview", w.overview)
-	api.HandleFunc("GET /api/channel-types", func(rw http.ResponseWriter, _ *http.Request) { writeAPI(rw, http.StatusOK, channelTypes) })
+	api.HandleFunc("GET /api/projects/{id}/channel-types", w.channelTypes)
 	api.HandleFunc("GET /api/projects/{id}/tasks", w.tasks)
 	api.HandleFunc("GET /api/projects/{id}/tasks/{task}", w.task)
 	api.HandleFunc("GET /api/projects/{id}/channels", w.channels)
@@ -211,6 +219,8 @@ func (w *web) routes() http.Handler {
 	api.HandleFunc("DELETE /api/projects/{id}", w.deleteProject)
 	api.HandleFunc("GET /api/settings", w.settings)
 	api.HandleFunc("PUT /api/settings", w.putSettings)
+	api.HandleFunc("PUT /api/github-tokens/{name}", w.putGitHubToken)
+	api.HandleFunc("DELETE /api/github-tokens/{name}", w.deleteGitHubToken)
 	api.HandleFunc("/api/", func(rw http.ResponseWriter, _ *http.Request) { apiError(rw, http.StatusNotFound, "no such API") })
 
 	root := http.NewServeMux()
@@ -618,8 +628,17 @@ func (w *web) submitted(r *http.Request, p store.Project) (config.Config, error)
 	}
 
 	if cfg.GitHub != nil {
-		if cfg.GitHub.Token, err = w.g.store.Setting(r.Context(), store.SettingGitHubToken); err != nil {
+		cfg.GitHub.Token, err = config.GitHubToken(r.Context(), w.g.store, cfg.GitHubTokenName)
+		if errors.Is(err, config.ErrNoGitHubToken) {
+			return cfg, fmt.Errorf("%w: %w", errBadRequest, err)
+		}
+
+		if err != nil {
 			return cfg, err
+		}
+
+		if cfg.GitHub.Token == "" {
+			return cfg, fmt.Errorf("%w: the gateway has no default GitHub token yet: add one in 共用设置", errBadRequest)
 		}
 	}
 
@@ -830,8 +849,11 @@ func (w *web) deleteProject(rw http.ResponseWriter, r *http.Request) {
 
 // settingsView is the shared settings, masked.
 type settingsView struct {
-	TypeSafe    secretView `json:"typesafe_key"`
-	GitHubToken secretView `json:"github_token"`
+	TypeSafe secretView `json:"typesafe_key"`
+	// GitHubTokens are the default token (named "") and the named ones,
+	// with the projects each serves.
+	GitHubTokens   []githubTokenView `json:"github_tokens"`
+	GitHubProjects []githubProject   `json:"github_projects"` // the projects with a GitHub channel
 }
 
 func (w *web) settingsNow(ctx context.Context) (settingsView, error) {
@@ -842,12 +864,13 @@ func (w *web) settingsNow(ctx context.Context) (settingsView, error) {
 		return v, err
 	}
 
-	token, err := w.g.store.Setting(ctx, store.SettingGitHubToken)
-	if err != nil {
+	if v.GitHubTokens, v.GitHubProjects, err = w.githubTokens(ctx); err != nil {
 		return v, err
 	}
 
-	return settingsView{TypeSafe: maskSecret(key), GitHubToken: maskSecret(token)}, nil
+	v.TypeSafe = maskSecret(key)
+
+	return v, nil
 }
 
 func (w *web) settings(rw http.ResponseWriter, r *http.Request) {
@@ -893,7 +916,7 @@ func (w *web) putSettings(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	if token := strings.TrimSpace(in.GitHubToken); token != "" {
-		if err := w.checkGitHubToken(ctx, token); err != nil {
+		if err := w.checkGitHubToken(ctx, token, ""); err != nil {
 			w.fail(rw, fmt.Errorf("%w: GitHub token not accepted: %w", errBadRequest, err))
 
 			return
@@ -907,31 +930,4 @@ func (w *web) putSettings(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	w.settings(rw, r)
-}
-
-// checkGitHubToken checks a token against every repository a project
-// watches: it is shared by all of them.
-func (w *web) checkGitHubToken(ctx context.Context, token string) error {
-	projects, err := w.g.store.Projects(ctx)
-	if err != nil {
-		return err
-	}
-
-	for _, p := range projects {
-		cfg, err := config.FromStore(ctx, w.g.store, p)
-		if err != nil || cfg.GitHub == nil {
-			continue
-		}
-
-		ch, err := github.New(github.Config{Token: token, Repo: cfg.GitHub.Repo, Proxy: cfg.GitHub.Proxy}, quiet)
-		if err != nil {
-			return err
-		}
-
-		if _, err := ch.Account(ctx); err != nil {
-			return fmt.Errorf("%s: %w", p.Name, err)
-		}
-	}
-
-	return nil
 }

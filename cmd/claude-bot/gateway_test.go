@@ -17,6 +17,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
+	"github.com/hewenyu/claude-bot/internal/channel/lark"
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/jev"
 	"github.com/hewenyu/claude-bot/internal/screen"
@@ -512,5 +513,47 @@ func TestStop_handsOverFromTheProjectsOwnListener(t *testing.T) { //nolint:paral
 	// With no gateway running, start says how to run it.
 	if err := cmdStart(t.Context(), root, nil); !errors.Is(err, errServedByGateway) {
 		t.Errorf("start = %v, want errServedByGateway", err)
+	}
+}
+
+// Each project runs its own Claude Code with /loop /bot: the commands it
+// runs in the project read that project's inbox and answer with that
+// project's apps, from the gateway's database.
+func TestCommands_eachProjectUsesItsOwn(t *testing.T) {
+	t.Setenv(config.HomeEnv, t.TempDir())
+
+	roots := map[string]string{}
+
+	for _, name := range []string{"api", "web"} {
+		root := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(filepath.Join(root, config.DirName), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := config.Save(t.Context(), filepath.Join(root, config.DirName), config.Config{
+			Lark:     &lark.Config{AppID: "cli_" + name, AppSecret: "s"},
+			TypeSafe: &jev.Config{APIKey: "ts"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		roots[name] = root
+	}
+
+	for name, root := range roots {
+		a, err := newApp(t.Context(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := config.Load(t.Context(), a.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if a.dir != filepath.Join(root, config.DirName) || a.gateway == nil || a.gateway.Name != name || cfg.Lark.AppID != "cli_"+name {
+			t.Errorf("%s: app in %s for project %+v with app %s", name, a.dir, a.gateway, cfg.Lark.AppID)
+		}
 	}
 }

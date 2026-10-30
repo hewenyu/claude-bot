@@ -13,7 +13,7 @@ interface Props {
 
 export function ChannelsPanel({ project: p, onChanged }: Props) {
   const channels = usePoll(() => api.channels(p.id), null, `channels-${p.id}`);
-  const types = usePoll(api.channelTypes, null, "channel-types");
+  const types = usePoll(() => api.channelTypes(p.id), null, `channel-types-${p.id}`);
   const [editing, setEditing] = useState<{ type: ChannelType; current?: ChannelView } | null>(null);
   const [removing, setRemoving] = useState<ChannelView | "project" | null>(null);
 
@@ -174,9 +174,12 @@ function AddCard({ types, onPick }: { types: ChannelType[]; onPick: (t: ChannelT
       <p className="muted small">同一个 bot 可以同时接多个渠道。</p>
       <div className="add-grid">
         {types.map((t) => (
-          <button key={t.name} type="button" className="add-option" onClick={() => onPick(t)}>
+          <button key={t.name} type="button" className="add-option" onClick={() => onPick(t)} disabled={!!t.unavailable} title={t.unavailable}>
             <ChannelBadge name={t.name} />
-            {t.label}
+            <span className="add-label">
+              {t.label}
+              {t.unavailable && <span className="add-why">{t.unavailable}</span>}
+            </span>
           </button>
         ))}
       </div>
@@ -186,7 +189,9 @@ function AddCard({ types, onPick }: { types: ChannelType[]; onPick: (t: ChannelT
 
 function ChannelEditor({ project, type, current, onClose, onSaved }: { project: ProjectStatus; type: ChannelType; current?: ChannelView; onClose: () => void; onSaved: () => void }) {
   const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(type.fields.map((f) => [f.key, typeof current?.fields[f.key] === "string" ? (current.fields[f.key] as string) : ""])),
+    Object.fromEntries(
+      type.fields.map((f) => [f.key, current ? (typeof current.fields[f.key] === "string" ? (current.fields[f.key] as string) : "") : (f.default ?? "")]),
+    ),
   );
   const [test, setTest] = useState<TestResult | "running" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -244,10 +249,10 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
                 {f.label}
                 {f.required && !(f.secret && secret?.set) && <span className="req"> *</span>}
               </span>
-              {f.options ? (
+              {f.select || f.options ? (
                 <select id={id} value={values[f.key]} onChange={(e) => set(f.key, e.target.value)}>
                   <option value="">默认</option>
-                  {f.options.map((o) => (
+                  {(f.options ?? []).map((o) => (
                     <option key={o} value={o}>
                       {o}
                     </option>

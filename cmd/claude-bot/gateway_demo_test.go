@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -207,6 +208,30 @@ func seedDemo(t *testing.T, s *store.Store) {
 	}
 
 	demoProject(t, s, root, "legacy-cron", nil)
+
+	// A project of another account, on a GitHub token of its own.
+	if err := s.SetSetting(t.Context(), store.SettingGitHubTokenPrefix+"personal", "ghp_demo-personal-not-a-token-41f0"); err != nil {
+		t.Fatal(err)
+	}
+
+	oss := demoProject(t, s, root, "oss-tools", map[string]string{"github": `{"repo":"me/oss-tools","token_name":"personal"}`})
+
+	for _, p := range []store.Project{shop, oss} {
+		repo := map[string]string{"shop-api": "acme/shop-api", "oss-tools": "me/oss-tools"}[p.Name]
+		demoGit(t, p.Dir, "init", "-q")
+		demoGit(t, p.Dir, "remote", "add", "origin", "git@github.com:"+repo+".git")
+	}
+}
+
+func demoGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
 }
 
 // demoTask builds a task from lines: "who: text" for users, "bot: text" for

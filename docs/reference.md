@@ -19,7 +19,7 @@ claude-bot [-C <repo>] <command> [args]
 | `gateway start` | 在后台启动 gateway（一个进程服务所有登记过的项目），连上后列出各项目的状态 |
 | `gateway stop` / `gateway restart` | 停止 / 重启 gateway，升级 claude-bot 之后重启 |
 | `gateway status` | 以 JSON 输出 gateway 和每个登记过的项目：状态（`running`；`starting` 正在连；`busy` 被项目自己的监听进程占着；`failed`；`idle` 没有渠道；`stopped` gateway 没在运行）、出错原因、配置的和连上的渠道、停掉的渠道和原因、待处理的事、等待 Jev 的消息数 |
-| `gateway import [<repo>...]` | 把以前版本的 `.claude-bot/config.json` 迁进 gateway（默认当前仓库），原文件改名为 `config.json.imported`。gateway 已有 TypeSafe key 或 GitHub token 时沿用它的 |
+| `gateway import [<repo>...]` | 把以前版本的 `.claude-bot/config.json` 迁进 gateway（默认当前仓库），原文件改名为 `config.json.imported`。gateway 已有 TypeSafe key 时沿用它的；GitHub token 和 gateway 的默认 token 不同时，存成一个以项目命名的 token 只给这个项目用（还是用它自己的账号） |
 | `gateway remove <项目名或目录>` | 把项目从 gateway 里去掉，它的配置写回 `.claude-bot/config.json` |
 | `gateway open [--print]` | 在浏览器里打开 gateway 的网页（带访问令牌的地址）；`--print` 只打印地址。网页只监听本机（默认 `127.0.0.1:7600`），见下面的「gateway 的网页」 |
 | `gateway serve` | 在前台运行 gateway |
@@ -42,7 +42,8 @@ claude-bot [-C <repo>] <command> [args]
 | `--telegram-token` | 接入 Telegram bot |
 | `--slack-app-token`、`--slack-bot-token` | 接入 Slack 应用，两个一起用 |
 | `--dingtalk-client-id`、`--dingtalk-client-secret` | 接入钉钉应用的机器人，两个一起用 |
-| `--github-token`、`--github-repo` | 接入 GitHub 渠道；仓库默认取 `origin`。token 所有项目共用：gateway 里已有就不用再给，给了新的就替换掉共用的 |
+| `--github-token`、`--github-repo` | 接入 GitHub 渠道；仓库默认取 GitHub 上的 remote（先看 `origin`）。仓库没有 GitHub 上的 remote 时，菜单里不能选 GitHub（没有要监听的 issue 和 PR），要监听别的仓库就用 `--github-repo` 指定。token 默认所有项目共用：gateway 里已有就不用再给，给了新的就替换掉这个项目在用的那个 |
+| `--github-token-name` | 用 gateway 里叫这个名字的 GitHub token，给属于另一个账号的项目用；和 `--github-token` 一起给时，把那个 token 存成这个名字。只有一个 token 时不用管它，所有项目都用默认 token |
 | `--domain feishu\|lark` | 配合 `--app-id` 使用，指定国内版或国际版，默认 `feishu` |
 | `--proxy direct\|env\|<url>` | 网络代理，见[代理](#代理) |
 | `--name` | bot 名称，默认 `<仓库名> Bot` |
@@ -68,7 +69,7 @@ claude-bot [-C <repo>] <command> [args]
 
 ```
 ~/.claude-bot/               gateway 的目录（可以用 CLAUDE_BOT_HOME 换），0700
-  gateway.db                 SQLite：登记的项目、各项目的渠道凭证、共用的 TypeSafe key 和 GitHub token、网页的地址和访问令牌；0600，不加密
+  gateway.db                 SQLite：登记的项目、各项目的渠道凭证、共用的 TypeSafe key 和 GitHub token（默认的和有名字的）、网页的地址和访问令牌；0600，不加密
   gateway.json               gateway 心跳，带各项目的状态和网页地址（不带令牌）
   gateway.log                gateway 日志（各项目的行带 project=<项目名>）
   gateway.lock               单实例锁，里面是 gateway 的 pid
@@ -95,7 +96,7 @@ gateway 启动时在 `127.0.0.1:7600` 上提供一个网页，`claude-bot gatewa
 - **项目**：左边列出所有登记过的项目和状态（运行中、连接中、被占用、出错、没有渠道），有待处理的事时显示数量；每个渠道连没连上、停掉的原因。
 - **任务**：这个项目经 Jev 归好的每一件事：待处理、处理中（Claude 正在做）、已回复、已关闭，可以筛选和搜索；点开看整段对话、附件存在哪、bot 的每次回复，还没处理的部分单独标出来。GitHub 的事可以直接跳到 issue / PR。
 - **渠道**：添加、修改、移除这个项目的渠道，「测试连接」只向平台核对凭证（问「我是谁」），不建立长连接，不会和正在运行的连接抢消息；保存后 gateway 几秒内用新配置重连。一个应用已经属于别的项目时拒绝保存。也可以在这里把项目从 gateway 移除（配置写回它的 `config.json`）。
-- **共用设置**：TypeSafe API key 和 GitHub token，保存前先验证（GitHub token 要能访问每个接了 GitHub 的项目的仓库）。
+- **共用设置**：TypeSafe API key 和 GitHub token，保存前先验证。默认 GitHub token 给所有接了 GitHub 的项目用；有项目属于另一个账号时，在这里加一个有名字的 token，勾选它服务哪些项目（每个项目也可以在 GitHub 渠道的表单里选用哪个）。token 要能访问它服务的每个仓库才保存；还在服务项目的 token 不能删。
 
 安全上：网页只监听本机回环地址，只接受 `127.0.0.1`、`localhost`、`[::1]` 的 Host（防 DNS rebinding）；每个接口都要带访问令牌（存在 `gateway.db` 里，`gateway open` 打开的地址带着它，浏览器记下后不用再带）。凭证只能写进去，读出来只有「已设置」和末几位。
 

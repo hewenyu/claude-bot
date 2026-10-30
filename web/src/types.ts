@@ -73,8 +73,12 @@ export interface Field {
   label: string;
   secret?: boolean;
   required?: boolean;
+  /** A choice of options, "" being the default. */
+  select?: boolean;
   options?: string[];
   placeholder?: string;
+  /** The value a new channel starts with. */
+  default?: string;
 }
 
 export interface ChannelType {
@@ -83,6 +87,8 @@ export interface ChannelType {
   fields: Field[];
   note?: string;
   add_note?: string;
+  /** Why this project cannot add the channel. */
+  unavailable?: string;
 }
 
 export interface SecretView {
@@ -104,7 +110,22 @@ export interface TestResult {
   error?: string;
 }
 
+export interface GitHubToken {
+  /** "" is the default token. */
+  name: string;
+  token: SecretView;
+  projects: string[];
+}
+
+export interface GitHubProject {
+  id: number;
+  name: string;
+  repo: string;
+  token_name?: string;
+}
+
 export interface Settings {
   typesafe_key: SecretView;
-  github_token: SecretView;
+  github_tokens: GitHubToken[];
+  github_projects: GitHubProject[];
 }
