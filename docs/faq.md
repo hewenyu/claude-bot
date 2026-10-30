@@ -14,7 +14,7 @@
 
 **监听进程起不来 / 连不上**
 
-运行 `claude-bot status` 查看状态，日志在 `.claude-bot/serve.log`。监听进程启动时如果 token 无效（比如已被撤销），会直接退出，并在日志里写明原因，重新 `init` 一次即可。本机开了代理的情况见[代理](reference.md#代理)。
+运行 `claude-bot status` 查看状态，日志在 `.claude-bot/serve.log`。某个渠道出现致命错误（比如 token 无效或已被撤销）时，只停掉这一个渠道，其他渠道继续运行：日志里会有一行 `channel stopped` 写明原因，`claude-bot status` 的 `listener.stopped` 会列出它，`claude-bot inbox` 也会提示；重新 `init` 这个渠道后 `claude-bot restart` 即可。所有渠道都停了，监听进程才会退出。本机开了代理的情况见[代理](reference.md#代理)。
 
 **升级 claude-bot 之后**
 

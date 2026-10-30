@@ -35,6 +35,7 @@ type listenerStatus struct {
 	PID      int       `json:"pid"`
 	LastBeat time.Time `json:"last_beat"`
 	Channels []string  `json:"channels,omitempty"` // what it serves; `claude-bot restart` picks up newly configured ones
+	Stopped  []string  `json:"stopped,omitempty"`  // failed while the others kept running; see serve.log
 	Version  string    `json:"version,omitempty"`
 }
 
@@ -109,7 +110,7 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 	s := status{
 		Project:  filepath.Dir(a.dir),
 		Channels: a.names(),
-		Listener: listenerStatus{Alive: alive, PID: hb.PID, LastBeat: hb.BeatAt, Channels: hb.Channels, Version: hb.Version},
+		Listener: listenerStatus{Alive: alive, PID: hb.PID, LastBeat: hb.BeatAt, Channels: hb.Channels, Stopped: hb.Stopped, Version: hb.Version},
 		Pending:  len(pending),
 		Jev:      a.typesafe != nil,
 		Incoming: len(incoming),
