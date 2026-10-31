@@ -841,7 +841,10 @@ p:last-child {
   min-width: 0;
 }
 
-.task-row-meta time {
+/* Only the senders give way when the row is short: everything else keeps its
+   width on one line (CJK text would otherwise break after every character). */
+.task-row-meta > :not(.ellipsis):not(.grow) {
+  flex: none;
   white-space: nowrap;
 }
 

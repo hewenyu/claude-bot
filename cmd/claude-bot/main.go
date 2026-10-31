@@ -10,11 +10,57 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 )
 
-// Version is set at build time with -ldflags "-X main.Version=...".
+// Version is set at build time with -ldflags "-X main.Version=...". Without
+// it, init fills it in from what the Go toolchain recorded in the binary.
 var Version = "dev"
+
+func init() {
+	if Version != "dev" {
+		return
+	}
+
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := buildVersion(info); v != "" {
+			Version = v
+		}
+	}
+}
+
+// buildVersion names the build from its build info: the module version for
+// `go install …@v0.2.6` (and, since Go 1.24, for `go build` in a checkout:
+// the tag, or a pseudo-version after it), else the VCS revision, "" if neither.
+func buildVersion(info *debug.BuildInfo) string {
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+
+	var rev, dirty string
+
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				dirty = "-dirty"
+			}
+		}
+	}
+
+	if rev == "" {
+		return ""
+	}
+
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+
+	return "dev-" + rev + dirty
+}
 
 const usage = `claude-bot — chat channel for a Claude Code session
 
