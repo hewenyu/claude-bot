@@ -7,13 +7,21 @@ import { go, href } from "./route";
 import type { Entry, ProjectStatus, TaskDetail, TaskState, TaskSummary } from "./types";
 import { Banner, ChannelBadge, CopyButton, Dot, Empty, errorText } from "./ui";
 
-type Filter = "all" | "open" | "done";
+/**
+ * The page shows the open tasks; handled ones are archived on their own and
+ * come back as soon as someone follows up (the task is pending again).
+ */
+type View = "open" | "archived";
 
-const filters: { key: Filter; label: string; match: (s: TaskState) => boolean }[] = [
-  { key: "all", label: "全部", match: () => true },
-  { key: "open", label: "未完成", match: (s) => s === "pending" || s === "working" },
-  { key: "done", label: "已完成", match: (s) => s === "replied" || s === "closed" },
+const archived = (s: TaskState) => s === "replied" || s === "closed";
+
+const views: { key: View; label: string; match: (s: TaskState) => boolean }[] = [
+  { key: "open", label: "进行中", match: (s) => !archived(s) },
+  { key: "archived", label: "已归档", match: archived },
 ];
+
+const matches = (t: TaskSummary, q: string) =>
+  !q || t.title.toLowerCase().includes(q) || t.senders.some((s) => s.toLowerCase().includes(q)) || t.id.includes(q);
 
 const stateTone: Record<TaskState, "warn" | "info" | "ok" | "off"> = {
   pending: "warn",
@@ -24,24 +32,23 @@ const stateTone: Record<TaskState, "warn" | "info" | "ok" | "off"> = {
 
 export function TasksPanel({ project, selected }: { project: ProjectStatus; selected?: string }) {
   const tasks = usePoll(() => api.tasks(project.id), 5000, `tasks-${project.id}`);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [view, setView] = useState<View>("open");
   const [query, setQuery] = useState("");
   const now = useNow();
 
-  const shown = useMemo(() => {
+  const { shown, counts, found } = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const match = filters.find((f) => f.key === filter)!.match;
-
-    return (tasks.data ?? []).filter(
-      (t) => match(t.state) && (!q || t.title.toLowerCase().includes(q) || t.senders.some((s) => s.toLowerCase().includes(q)) || t.id.includes(q)),
-    );
-  }, [tasks.data, filter, query]);
-
-  const counts = useMemo(() => {
     const all = tasks.data ?? [];
+    const of = (v: View) => all.filter((t) => views.find((x) => x.key === v)!.match(t.state));
+    const byView = { open: of("open"), archived: of("archived") };
+    const found = { open: byView.open.filter((t) => matches(t, q)), archived: byView.archived.filter((t) => matches(t, q)) };
 
-    return Object.fromEntries(filters.map((f) => [f.key, all.filter((t) => f.match(t.state)).length])) as Record<Filter, number>;
-  }, [tasks.data]);
+    return { shown: found[view], counts: { open: byView.open.length, archived: byView.archived.length }, found };
+  }, [tasks.data, view, query]);
+
+  // With no task picked, the page shows the latest open conversation.
+  const current = selected ?? (view === "open" && !query.trim() ? shown[0]?.id : undefined);
+  const other: View = view === "open" ? "archived" : "open";
 
   if (tasks.error && !tasks.data) {
     return <Banner tone="bad">读不到这个项目的任务：{errorText(tasks.error)}</Banner>;
@@ -67,35 +74,79 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
       <section className="task-list" aria-label="任务列表">
         <div className="task-tools">
           <div className="segmented" role="tablist">
-            {filters.map((f) => (
-              <button key={f.key} type="button" role="tab" aria-selected={filter === f.key} className={filter === f.key ? "on" : ""} onClick={() => setFilter(f.key)}>
-                {f.label}
-                <span className="seg-count">{counts[f.key]}</span>
+            {views.map((v) => (
+              <button key={v.key} type="button" role="tab" aria-selected={view === v.key} className={view === v.key ? "on" : ""} onClick={() => setView(v.key)}>
+                {v.label}
+                <span className="seg-count">{counts[v.key]}</span>
               </button>
             ))}
           </div>
           <input className="search" type="search" placeholder="搜索标题、发送人" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="搜索任务" />
         </div>
 
+        {view === "archived" && shown.length > 0 && <p className="task-note">回复过或标记过的任务自动归档在这里；有人追问时会回到「进行中」。</p>}
         {!tasks.data && <ListSkeleton />}
         {tasks.data && !shown.length && (
-          <Empty title="没有符合条件的任务">
-            <button type="button" className="btn btn-ghost" onClick={() => (setFilter("all"), setQuery(""))}>
-              清除筛选
-            </button>
-          </Empty>
+          <EmptyView view={view} query={query.trim()} elsewhere={found[other].length} archivedCount={counts.archived} onSwitch={() => setView(other)} onClear={() => setQuery("")} />
         )}
         <ul>
           {shown.map((t) => (
-            <TaskRow key={t.id} task={t} project={project.id} active={t.id === selected} now={now} />
+            <TaskRow key={t.id} task={t} project={project.id} active={t.id === current} now={now} />
           ))}
         </ul>
       </section>
 
       <section className="conversation" aria-label="对话">
-        {selected ? <Conversation project={project.id} id={selected} /> : <Empty title="选一个任务，查看完整对话" icon={<span className="big-icon">☰</span>} />}
+        {current ? <Conversation project={project.id} id={current} /> : <Empty title="选一个任务，查看完整对话" icon={<span className="big-icon">☰</span>} />}
       </section>
     </div>
+  );
+}
+
+interface EmptyViewProps {
+  view: View;
+  query: string;
+  elsewhere: number; // matches in the other view
+  archivedCount: number;
+  onSwitch: () => void;
+  onClear: () => void;
+}
+
+function EmptyView({ view, query, elsewhere, archivedCount, onSwitch, onClear }: EmptyViewProps) {
+  const there = view === "open" ? "已归档" : "进行中";
+
+  if (query) {
+    return (
+      <Empty title="没有符合条件的任务">
+        {elsewhere > 0 && (
+          <button type="button" className="btn btn-ghost" onClick={onSwitch}>
+            {there}里有 {elsewhere} 件
+          </button>
+        )}
+        <button type="button" className="btn btn-ghost" onClick={onClear}>
+          清除搜索
+        </button>
+      </Empty>
+    );
+  }
+
+  if (view === "open") {
+    return (
+      <Empty title="没有进行中的任务" icon={<span className="big-icon">✓</span>}>
+        <p>{archivedCount > 0 ? `处理完的 ${archivedCount} 件已自动归档。` : ""}有新消息或追问时，任务会出现在这里。</p>
+        {archivedCount > 0 && (
+          <button type="button" className="btn btn-ghost" onClick={onSwitch}>
+            查看已归档
+          </button>
+        )}
+      </Empty>
+    );
+  }
+
+  return (
+    <Empty title="还没有归档的任务">
+      <p>回复过或标记过的任务会自动归档到这里。</p>
+    </Empty>
   );
 }
 
