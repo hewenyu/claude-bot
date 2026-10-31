@@ -55,6 +55,7 @@ For Claude (inside /loop):
   claude-bot github close <id> [--not-planned]                 close the issue or PR of a github: id
   claude-bot github merge <id> [--method squash|merge|rebase]  merge the PR
   claude-bot github review <id> approve|request-changes|comment [text|-]   review the PR
+  claude-bot github mine <id>         is the PR the bot's own (opened by its account, marked)? exit 0 if so, 1 if not
 
 Operations:
   claude-bot serve                    run the project's own listener in the foreground

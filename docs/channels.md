@@ -172,6 +172,9 @@ claude-bot init --github-token <另一个账号的 token> --github-token-name wo
 claude-bot github close <id> [--not-planned]               # 关 issue 或 PR
 claude-bot github merge <id> [--method squash|merge|rebase] # 合并 PR，默认 squash
 claude-bot github review <id> approve|request-changes|comment [text|-]
+claude-bot github mine <id>                                 # PR 是不是 bot 自己开的
 ```
+
+`github mine` 通过 GitHub API 确认 PR 是不是 bot 自己开的：作者是 token 所属的账号（`status` 里的 `github.login`），而且正文带 `<!-- claude-bot -->` 标记。标记谁都能手写，作者是 GitHub 记录的，冒充不了。是的话输出 `mine yes`、退出码 0，bot 验证后会直接合并；否则 `mine no`、退出码 1，按别人的 PR 审计。
 
 `<id>` 是收件箱里的 `github:<owner>/<repo>/<编号>`，带 `#c…`（评论）、`#r…`（行内 review 评论）、`#v…`（review）后缀的也可以，会作用在所属的 issue 或 PR 上。

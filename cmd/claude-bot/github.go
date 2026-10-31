@@ -12,8 +12,12 @@ import (
 
 const (
 	reviewUsage = "github review <id> approve|request-changes|comment [text|-]"
-	githubUsage = "github close <id> [--not-planned] | merge <id> [--method squash|merge|rebase] | " + reviewUsage
+	githubUsage = "github close <id> [--not-planned] | merge <id> [--method squash|merge|rebase] | " + reviewUsage +
+		" | mine <id>"
 )
+
+// errNotMine is the verdict of "github mine" on a PR the bot did not open.
+var errNotMine = errors.New("not the bot's own PR: audit it as someone else's")
 
 // Review verdicts as typed on the command line.
 var reviewEvents = map[string]string{
@@ -70,6 +74,8 @@ func cmdGitHub(ctx context.Context, project string, args []string) error {
 		fmt.Println("merged", id, sha)
 	case "review":
 		return review(ctx, ch, id, pos[1:])
+	case "mine":
+		return mine(ctx, ch, id)
 	default:
 		return fmt.Errorf("%w: unknown action %q: %s", errUsage, args[0], githubUsage)
 	}
@@ -102,6 +108,34 @@ func review(ctx context.Context, ch *github.Channel, id string, args []string) e
 	fmt.Println("reviewed", id, args[0])
 
 	return nil
+}
+
+// mine prints who opened the PR and fails unless the bot did: its GitHub
+// account (the token's, "github.login" in status) and with the marker.
+func mine(ctx context.Context, ch *github.Channel, id string) error {
+	a, err := ch.Authorship(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("author ", a.Author)
+	fmt.Println("account", a.Account)
+	fmt.Println("marker ", yesNo(a.Marked))
+	fmt.Println("mine   ", yesNo(a.Own))
+
+	if !a.Own {
+		return fmt.Errorf("%s: %w", id, errNotMine)
+	}
+
+	return nil
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+
+	return "no"
 }
 
 // parseInterleaved parses flags given before, between or after the
