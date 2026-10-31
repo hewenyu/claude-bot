@@ -71,7 +71,20 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 1. **从最新的主分支拉一个分支**：`git fetch origin && git checkout -b bot/<编号或简短描述> origin/<主分支>`，比如 `bot/42-fix-timeout`。
 2. **修好并验证**：先复现问题，再修；补上或更新测试；跑项目的测试和 lint（比如 `make test`、`make lint`），全部通过；再实际构建、运行一遍，亲手确认问题真的修好了、功能真的能用。只靠测试通过不算验证。
-3. **提交并开 PR**：
+3. **让 Codex 审一遍**（本机同时装了 `codex` 和 `hc` 才做，`command -v codex && command -v hc` 有一个找不到就跳过）：先 commit，然后在仓库根目录用 `hc` 在后台起一个 Codex 审查，等它跑完读结论：
+   ```bash
+   out=$(git rev-parse --git-path codex-review.md); rm -f "$out"
+   hc run --bg --no-notify --cwd "$PWD" codex exec review --base origin/<主分支> -o "$out"
+   ```
+   输出里的 `address`（比如 `t4`）就是这个审查终端，后面都用它（终端名是全机共享的，不要起固定的名字，免得和别的项目撞上）：
+   ```bash
+   hc wait <address> --timeout 900   # 输出的 reason 是 timeout 就再等一次，exit 才是跑完了
+   cat "$(git rev-parse --git-path codex-review.md)"   # 没有这个文件就用 hc read <address> --lines 200 看出了什么错
+   hc kill <address>; hc rm <address>
+   ```
+   - Codex 的每条意见你自己判断：确实有问题的修好、重新按第 2 步验证、commit 后再审一轮；不认同的，在 PR 正文里写明理由。最多审 3 轮，还剩确实有问题又修不好的，不要合并，回复说明卡在哪、等人拍板。
+   - 不管审完、出错还是超时，最后都要 `hc kill <address>; hc rm <address>` 把这个终端关掉。Codex 跑不起来（没登录、额度用完）的，在 PR 正文里说明没审，照常往下走。
+4. **提交并开 PR**：
    ```bash
    git push -u origin bot/42-fix-timeout
    gh pr create --base <主分支> --title "……" --body-file - <<'EOF'
@@ -84,10 +97,10 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
    ```
    - 正文写清楚原因、改动和验证过程。解决了某个 issue 就写 `Fixes #<n>`，合并后 GitHub 会自动关掉它；如果 issue 还要等别人确认（比如要在真实环境里试），写 `Refs #<n>`，免得被自动关掉。
    - 正文**最后一行必须是 `<!-- claude-bot -->`**。这个标记表明 PR 是你开的：接了 GitHub 渠道时它不会再作为新消息收进来，以后看到这个 PR 也能认出是自己的。
-4. **合并**：你自己开的 PR，你已经验证过，开完直接合并，不用等人批准。合并前先确认它确实是你自己的（见「处理 PR」：接了 GitHub 渠道用 `claude-bot github mine github:<owner>/<repo>/<n>`，退出码 0 才算），不是的不要直接合并。仓库配了 CI 的，先 `gh pr checks <n> --watch` 等检查通过。接了 GitHub 渠道用 `claude-bot github merge github:<owner>/<repo>/<n>`（默认 squash），否则 `gh pr merge <n> --squash`。
+5. **合并**：你自己开的 PR，你已经验证过，开完直接合并，不用等人批准。合并前先确认它确实是你自己的（见「处理 PR」：接了 GitHub 渠道用 `claude-bot github mine github:<owner>/<repo>/<n>`，退出码 0 才算），不是的不要直接合并。仓库配了 CI 的，先 `gh pr checks <n> --watch` 等检查通过。接了 GitHub 渠道用 `claude-bot github merge github:<owner>/<repo>/<n>`（默认 squash），否则 `gh pr merge <n> --squash`。
    - 合并冲突了，在分支上 `git merge origin/<主分支>` 解决、重新验证后再推，不要 rebase 后强推。
    - 合并后切回主分支：`git checkout <主分支> && git pull`，删掉本地分支；远端分支仓库没设置自动删除的话，可以 `git push origin --delete <分支>`（只限你自己开的、已经合并的分支）。
-5. **发版**（见「发版」），然后回复提出问题的人：原因、改了什么、PR 链接、版本号。
+6. **发版**（见「发版」），然后回复提出问题的人：原因、改了什么、PR 链接、版本号。
 
 ## 处理 issue
 
