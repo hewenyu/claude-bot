@@ -1,12 +1,22 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { channel } from "./format";
+import { ChannelLogo, hasLogo } from "./logos";
 
+/** The channel's official logo; a lettered tile for a channel without one. */
 export function ChannelBadge({ name, size = "md" }: { name: string; size?: "sm" | "md" }) {
   const c = channel(name);
 
+  if (hasLogo(name)) {
+    return (
+      <span className={`badge badge-${size} badge-logo`} title={c.label} aria-hidden>
+        <ChannelLogo name={name} />
+      </span>
+    );
+  }
+
   return (
-    <span className={`badge badge-${size}`} style={{ background: c.color }} title={c.label} aria-hidden>
-      {c.short}
+    <span className={`badge badge-${size}`} title={c.label} aria-hidden>
+      {name.slice(0, 2).toUpperCase()}
     </span>
   );
 }
