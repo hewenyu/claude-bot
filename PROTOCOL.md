@@ -40,8 +40,8 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 监听进程收到消息后，先把它放进 `inbox/incoming/`（Claude 看不到），等这个会话停顿 3 秒（最多等 15 秒，好让连着发的几条一起处理），然后：
 
 1. **下载附件**到 `.claude-bot/files/<消息>/`。
-2. **裁剪归组**：同一会话（同一 `channel` + `chat_id` + `thread_id`）的这批消息，按句子和逗号切成片段（代码块不拆；太短的分句并到下一句）；附件也各是一个片段，文本文件让 Jev 读开头 1500 字节，图片只给文件名。Jev 两两判断两个片段是不是同一件事（同一个 bug、需求或问题），概率 ≥ 0.7 的连在一起，连通的片段就是一件事。片段超过 40 个时改成只按句子切，还多就按整条消息。
-3. **接上以前的事**：这个会话里还没处理完的事，和 24 小时内有过新消息的事（最多 10 件，最近的在前），Jev 读每件事对话的最后 800 字（包括 bot 的回复），判断这批的每件事是不是在接着它说：补充细节、文件或催促，或者回答、确认 bot 在那里问的（比如「发吧」「1B,2A」）。≥ 0.7 就并进去（并列时取最近的那件），已经处理完的事会重新打开；群里别人说的同一件事也会并进去。超过 24 小时的追问算新的事。
+2. **归组**：同一会话（同一 `channel` + `chat_id` + `thread_id`）的这批消息，**一条消息（连同它的附件）总是整条归进一件事，不会拆开**。为了让 Jev 比较短的片段，消息按句子和逗号切成片段（代码块不拆；太短的分句并到下一句），附件也各是一个片段，文本文件让 Jev 读开头 1500 字节，图片只给文件名；片段超过 40 个时改成只按句子切，还多就按整条消息。同一条消息的片段直接连在一起，不问 Jev；不同消息的片段，Jev 两两判断是不是同一件事（同一个 bug、需求或问题），概率 ≥ 0.7 的连在一起，连通的就是一件事。
+3. **接上以前的事**：这个会话里还没处理完的事，和 24 小时内有过新消息的事（最多 10 件，最近的在前），Jev 读每件事开头的提问（bot 第一次回复之前用户说的，前 400 字，说明这件事是什么）和之后对话的最后 800 字（包括 bot 的回复），判断这批的每个片段是不是在接着它说：补充细节、要求、文件或催促，或者回答、确认 bot 在那里问的（比如「发吧」「1B,2A」）。≥ 0.5 就把片段所在的那组并进去（取最高的那件，并列时取最近的），已经处理完的事会重新打开；群里别人说的同一件事也会并进去。超过 24 小时的追问算新的事。
 4. **判断合法**：每件事按八个类别（入侵他人系统或账号、诈骗、侵犯个人信息、索要 bot 的凭证、破解盗版、毒品枪支赌博、色情暴力、危害国家安全）各问一个是非题，接上的事会带着它以前的对话一起判断，任一类 ≥ 0.8 就拒绝：被拒的片段不进任何一件事，附件文件一并删除，在被拒内容所在的最后一条消息下回复「现在暂时不支持。」，并在 `.claude-bot/refused.jsonl` 里记一笔供人复查。
 5. **放行**：合法的片段追加进所属的事，存到 `inbox/tasks/pending/`；消息本身（删掉被拒的部分，`pieces` 标着各片段进了哪件事，`attachments[].path` 是附件保存的位置）存档到 `inbox/done/`。
 
@@ -51,7 +51,7 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 {"id":"task:mhd2x0k1","channel":"lark","chat_id":"oc_x","chat_type":"group",
  "created_at":"…","updated_at":"…","handled":2,"shown":4,
  "entries":[
-   {"kind":"user","message":"lark:om_1","sender":{"id":"ou_a","name":"张三",…},"at":"…","text":"登录按钮没反应，"},
+   {"kind":"user","message":"lark:om_1","sender":{"id":"ou_a","name":"张三",…},"at":"…","text":"登录按钮没反应"},
    {"kind":"bot","at":"…","text":"是哪个浏览器？方便的话发一下日志。"},
    {"kind":"user","message":"lark:om_3","sender":{…},"at":"…","text":"Chrome，日志在这","new":true},
    {"kind":"user","message":"lark:om_3","sender":{…},"at":"…","text":"用户上传的文件 crash.log，已保存在 /…/.claude-bot/files/lark_om_3/crash.log","file":"/…/.claude-bot/files/lark_om_3/crash.log","new":true}]}
@@ -61,11 +61,9 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 |---|---|
 | `id` | `task:` 开头，`reply`、`done` 用它 |
 | `channel` `chat_id` `chat_type` `thread_id` | 这件事所在的会话，同消息格式 |
-| `entries` | 按时间排的对话。`kind` 是 `user`（用户说的，`message` 是所在消息的 `id`，`sender` 是谁，有 `reply_to` 时同消息格式）或 `bot`（`reply` 发过的回复）。`text` 是属于这件事的那段原话；文件的 `file` 是保存路径，`text` 写明「用户上传的文件 crash.log，已保存在 <路径>」，下载失败的会说明可以用 `claude-bot download` 重试；表情等没有内容的消息是一条空的 `user` entry |
+| `entries` | 按时间排的对话。`kind` 是 `user`（用户说的，`message` 是所在消息的 `id`，`sender` 是谁，有 `reply_to` 时同消息格式）或 `bot`（`reply` 发过的回复）。一条消息是一个 `text` entry（原话，换行和 Markdown 都保留），它的每个附件再各是一个 entry；文件的 `file` 是保存路径，`text` 写明「用户上传的文件 crash.log，已保存在 <路径>」，下载失败的会说明可以用 `claude-bot download` 重试；表情等没有内容的消息是一条空的 `user` entry |
 | `new` | 还没处理的用户 entry，要回应的就是这些；前面的是上下文 |
 | `handled` `shown` | 已处理到第几个 entry、上次 `inbox` 输出时有几个，由 claude-bot 维护 |
-
-一条消息可能拆进几件事。
 
 `reply <task:id>` 回在这件事最新的那条用户消息下，回复记进 `entries`，然后把 `inbox` 上次给出的 entry 标记为已处理；Claude 处理期间又来了新的 entry，这件事留在待处理里（`reply` 输出 `still pending`），下次 `inbox` 再给出来。所有读写都在 `inbox/tasks.lock` 上加锁，监听进程和命令不会互相覆盖。旧版本留下的 `inbox/pending/` 消息，监听进程启动时会挪回 `incoming/` 重新筛选。
 

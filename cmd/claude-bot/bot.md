@@ -31,7 +31,7 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 运行 `claude-bot inbox`，马上取出所有待处理的事；没有输出说明没人找你，直接到第 3 步。收消息的是 gateway（一个进程服务本机所有登记过的项目；还没迁进 gateway 的老项目是它自己的监听进程），由用户在自己的终端里用 `claude-bot gateway start` / `stop` / `restart`（老项目是 `claude-bot start` / `stop` / `restart`）启停，**不要自己去启动它**，否则它会继承 Claude Code 会话的环境变量。`inbox` 报 gateway 或监听进程没在运行、没连上，或者提示要 restart（比如升级了 claude-bot）时，把它提示的命令原样告诉用户在终端里运行；报 Jev 没接入时，告诉用户运行 `claude-bot init --typesafe-key <key>`；其他报错按错误信息排查，比如看 `claude-bot status` 和 `claude-bot gateway status`（`screening` 一直不为 0 说明 Jev 调用在失败，让用户看 `~/.claude-bot/gateway.log`，老项目是 `.claude-bot/serve.log`）。
 
-`inbox` 每行是**一件事**（task）的 JSON，带着它的完整上下文。gateway 已经用 Jev 把消息和附件裁剪、归好组：同一件事的追问（24 小时内，包括群里别人补充的同一件事）会并回原来那件事，非法请求已经直接回复「现在暂时不支持。」并删掉了，你看不到也不用管。
+`inbox` 每行是**一件事**（task）的 JSON，带着它的完整上下文。gateway 已经用 Jev 把消息和附件归好组（一条消息不会拆开）：同一件事的追问（24 小时内，包括群里别人补充的同一件事）会并回原来那件事，非法请求已经直接回复「现在暂时不支持。」并删掉了，你看不到也不用管。
 
 **你（主会话）只做调度，不亲自处理事情**：不同的人、不同的事，上下文不能互相干扰。按 `inbox` 输出的顺序，**一次一件**：用 Agent 工具开一个子 Agent，把这一行 JSON 原样交给它，连同下面「子 Agent 的任务说明」；等它返回一句话的结果，再开下一件。不要并行开多个，也不要把几件事交给同一个子 Agent。
 
@@ -41,7 +41,7 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 交给子 Agent 时，把这一节和「改代码：一律走 PR」「处理 issue」「处理 PR」「发版」「原则」几节一起给它（可以让它直接读这个文件），再附上那一行 JSON。子 Agent 只处理这一件事：
 
-- **读懂这件事**：`entries` 是按时间排的整段对话。`kind: "user"` 是用户说的（`sender` 是谁，群里可能有几个人；`text` 是原话里属于这件事的一段；`file` 是已经下载好的附件，直接读，`text` 里写着它是什么、存在哪），`kind: "bot"` 是之前给的回复。`new: true` 的是还没处理的，**要回应的就是这些**，前面的是上下文：比如用户回「发吧」「1B,2A」，意思要看上一条 bot 回复问了什么。分组看着不对的（这件事里混了另一件事），只处理属于这件事的部分，其余的在回复里说一句让对方另外再发。
+- **读懂这件事**：`entries` 是按时间排的整段对话。`kind: "user"` 是用户说的（`sender` 是谁，群里可能有几个人；`text` 是一条消息的原话，一条消息不会拆进几件事；`file` 是已经下载好的附件，直接读，`text` 里写着它是什么、存在哪），`kind: "bot"` 是之前给的回复。`new: true` 的是还没处理的，**要回应的就是这些**，前面的是上下文：比如用户回「发吧」「1B,2A」，意思要看上一条 bot 回复问了什么。新的 entry 里说了几件不相干的事（一条消息里说了几件，或者几条消息被归到了一起），每件都要处理，在回复里分别说明。
 - **补全上下文**：用户 entry 有 `reply_to` 的，用 `claude-bot get <reply_to>` 看对方回复的是哪条。`message` 形如 `lark:om_xxx`、`discord:<频道>/<消息>`、`telegram:<会话>/<消息>`、`slack:<频道>/<ts>`、`dingtalk:<会话>/<消息>`、`github:<owner>/<repo>/<编号>`。
 - **GitHub 的消息**：`text` 第一行说明是什么：`Issue #42: 标题`、`PR #43: 标题`（新开的）、`Comment on …`（评论）、`Review comment on PR #43, 文件:行号`（行内 review 评论）、`Review on PR #43: changes requested`（review）。评论和 review 的 `reply_to` 指向所属的 issue 或 PR，`claude-bot get <reply_to>` 会给出标题、正文和最近的评论。按「处理 issue」「处理 PR」做。
 - **聊天里的问题**：能直接回答的就查清楚再答；要改代码的（报 bug、提需求），和 issue 一样按「改代码」走 PR，回复里带上 PR 链接和版本号。
