@@ -1,8 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "./api";
-import { ago, fullTime, shortPath } from "./format";
+import { ago, fullTime } from "./format";
 import { usePoll } from "./hooks";
-import { go } from "./route";
 import type { ChannelType, ChannelView, ProjectStatus, SecretView, TestResult } from "./types";
 import { Banner, ChannelBadge, Dot, Empty, Modal, errorText, toast } from "./ui";
 
@@ -15,7 +14,7 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
   const channels = usePoll(() => api.channels(p.id), null, `channels-${p.id}`);
   const types = usePoll(() => api.channelTypes(p.id), null, `channel-types-${p.id}`);
   const [editing, setEditing] = useState<{ type: ChannelType; current?: ChannelView } | null>(null);
-  const [removing, setRemoving] = useState<ChannelView | "project" | null>(null);
+  const [removing, setRemoving] = useState<ChannelView | null>(null);
 
   const changed = () => {
     channels.reload();
@@ -50,18 +49,6 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
         {!channels.data.length && !unused.length && <Empty title="没有可用的渠道类型" />}
       </div>
 
-      <section className="danger">
-        <div>
-          <h3>从 gateway 移除这个项目</h3>
-          <p className="muted">
-            gateway 不再服务它；配置写回 <code>{shortPath(p.dir)}/.claude-bot/config.json</code>，对话记录都保留，之后可以用 <code>claude-bot start</code> 单独运行，或者再 <code>claude-bot gateway import</code> 回来。
-          </p>
-        </div>
-        <button type="button" className="btn btn-danger" onClick={() => setRemoving("project")}>
-          移除项目
-        </button>
-      </section>
-
       {editing && (
         <ChannelEditor
           project={p}
@@ -79,12 +66,11 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
       {removing && (
         <ConfirmRemove
           project={p}
-          what={removing}
+          channel={removing}
           onClose={() => setRemoving(null)}
           onDone={() => {
             setRemoving(null);
             changed();
-            if (removing === "project") go({ page: "home" });
           }}
         />
       )}
@@ -283,23 +269,24 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
   );
 }
 
-function ConfirmRemove({ project: p, what, onClose, onDone }: { project: ProjectStatus; what: ChannelView | "project"; onClose: () => void; onDone: () => void }) {
+function ConfirmRemove({ project: p, channel: c, onClose, onDone }: { project: ProjectStatus; channel: ChannelView; onClose: () => void; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const isProject = what === "project";
 
   const confirm = () => {
     setBusy(true);
-    const done = isProject ? api.removeProject(p.id).then((r) => toast(`已移除 ${p.name}，配置写回 ${shortPath(r.config)}`)) : api.removeChannel(p.id, what.name).then(() => toast(`已移除 ${what.label}`));
-    done.then(onDone, (e) => {
-      setBusy(false);
-      setError(errorText(e));
-    });
+    api
+      .removeChannel(p.id, c.name)
+      .then(() => toast(`已移除 ${c.label}`))
+      .then(onDone, (e) => {
+        setBusy(false);
+        setError(errorText(e));
+      });
   };
 
   return (
     <Modal
-      title={isProject ? `移除项目 ${p.name}？` : `移除 ${what.label}？`}
+      title={`移除 ${c.label}？`}
       onClose={onClose}
       footer={
         <>
@@ -313,11 +300,7 @@ function ConfirmRemove({ project: p, what, onClose, onDone }: { project: Project
         </>
       }
     >
-      {isProject ? (
-        <p>gateway 会断开这个项目的所有渠道，不再服务它。配置写回项目的 config.json，对话记录保留。</p>
-      ) : (
-        <p>gateway 会断开 {what.label}，删掉它的凭证。之后发给这个渠道的消息不会再进来。</p>
-      )}
+      <p>gateway 会断开 {c.label}，删掉它的凭证。之后发给这个渠道的消息不会再进来。</p>
       {error && <p className="test test-bad">{error}</p>}
     </Modal>
   );

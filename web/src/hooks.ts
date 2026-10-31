@@ -4,7 +4,8 @@ export interface Loaded<T> {
   data: T | undefined;
   error: unknown;
   loading: boolean;
-  reload: () => void;
+  /** Loads again now; resolves once the new data (or error) is in. */
+  reload: () => Promise<void>;
 }
 
 /**
@@ -23,9 +24,14 @@ export function usePoll<T>(fetcher: () => Promise<T>, every: number | null, key:
 
   const load = useCallback(() => {
     const n = ++seq.current;
-    fetcherRef.current().then(
-      (data) => n === seq.current && setState({ key, data, loading: false }),
-      (error) => n === seq.current && setState((s) => ({ ...s, key, error, loading: false })),
+
+    return fetcherRef.current().then(
+      (data) => {
+        if (n === seq.current) setState({ key, data, loading: false });
+      },
+      (error) => {
+        if (n === seq.current) setState((s) => ({ ...s, key, error, loading: false }));
+      },
     );
   }, [key]);
 
