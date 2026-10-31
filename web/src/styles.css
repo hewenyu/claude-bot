@@ -522,6 +522,23 @@ p:last-child {
   color: var(--bad);
 }
 
+.btn-ghost.btn-danger-text:hover:not(:disabled) {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+/* A destructive action that sits among the page's own controls: red, but
+   not filled until you mean it. */
+.btn-danger-outline {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
+}
+
+.btn-danger-outline:hover:not(:disabled) {
+  background: var(--bad-soft);
+  border-color: var(--bad);
+}
+
 .btn-xs {
   font-size: 12px;
   padding: 1px 7px;
@@ -1229,21 +1246,6 @@ p:last-child {
   color: var(--bad);
 }
 
-.danger {
-  border: 1px solid color-mix(in srgb, var(--bad) 30%, var(--line));
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.danger h3 {
-  font-size: 14px;
-  margin-bottom: 4px;
-}
-
 /* ---------- settings ---------- */
 
 .settings {
@@ -1294,6 +1296,10 @@ p:last-child {
 .modal-body {
   padding: 6px 20px 14px;
   overflow: auto;
+}
+
+.modal-body code {
+  overflow-wrap: anywhere;
 }
 
 .modal-foot {

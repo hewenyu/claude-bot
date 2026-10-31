@@ -1,20 +1,25 @@
+import { useState } from "react";
+import { api } from "./api";
 import { projectTone } from "./App";
 import { ChannelsPanel } from "./Channels";
 import { channel, projectStateLabel, shortPath } from "./format";
-import { href } from "./route";
+import { go, href } from "./route";
 import { TasksPanel } from "./Tasks";
 import type { Overview, ProjectStatus } from "./types";
-import { Banner, ChannelBadge, Command, CopyButton, Dot } from "./ui";
+import { Banner, ChannelBadge, Command, CopyButton, Dot, Modal, errorText, toast } from "./ui";
 
 interface Props {
   project: ProjectStatus;
   overview: Overview;
   tab: "tasks" | "channels";
   task?: string;
-  onChanged: () => void;
+  /** Reloads the overview; resolves once it is in. */
+  onChanged: () => Promise<void>;
 }
 
 export function ProjectView({ project: p, overview, tab, task, onChanged }: Props) {
+  const [removing, setRemoving] = useState(false);
+
   return (
     <div className="project">
       <header className="project-head">
@@ -24,6 +29,10 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
             <Dot tone={projectTone(p)} pulse={p.state === "starting"} />
             {projectStateLabel[p.state]}
           </span>
+          <span className="grow" />
+          <button type="button" className="btn btn-danger-outline" onClick={() => setRemoving(true)}>
+            移除项目
+          </button>
         </div>
         <div className="project-meta">
           <span className="path" title={p.dir}>
@@ -49,7 +58,58 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
       </nav>
 
       {tab === "tasks" ? <TasksPanel project={p} selected={task} /> : <ChannelsPanel project={p} onChanged={onChanged} />}
+
+      {removing && (
+        <RemoveProject
+          project={p}
+          onClose={() => setRemoving(false)}
+          // Leave once the overview no longer has the project: going home
+          // with the old one would open the first project, this one again.
+          onDone={() => onChanged().then(() => go({ page: "home" }))}
+        />
+      )}
     </div>
+  );
+}
+
+/** Confirm taking the project out of the gateway; its config goes back to the project's config.json. */
+function RemoveProject({ project: p, onClose, onDone }: { project: ProjectStatus; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const confirm = () => {
+    setBusy(true);
+    api
+      .removeProject(p.id)
+      .then((r) => toast(`已移除 ${p.name}，配置写回 ${shortPath(r.config)}`))
+      .then(onDone, (e) => {
+        setBusy(false);
+        setError(errorText(e));
+      });
+  };
+
+  return (
+    <Modal
+      title={`从 gateway 移除 ${p.name}？`}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className="btn btn-danger" onClick={confirm} disabled={busy}>
+            {busy ? "移除中…" : "移除项目"}
+          </button>
+        </>
+      }
+    >
+      <p>gateway 会断开这个项目的所有渠道，不再服务它。</p>
+      <p className="muted">
+        配置写回 <code>{shortPath(p.dir)}/.claude-bot/config.json</code>，对话记录都保留。之后可以用 <code>claude-bot start</code> 单独运行，或者再 <code>claude-bot gateway import</code> 回来。
+      </p>
+      {error && <p className="test test-bad">{error}</p>}
+    </Modal>
   );
 }
 
