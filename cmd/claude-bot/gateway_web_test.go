@@ -435,6 +435,35 @@ func TestWeb_taskList(t *testing.T) {
 	}
 }
 
+func TestListTasks_keepsEveryOpenTask(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	task := func(id, state string, minutes int) taskSummary {
+		return taskSummary{ID: id, State: state, UpdatedAt: at.Add(time.Duration(minutes) * time.Minute)}
+	}
+
+	// Many handled tasks newer than an open one must not push it off the
+	// page: the open tasks are what it shows first.
+	all := []taskSummary{
+		task("old-pending", taskPending, 0),
+		task("replied-1", taskReplied, 10),
+		task("working", taskWorking, 5),
+		task("closed-1", taskClosed, 20),
+		task("replied-2", taskReplied, 30),
+		task("closed-0", taskClosed, 1),
+	}
+
+	ids := make([]string, 0, len(all))
+	for _, s := range listTasks(all, 2) {
+		ids = append(ids, s.ID)
+	}
+
+	if got, want := strings.Join(ids, " "), "replied-2 closed-1 working old-pending"; got != want {
+		t.Errorf("listTasks = %s, want %s", got, want)
+	}
+}
+
 func TestWeb_task(t *testing.T) {
 	t.Parallel()
 

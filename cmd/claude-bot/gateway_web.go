@@ -41,7 +41,7 @@ const (
 	defaultUIAddr  = "127.0.0.1:7600"
 	uiTokenBytes   = 24
 	maxRequestBody = 64 << 10
-	taskListLimit  = 300
+	taskListLimit  = 300 // handled tasks the page lists
 	titleRunes     = 120
 	hintRunes      = 4
 	webTimeout     = 15 * time.Second
@@ -479,9 +479,31 @@ func (w *web) tasks(rw http.ResponseWriter, r *http.Request) {
 		out = append(out, summarize(t, false))
 	}
 
-	slices.SortFunc(out, func(a, b taskSummary) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
+	writeAPI(rw, http.StatusOK, listTasks(out, taskListLimit))
+}
 
-	writeAPI(rw, http.StatusOK, out[:min(len(out), taskListLimit)])
+// listTasks puts the latest first and keeps every open task, but only the
+// latest limit handled ones: the page shows the open tasks and keeps the
+// handled ones in its archive.
+func listTasks(all []taskSummary, limit int) []taskSummary {
+	slices.SortFunc(all, func(a, b taskSummary) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
+
+	out := all[:0]
+	done := 0
+
+	for _, s := range all {
+		if s.State == taskReplied || s.State == taskClosed {
+			if done == limit {
+				continue
+			}
+
+			done++
+		}
+
+		out = append(out, s)
+	}
+
+	return out
 }
 
 // taskDetail is a task with its whole conversation.
