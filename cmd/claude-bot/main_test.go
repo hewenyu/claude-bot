@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -586,5 +587,30 @@ func TestRewriteBotCommand(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(got, botCommand) {
 		t.Errorf("bot.md after rewrite = %.40q…, %v; want the embedded command", got, err)
+	}
+}
+
+func TestBuildVersion(t *testing.T) {
+	t.Parallel()
+
+	const revision = "56f0db8a1b2c3d4e5f60718293a4b5c6d7e8f901"
+
+	rev := []debug.BuildSetting{{Key: "vcs.revision", Value: revision}}
+	dirty := []debug.BuildSetting{{Key: "vcs.revision", Value: revision}, {Key: "vcs.modified", Value: "true"}}
+
+	for _, tc := range []struct {
+		name string
+		info debug.BuildInfo
+		want string
+	}{
+		{"go install @tag", debug.BuildInfo{Main: debug.Module{Version: "v0.2.6"}}, "v0.2.6"},
+		{"pseudo-version", debug.BuildInfo{Main: debug.Module{Version: "v0.2.7-0.20261030160000-56f0db8a1b2c+dirty"}, Settings: rev}, "v0.2.7-0.20261030160000-56f0db8a1b2c+dirty"},
+		{"devel with vcs", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: rev}, "dev-56f0db8a1b2c"},
+		{"devel, modified", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: dirty}, "dev-56f0db8a1b2c-dirty"},
+		{"nothing", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}, ""},
+	} {
+		if got := buildVersion(&tc.info); got != tc.want {
+			t.Errorf("%s: buildVersion = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
