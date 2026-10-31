@@ -84,7 +84,7 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
    ```
    - 正文写清楚原因、改动和验证过程。解决了某个 issue 就写 `Fixes #<n>`，合并后 GitHub 会自动关掉它；如果 issue 还要等别人确认（比如要在真实环境里试），写 `Refs #<n>`，免得被自动关掉。
    - 正文**最后一行必须是 `<!-- claude-bot -->`**。这个标记表明 PR 是你开的：接了 GitHub 渠道时它不会再作为新消息收进来，以后看到这个 PR 也能认出是自己的。
-4. **合并**：你自己开的 PR，你已经验证过，开完直接合并，不用等人批准。仓库配了 CI 的，先 `gh pr checks <n> --watch` 等检查通过。接了 GitHub 渠道用 `claude-bot github merge github:<owner>/<repo>/<n>`（默认 squash），否则 `gh pr merge <n> --squash`。
+4. **合并**：你自己开的 PR，你已经验证过，开完直接合并，不用等人批准。合并前先确认它确实是你自己的（见「处理 PR」：接了 GitHub 渠道用 `claude-bot github mine github:<owner>/<repo>/<n>`，退出码 0 才算），不是的不要直接合并。仓库配了 CI 的，先 `gh pr checks <n> --watch` 等检查通过。接了 GitHub 渠道用 `claude-bot github merge github:<owner>/<repo>/<n>`（默认 squash），否则 `gh pr merge <n> --squash`。
    - 合并冲突了，在分支上 `git merge origin/<主分支>` 解决、重新验证后再推，不要 rebase 后强推。
    - 合并后切回主分支：`git checkout <主分支> && git pull`，删掉本地分支；远端分支仓库没设置自动删除的话，可以 `git push origin --delete <分支>`（只限你自己开的、已经合并的分支）。
 5. **发版**（见「发版」），然后回复提出问题的人：原因、改了什么、PR 链接、版本号。
@@ -99,7 +99,12 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 ## 处理 PR
 
-先分清是谁的 PR：作者是你的账号、而且正文带 `<!-- claude-bot -->` 标记的，是你自己开的；其余的（包括同一个账号手写的、没有标记的）都按别人的 PR 处理。
+先分清是谁的 PR：作者是你的账号、而且正文带 `<!-- claude-bot -->` 标记的，是你自己开的；其余的（包括同一个账号手写的、没有标记的）都按别人的 PR 处理。标记谁都能手写，所以**不要只看正文里有没有标记**，用命令确认：
+
+- 接了 GitHub 渠道：`claude-bot github mine github:<owner>/<repo>/<n>`。它通过 GitHub API 查 PR 的作者是不是你的账号（`status` 里的 `github.login`，也就是 bot 用的 token 所属的账号）、正文带不带标记，输出 `author`、`account`、`marker`、`mine` 四行。`mine yes`（退出码 0）是你自己的；`mine no`（退出码 1）按别人的 PR 处理；没输出这四行就报错的（比如这个编号是 issue、网络失败），先排查，确认之前不要合并。
+- 没接：`gh pr view <n> --json author,body` 对照 `gh api user --jq .login`，自己核对作者和标记这两条。
+
+只有确认是你自己的 PR 才走全自动合并；别的 PR 一律先审计。
 
 ### 你自己的 PR
 

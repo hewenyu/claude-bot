@@ -97,3 +97,42 @@ func (c *Channel) Review(ctx context.Context, id, event, body string) error {
 
 	return c.send(ctx, http.MethodPost, c.repoPath("/pulls/%d/reviews", r.number), req, nil)
 }
+
+// Authorship is who opened a PR, set against the token's account.
+type Authorship struct {
+	Author  string // login of who opened the PR
+	Account string // login of the token's account, the bot's
+	Marked  bool   // the body carries the Marker
+	Own     bool   // the bot opened it: the account did, and marked it
+}
+
+// Authorship tells, from the API, whether the PR that id belongs to is the
+// bot's own. The Marker alone proves nothing (anyone can type it); only the
+// author's login, which GitHub sets, does.
+func (c *Channel) Authorship(ctx context.Context, id string) (Authorship, error) {
+	r, err := c.refOf(id)
+	if err != nil {
+		return Authorship{}, err
+	}
+
+	acct, err := c.Account(ctx)
+	if err != nil {
+		return Authorship{}, err
+	}
+
+	var i issue
+	if err := c.get(ctx, c.repoPath("/issues/%d", r.number), nil, &i); err != nil {
+		return Authorship{}, err
+	}
+
+	if !i.isPR() {
+		return Authorship{}, fmt.Errorf("github: #%d is an issue, not a PR", r.number)
+	}
+
+	return Authorship{
+		Author:  i.User.Login,
+		Account: acct.Login,
+		Marked:  strings.Contains(i.Body, Marker),
+		Own:     fromBot(i.User, i.Body, acct.Login),
+	}, nil
+}

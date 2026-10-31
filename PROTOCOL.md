@@ -79,7 +79,7 @@ Jev 调用失败（网络、限流、key 失效）时，消息留在 `incoming/`
 | `get <id>` | 获取任意一条消息（比如 `reply_to` 指向的那条）。Telegram 和钉钉不支持 |
 | `download <id>` | 把附件下载到 `.claude-bot/files/`，并输出文件路径 |
 | `send <channel>:<chat_id> [text\|-]` | 主动发消息，比如发版通知 |
-| `github close\|merge\|review <id> …` | 只用于 GitHub：关 issue 或 PR（`--not-planned`）、合并 PR（`--method squash\|merge\|rebase`）、提交 review（`approve\|request-changes\|comment [text\|-]`）。不改变收件箱里消息的状态 |
+| `github close\|merge\|review\|mine <id> …` | 只用于 GitHub：关 issue 或 PR（`--not-planned`）、合并 PR（`--method squash\|merge\|rebase`）、提交 review（`approve\|request-changes\|comment [text\|-]`）、确认 PR 是不是 bot 自己开的（`mine`：作者是 token 的账号、正文带标记时输出 `mine yes` 并以 `0` 退出，否则 `mine no`、以 `1` 退出）。不改变收件箱里消息的状态 |
 | `gateway start` / `stop` / `restart` | 在后台启动、停止、重启 gateway（一个进程服务所有登记过的项目），由用户在自己的终端里运行 |
 | `gateway status` / `import` / `remove` | 查看 gateway 和各项目的状态 / 把以前的 `config.json` 迁进 gateway / 把项目从 gateway 里去掉 |
 | `start` / `stop` / `restart` / `serve` | 还没迁进 gateway 的项目自己的监听进程 |

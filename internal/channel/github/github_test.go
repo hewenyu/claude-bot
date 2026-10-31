@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -512,6 +513,47 @@ func TestActions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(bodies, want) {
 		t.Errorf("request bodies\n got  %v\n want %v", bodies, want)
+	}
+}
+
+func TestAuthorship(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.json("GET /user", self)
+	f.json("GET /repos/o/r", map[string]string{"full_name": repo})
+
+	pr := func(n int, by user, body string) {
+		f.json(fmt.Sprintf("GET /repos/o/r/issues/%d", n), issue{Number: n, User: by, Body: body, PullRequest: &struct{}{}})
+	}
+
+	pr(1, self, "改了什么\n\n"+Marker)
+	pr(2, user{Login: "Maintainer", Type: userTypePerson}, Marker) // logins are case-insensitive
+	pr(3, self, "手写的，没有标记")
+	pr(4, alice, "冒充的\n\n"+Marker)
+	f.json("GET /repos/o/r/issues/5", issue{Number: 5, User: self, Body: Marker})
+
+	for _, tc := range []struct {
+		id   string
+		want Authorship
+	}{
+		{"github:o/r/1", Authorship{Author: me, Account: me, Marked: true, Own: true}},
+		{"o/r/2#c9", Authorship{Author: "Maintainer", Account: me, Marked: true, Own: true}},
+		{"github:o/r/3", Authorship{Author: me, Account: me}},
+		{"github:o/r/4", Authorship{Author: "alice", Account: me, Marked: true}},
+	} {
+		got, err := ch.Authorship(context.Background(), tc.id)
+		if err != nil || got != tc.want {
+			t.Errorf("Authorship(%s) = %+v, %v; want %+v", tc.id, got, err, tc.want)
+		}
+	}
+
+	if _, err := ch.Authorship(context.Background(), "github:o/r/5"); err == nil || !strings.Contains(err.Error(), "not a PR") {
+		t.Errorf("Authorship of an issue = %v, want a not-a-PR error", err)
+	}
+
+	if _, err := ch.Authorship(context.Background(), "github:x/y/1"); !errors.Is(err, channel.ErrInvalidID) {
+		t.Errorf("Authorship of another repository = %v, want ErrInvalidID", err)
 	}
 }
 
