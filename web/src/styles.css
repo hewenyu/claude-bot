@@ -1096,11 +1096,13 @@ p:last-child {
   max-width: 760px;
 }
 
+/* Cards in a row are as tall as the tallest, and their footers line up at
+   the bottom (.card-foot pushes itself down). */
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .card {
@@ -1138,22 +1140,25 @@ p:last-child {
   padding: 6px 10px;
 }
 
+/* One grid per card, so every value starts at the same x: the label column
+   is 170px, room for every label we have, so values line up across cards
+   too; a longer label widens its own card's column instead of wrapping. */
 .fields {
   margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: minmax(max-content, 170px) minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: baseline;
+  font-size: 13px;
 }
 
 .field-row {
-  display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
-  gap: 10px;
-  font-size: 13px;
+  display: contents;
 }
 
 .field-row dt {
   color: var(--muted);
+  white-space: nowrap;
 }
 
 .field-row dd {
@@ -1162,6 +1167,7 @@ p:last-child {
 }
 
 .card-foot {
+  margin-top: auto;
   border-top: 1px solid var(--line);
   padding-top: 8px;
 }
@@ -1231,7 +1237,6 @@ p:last-child {
   gap: 16px;
   align-items: center;
   justify-content: space-between;
-  max-width: 980px;
 }
 
 .danger h3 {
@@ -1371,9 +1376,17 @@ p:last-child {
     grid-template-columns: 1fr;
   }
 
-  .field-row {
-    grid-template-columns: 1fr;
-    gap: 0;
+  .fields {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0;
+  }
+
+  .field-row dt {
+    white-space: normal;
+  }
+
+  .field-row dd {
+    margin-bottom: 4px;
   }
 }
 
