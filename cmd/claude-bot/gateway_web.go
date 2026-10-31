@@ -609,7 +609,7 @@ func (w *web) channels(rw http.ResponseWriter, r *http.Request) {
 }
 
 // channelInput is a channel form as submitted: an empty secret keeps the
-// one stored.
+// one stored. No form at all (a card's 测试连接) means the channel as stored.
 type channelInput struct {
 	Fields map[string]string `json:"fields"`
 }
@@ -689,13 +689,16 @@ func stringFields(raw json.RawMessage) map[string]string {
 }
 
 // mergeForm lays a submitted form over the stored configuration: an empty
-// secret keeps the stored one, an empty plain field clears it.
+// secret keeps the stored one, an empty plain field clears it. A nil form
+// changes nothing.
 func mergeForm(t channelType, stored json.RawMessage, form map[string]string) (json.RawMessage, error) {
 	merged := stringFields(stored)
 
-	for _, f := range t.Fields {
-		if v := strings.TrimSpace(form[f.Key]); v != "" || !f.Secret {
-			merged[f.Key] = v
+	if form != nil {
+		for _, f := range t.Fields {
+			if v := strings.TrimSpace(form[f.Key]); v != "" || !f.Secret {
+				merged[f.Key] = v
+			}
 		}
 	}
 

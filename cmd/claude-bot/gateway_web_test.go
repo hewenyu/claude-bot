@@ -667,3 +667,31 @@ func TestWeb_githubTokenRefusedOrInUse(t *testing.T) {
 		t.Errorf("deleted token still stored: %v", tokens)
 	}
 }
+
+// A card's 测试连接 sends no form: it tests the channel as saved, rather
+// than an empty form that clears every plain field.
+func TestWeb_testSavedChannel(t *testing.T) {
+	t.Parallel()
+
+	p := newPage(t)
+	a := p.f.register("a", "cli_a")
+
+	// The proxy is a closed port, so the check fails without leaving the
+	// machine, but only after the saved credentials have made a channel.
+	if status, body := putForm(p, a, "lark", map[string]string{"app_id": "cli_a", "proxy": "http://127.0.0.1:1"}); status != http.StatusOK {
+		t.Fatalf("save: %d %s", status, body)
+	}
+
+	status, body := p.call(http.MethodPost, projectPath(a)+"/channels/lark/test", struct{}{})
+
+	var res testResult
+	p.decode(body, &res)
+
+	if status != http.StatusOK || res.OK || res.Error == "" || strings.Contains(res.Error, "required") {
+		t.Errorf("test of the saved channel: %d %+v", status, res)
+	}
+
+	if got := storedChannel(t, p.f.store, a.ID, "lark"); got["app_id"] != "cli_a" || got["app_secret"] != "s" {
+		t.Errorf("a test changed the saved channel: %v", got)
+	}
+}
