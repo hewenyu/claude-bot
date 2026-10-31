@@ -61,23 +61,17 @@ export const taskStateLabel: Record<TaskState, string> = {
   closed: "已关闭",
 };
 
-interface ChannelMeta {
-  label: string;
-  short: string;
-  color: string;
-}
-
-const channelMeta: Record<string, ChannelMeta> = {
-  lark: { label: "飞书", short: "飞", color: "#3370ff" },
-  dingtalk: { label: "钉钉", short: "钉", color: "#0a6cff" },
-  telegram: { label: "Telegram", short: "TG", color: "#229ed9" },
-  discord: { label: "Discord", short: "DC", color: "#5865f2" },
-  slack: { label: "Slack", short: "S", color: "#611f69" },
-  github: { label: "GitHub", short: "GH", color: "#24292f" },
+const channelLabels: Record<string, string> = {
+  lark: "飞书",
+  dingtalk: "钉钉",
+  telegram: "Telegram",
+  discord: "Discord",
+  slack: "Slack",
+  github: "GitHub",
 };
 
-export function channel(name: string): ChannelMeta {
-  return channelMeta[name] ?? { label: name, short: name.slice(0, 2).toUpperCase(), color: "#6b7280" };
+export function channel(name: string): { label: string } {
+  return { label: channelLabels[name] ?? name };
 }
 
 /** Shortens a home-relative path for display. */
