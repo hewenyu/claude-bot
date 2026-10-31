@@ -77,8 +77,9 @@ export const api = {
   channels: (project: number) => call<ChannelView[]>("GET", `${p(project)}/channels`),
   saveChannel: (project: number, name: string, fields: Record<string, string>) =>
     call<ChannelView>("PUT", `${p(project)}/channels/${name}`, { fields }),
-  testChannel: (project: number, name: string, fields: Record<string, string>) =>
-    call<TestResult>("POST", `${p(project)}/channels/${name}/test`, { fields }),
+  // Without fields, the channel is tested as saved.
+  testChannel: (project: number, name: string, fields?: Record<string, string>) =>
+    call<TestResult>("POST", `${p(project)}/channels/${name}/test`, fields ? { fields } : {}),
   removeChannel: (project: number, name: string) => call<void>("DELETE", `${p(project)}/channels/${name}`),
   removeProject: (project: number) => call<{ config: string }>("DELETE", p(project)),
   settings: () => call<Settings>("GET", "/api/settings"),

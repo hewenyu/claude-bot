@@ -107,7 +107,7 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
 
   const runTest = () => {
     setTest("running");
-    api.testChannel(p.id, view.name, {}).then(setTest, (e) => setTest({ ok: false, error: errorText(e) }));
+    api.testChannel(p.id, view.name).then(setTest, (e) => setTest({ ok: false, error: errorText(e) }));
   };
 
   return (
