@@ -42,6 +42,7 @@ const (
 	methodReplies     = "conversations.replies"
 	methodFileInfo    = "files.info"
 	methodAddReaction = "reactions.add"
+	methodUserInfo    = "users.info"
 )
 
 // Block Kit types used in replies.
@@ -101,6 +102,8 @@ type Channel struct {
 
 	botMu sync.Mutex
 	bot   *Bot // cached once fetched successfully
+
+	names channel.Names // display names of senders; events carry user ids only
 }
 
 var _ channel.Channel = (*Channel)(nil)
@@ -116,13 +119,60 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 		return nil, err
 	}
 
-	return &Channel{
+	c := &Channel{
 		http:   transport.Client(proxy),
 		dialer: transport.WebSocket(proxy),
 		api:    defaultAPI,
 		cfg:    cfg,
 		log:    log,
-	}, nil
+	}
+	c.names.Lookup = c.userName
+
+	return c, nil
+}
+
+// nameSender fills in the sender's display name. Best effort: without the
+// users:read scope the sender stays a user id.
+func (c *Channel) nameSender(ctx context.Context, msg *channel.Message) {
+	if msg.Sender.Name != "" || msg.Sender.ID == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, channel.NameTimeout)
+	defer cancel()
+
+	name, err := c.names.Name(ctx, msg.Sender.ID)
+	if err != nil {
+		c.log.Warn("slack sender name (add the users:read scope to show names)", "user", msg.Sender.ID, "err", err)
+	}
+
+	msg.Sender.Name = name
+}
+
+// userName looks up a user's display name (users.info, scope users:read):
+// the profile's display name, else the real name, else the handle.
+func (c *Channel) userName(ctx context.Context, id string) (string, error) {
+	var r struct {
+		User struct {
+			Name     string `json:"name"`
+			RealName string `json:"real_name"`
+			Profile  struct {
+				DisplayName string `json:"display_name"`
+				RealName    string `json:"real_name"`
+			} `json:"profile"`
+		} `json:"user"`
+	}
+	if err := c.call(ctx, c.cfg.BotToken, methodUserInfo, url.Values{"user": {id}}, &r); err != nil {
+		return "", err
+	}
+
+	for _, name := range []string{r.User.Profile.DisplayName, r.User.Profile.RealName, r.User.RealName, r.User.Name} {
+		if name != "" {
+			return name, nil
+		}
+	}
+
+	return "", nil
 }
 
 // Name implements channel.Channel.
@@ -287,7 +337,12 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 		if m.TS == ts {
 			m.Channel = channelID
 
-			return toMessage(m, bot.UserID), nil
+			msg := toMessage(m, bot.UserID)
+			if m.BotID == "" {
+				c.nameSender(ctx, &msg)
+			}
+
+			return msg, nil
 		}
 	}
 

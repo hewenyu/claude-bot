@@ -72,6 +72,22 @@ func TestFromEvent_serverMentioningBot(t *testing.T) {
 	}
 }
 
+// In a server the sender is named as the server shows them: by nickname.
+func TestFromEvent_serverNickname(t *testing.T) {
+	t.Parallel()
+
+	m := &discordgo.Message{
+		ID: "9002", ChannelID: "42", GuildID: "7", Type: discordgo.MessageTypeDefault,
+		Author: alice, Member: &discordgo.Member{Nick: "Alice (QA)"},
+		Content: "<@100> hi", Mentions: []*discordgo.User{{ID: botID, Bot: true}},
+	}
+
+	got, ok := fromEvent(m, botID, false)
+	if !ok || got.Sender != (channel.User{ID: "200", Name: "Alice (QA)", Mention: "<@200>"}) {
+		t.Errorf("fromEvent() sender = %+v (ok %v)", got.Sender, ok)
+	}
+}
+
 func TestFromEvent_filters(t *testing.T) {
 	t.Parallel()
 

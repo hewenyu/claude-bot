@@ -46,6 +46,7 @@ const (
 const (
 	botInfoPath = "/open-apis/bot/v3/info"
 	scopesPath  = "/open-apis/application/v6/scopes"
+	userPath    = "/open-apis/contact/v3/users/:user_id"
 )
 
 // Field values in Lark events and API responses.
@@ -126,6 +127,8 @@ type Channel struct {
 
 	botMu sync.Mutex
 	bot   *Bot // cached once fetched successfully
+
+	names channel.Names // display names of senders; events carry open_ids only
 }
 
 var _ channel.Channel = (*Channel)(nil)
@@ -143,14 +146,17 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 
 	hc := transport.Client(proxy)
 
-	return &Channel{
+	c := &Channel{
 		cfg: cfg,
 		client: lark.NewClient(cfg.AppID, cfg.AppSecret,
 			lark.WithOpenBaseUrl(cfg.BaseURL()), lark.WithLogLevel(larkcore.LogLevelError), lark.WithHttpClient(hc)),
 		http:   hc,
 		dialer: transport.WebSocket(proxy),
 		log:    log,
-	}, nil
+	}
+	c.names.Lookup = c.userName
+
+	return c, nil
 }
 
 // apiError is a call the platform received and refused with a non-zero code,
@@ -223,6 +229,8 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 				return nil
 			}
 
+			c.nameSender(ctx, &msg)
+
 			return deliver(msg)
 		}).
 		// Reactions, the bot's own acks included, are not messages; handling
@@ -249,6 +257,75 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 
 	return nil
 }
+
+// nameSender fills in the sender's display name when the message lacks it.
+// Best effort: without the contact permission the sender stays an open_id.
+func (c *Channel) nameSender(ctx context.Context, msg *channel.Message) {
+	if msg.Sender.Name != "" || msg.Sender.ID == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, channel.NameTimeout)
+	defer cancel()
+
+	name, err := c.names.Name(ctx, msg.Sender.ID)
+	if err != nil {
+		c.log.Warn("lark sender name (grant contact:user.base:readonly to show names)", "user", msg.Sender.ID, "err", err)
+	}
+
+	msg.Sender.Name = name
+}
+
+// userName looks up a user's display name by open_id. It needs the
+// contact:user.base:readonly permission, and the user within the app's
+// contact range.
+func (c *Channel) userName(ctx context.Context, openID string) (string, error) {
+	req := &larkcore.ApiReq{
+		HttpMethod:                http.MethodGet,
+		ApiPath:                   userPath,
+		PathParams:                larkcore.PathParams{"user_id": openID},
+		QueryParams:               larkcore.QueryParams{"user_id_type": []string{"open_id"}},
+		SupportedAccessTokenTypes: []larkcore.AccessTokenType{larkcore.AccessTokenTypeTenant},
+	}
+
+	resp, err := c.client.Do(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("lark user: %w", err)
+	}
+
+	var body struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			User struct {
+				Name   string `json:"name"`
+				EnName string `json:"en_name"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(resp.RawBody, &body); err != nil {
+		return "", fmt.Errorf("lark user: parse: %w", err)
+	}
+
+	if err := checkCode(body.Code, body.Msg); err != nil {
+		return "", fmt.Errorf("lark user: %w", err)
+	}
+
+	if body.Data.User.Name != "" {
+		return body.Data.User.Name, nil
+	}
+
+	if body.Data.User.EnName != "" {
+		return body.Data.User.EnName, nil
+	}
+
+	// Fields the app may not read are left out of a successful answer.
+	return "", errNoName
+}
+
+// errNoName is a user lookup that succeeded without the name field.
+var errNoName = errors.New("lark user: answer has no name (permission contact:user.base:readonly not granted?)")
 
 func fromEvent(ev *larkim.P2MessageReceiveV1, botOpenID string) (channel.Message, bool) {
 	if ev == nil || ev.Event == nil || ev.Event.Message == nil || ev.Event.Sender == nil {
@@ -441,7 +518,14 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 
 	bot, _ := c.Bot(ctx) // best effort: only used to hide the bot's own mention
 
-	return fromItem(resp.Data.Items[0], bot.OpenID), nil
+	it := resp.Data.Items[0]
+
+	msg := fromItem(it, bot.OpenID)
+	if it.Sender != nil && larkcore.StringValue(it.Sender.SenderType) == senderUser {
+		c.nameSender(ctx, &msg)
+	}
+
+	return msg, nil
 }
 
 func fromItem(it *larkim.Message, botOpenID string) channel.Message {

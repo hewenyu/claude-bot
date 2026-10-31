@@ -78,6 +78,10 @@ func fromMessage(m *discordgo.Message, botID string) channel.Message {
 		sender = user(m.Author)
 	}
 
+	if m.Member != nil && m.Member.Nick != "" {
+		sender.Name = m.Member.Nick // the name the server shows
+	}
+
 	return channel.Message{
 		ID:          channel.ID(Name, channel.ScopedID(m.ChannelID, m.ID)),
 		Channel:     Name,

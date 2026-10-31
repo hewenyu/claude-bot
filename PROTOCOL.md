@@ -24,7 +24,7 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 | `chat_type` | `p2p`（私聊）或 `group`（群聊）。GitHub 上都是 `group` |
 | `thread_id` | 所属话题。回复时会自动回在同一个话题里 |
 | `reply_to` | 被回复消息的 `id`，可以用 `claude-bot get` 查看。Slack 上是 thread 的第一条消息。Telegram 上没有这个字段（Bot API 读不了历史消息），被回复的内容以 `> 名字: …` 引用的形式放在 `text` 开头。GitHub 上评论和 review 指向所属的 issue 或 PR，`get` 它会带上标题、正文和最近的评论 |
-| `sender` | `{id, name?, mention}`。`mention` 是平台原生的 @ 语法 |
+| `sender` | `{id, name?, mention}`。`name` 是显示名，查不到时省略（飞书要通讯录权限，Slack 要 `users:read`）；`mention` 是平台原生的 @ 语法 |
 | `text` | 正文。@bot 的部分已经去掉，@其他人会显示为 `@名字`。GitHub 上第一行说明是什么：`Issue #42: 标题`、`PR #43: 标题`、`Comment on …`、`Review comment on PR #43, 文件:行号`、`Review on PR #43: <结论>` |
 | `mentions` | 消息里 @ 到的其他人（`{id, name, mention}`） |
 | `attachments` | `{kind: image\|file, key, name?, path?}`。`path` 是监听进程下载好的位置；也可以用 `claude-bot download <id>` 重新下载 |
