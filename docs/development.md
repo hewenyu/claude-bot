@@ -23,7 +23,7 @@ internal/channel/github/    GitHub 适配器（REST API 轮询 issue、PR、评�
 internal/markdown/          各适配器共用的 Markdown 拆分
 internal/inbox/             基于文件的收件箱：待筛选的消息、事情（task）和它们的锁
 internal/jev/               TypeSafe Jev 的最小客户端（只问是非题）
-internal/screen/            用 Jev 把新消息裁剪归组、接上以前的事、拒绝非法请求
+internal/screen/            用 Jev 把新消息归组（一条消息不拆开）、接上以前的事、拒绝非法请求
 internal/config/            项目定位，配置的读写（gateway 数据库，或者以前的 config.json）和迁移
 internal/store/             gateway 的 SQLite 数据库（纯 Go 的 modernc.org/sqlite，不用 cgo）：共用设置、登记的项目、各项目的渠道
 internal/transport/         各适配器共用的 HTTP / WebSocket 客户端、代理、WebSocket 保活、限长下载、重连退避

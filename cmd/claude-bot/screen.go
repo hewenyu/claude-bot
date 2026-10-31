@@ -91,11 +91,14 @@ func settle(ctx context.Context, wake <-chan struct{}) {
 }
 
 // Threads a new message may continue: the conversation's pending tasks and
-// those handled in the last reopenWindow, at most maxThreads, latest first;
-// Jev reads the last transcriptRunes of each.
+// those handled in the last reopenWindow, at most maxThreads, latest first.
+// Jev reads the first askRunes of what opened each, what it is about, and
+// the last transcriptRunes of the rest: bot replies run to 2000 runes, and
+// the end of one alone does not say what the task is.
 const (
 	reopenWindow    = 24 * time.Hour
 	maxThreads      = 10
+	askRunes        = 400
 	transcriptRunes = 800
 )
 
@@ -173,11 +176,11 @@ func (a *app) threads(m channel.Message) ([]screen.Thread, error) {
 
 	out := make([]screen.Thread, 0, min(len(tasks), maxThreads))
 	for _, t := range tasks[:min(len(tasks), maxThreads)] {
-		var transcript, asked []string
+		var opening, rest, asked []string
 
 		for _, e := range t.Entries {
 			if e.Kind == inbox.EntryBot {
-				transcript = append(transcript, "bot: "+e.Text)
+				rest = append(rest, "bot: "+e.Text)
 
 				continue
 			}
@@ -187,18 +190,39 @@ func (a *app) threads(m channel.Message) ([]screen.Thread, error) {
 				who = e.Sender.Name
 			}
 
-			transcript = append(transcript, who+": "+e.Text)
+			// What people said before the first reply opened the task.
+			if len(rest) == 0 {
+				opening = append(opening, who+": "+e.Text)
+			} else {
+				rest = append(rest, who+": "+e.Text)
+			}
+
 			asked = append(asked, e.Text)
+		}
+
+		transcript := firstRunes(strings.Join(opening, "\n"), askRunes)
+		if len(rest) > 0 {
+			transcript += "\n" + lastRunes(strings.Join(rest, "\n"), transcriptRunes)
 		}
 
 		out = append(out, screen.Thread{
 			ID:         t.ID,
-			Transcript: lastRunes(strings.Join(transcript, "\n"), transcriptRunes),
+			Transcript: transcript,
 			Asked:      lastRunes(strings.Join(asked, "\n"), transcriptRunes),
 		})
 	}
 
 	return out, nil
+}
+
+// firstRunes keeps the start of s, what opened a conversation.
+func firstRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+
+	return string(r[:n]) + "…"
 }
 
 // lastRunes keeps the end of s, the latest of a conversation.
@@ -303,33 +327,42 @@ func (a *app) taskFor(t screen.Task, byID map[string]channel.Message) (inbox.Tas
 	}, nil
 }
 
-// entriesOf turns the pieces of m into task entries; a message with no
-// pieces (a sticker) is one empty entry.
+// entriesOf turns m into task entries: its text, whole and as written (a
+// message is never split between tasks), then each of its files. A message
+// with neither (a sticker) is one empty entry.
 func entriesOf(m channel.Message, pieces []screen.Piece) []inbox.Entry {
 	sender := m.Sender
+	entry := inbox.Entry{Kind: inbox.EntryUser, Message: m.ID, Sender: &sender, ReplyTo: m.ReplyTo, At: m.CreatedAt}
 
-	var entries []inbox.Entry
+	var (
+		files []inbox.Entry
+		text  bool
+	)
 
 	for _, p := range pieces {
-		if p.Message != m.ID {
-			continue
-		}
-
-		e := inbox.Entry{Kind: inbox.EntryUser, Message: m.ID, Sender: &sender, ReplyTo: m.ReplyTo, At: m.CreatedAt, Text: p.Text, File: p.File}
-		if p.Attachment >= 0 {
+		switch {
+		case p.Message != m.ID:
+		case p.Attachment < 0:
+			text = true
+		default:
 			att := m.Attachments[p.Attachment]
 			att.Path = p.File
-			e.Text = fileNote(m.ID, att)
+
+			e := entry
+			e.Text, e.File = fileNote(m.ID, att), p.File
+			files = append(files, e)
 		}
-
-		entries = append(entries, e)
 	}
 
-	if len(entries) == 0 {
-		entries = append(entries, inbox.Entry{Kind: inbox.EntryUser, Message: m.ID, Sender: &sender, ReplyTo: m.ReplyTo, At: m.CreatedAt})
+	if !text && len(files) > 0 {
+		return files
 	}
 
-	return entries
+	if text {
+		entry.Text = strings.TrimSpace(m.Text)
+	}
+
+	return append([]inbox.Entry{entry}, files...)
 }
 
 // fileNote describes an uploaded file and where the listener saved it.

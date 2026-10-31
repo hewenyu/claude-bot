@@ -16,12 +16,13 @@ type pieceGroup struct {
 	pieces []Piece
 }
 
-// group joins pieces that Jev says are about the same task, then joins each
-// group to the thread it continues, if any: one question per pair of pieces
-// and per piece and thread, and code joins every pair at or above SameTask.
-// A group continues the thread its pieces match best; groups continuing the
-// same thread become one. Groups keep the pieces' order and come out in the
-// order of their first piece.
+// group joins the pieces of each message, and pieces of different messages
+// that Jev says are about the same task, then joins each group to the thread
+// it continues, if any: one question per pair of pieces of different
+// messages and per piece and thread, and code joins every pair at or above
+// SameTask. A group continues the thread its pieces match best at or above
+// Continues; groups continuing the same thread become one. Groups keep the
+// pieces' order and come out in the order of their first piece.
 func group(ctx context.Context, ask Asker, pieces []Piece, threads []Thread) ([]pieceGroup, error) {
 	n := len(pieces)
 	if n == 0 {
@@ -44,7 +45,11 @@ func group(ctx context.Context, ask Asker, pieces []Piece, threads []Thread) ([]
 		byThread = map[string]int{} // thread -> group in out
 	)
 
-	for _, members := range partition(n, func(i, j int) bool { return answers[q.pair(i, j)] >= SameTask }) {
+	same := func(i, j int) bool {
+		return pieces[i].Message == pieces[j].Message || answers[q.pair(i, j)] >= SameTask
+	}
+
+	for _, members := range partition(n, same) {
 		thread := bestThread(members, threads, func(i, k int) float64 { return answers[q.cont(i, k)] })
 
 		g, ok := byThread[thread]
@@ -65,14 +70,14 @@ func group(ctx context.Context, ask Asker, pieces []Piece, threads []Thread) ([]
 	return out, nil
 }
 
-// bestThread is the thread the members match best at or above SameTask, ""
-// if none. Threads come latest first, so on a tie the latest wins.
+// bestThread is the thread the members match best at or above Continues,
+// "" if none. Threads come latest first, so on a tie the latest wins.
 func bestThread(members []int, threads []Thread, p func(i, k int) float64) string {
 	thread, best := "", 0.0
 
 	for _, i := range members {
 		for k, th := range threads {
-			if s := p(i, k); s >= SameTask && s > best {
+			if s := p(i, k); s >= Continues && s > best {
 				thread, best = th.ID, s
 			}
 		}
@@ -82,7 +87,8 @@ func bestThread(members []int, threads []Thread, p func(i, k int) float64) strin
 }
 
 // questions are the grouping questions about some pieces and threads: one
-// per pair of pieces and per piece and thread, and the state they are about.
+// per pair of pieces of different messages and per piece and thread, and the
+// state they are about.
 type questions struct {
 	n     int
 	state map[string]any
@@ -121,6 +127,10 @@ func newQuestions(pieces []Piece, threads []Thread) questions {
 
 	for i := range n {
 		for j := i + 1; j < n; j++ {
+			if pieces[i].Message == pieces[j].Message {
+				continue // one message is one task: nothing to ask
+			}
+
 			q.nouls[q.pair(i, j)] = jev.Noul{
 				Instructions: fmt.Sprintf("Are `conversation.%s` and `conversation.%s` about the same task (the same bug, feature request or question)?", q.id(i), q.id(j)),
 				True:         "Both are about the same bug, feature or question, e.g. one adds detail, a log, or urgency to the other, or both are items of one list of related work",

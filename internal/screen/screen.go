@@ -1,8 +1,9 @@
 // Package screen prepares pending messages for Claude with Jev, which does
-// two things only: it groups the pieces of a conversation (sentences,
-// clauses, attached files) into tasks, and it tells which tasks ask for
-// something illegal. Code does the cutting, the grouping arithmetic and the
-// thresholds; Jev answers one yes/no question at a time.
+// two things only: it groups a conversation's messages into tasks, and it
+// tells which tasks ask for something illegal. One message is always one
+// task, whole: code cuts messages into pieces (sentences, clauses, attached
+// files) only so that Jev compares short spans, and does the grouping
+// arithmetic and the thresholds; Jev answers one yes/no question at a time.
 package screen
 
 import (
@@ -25,8 +26,13 @@ type Asker interface {
 
 // Thresholds on Jev's probabilities.
 const (
-	// SameTask joins two pieces into one task.
+	// SameTask joins two pieces of different messages into one task.
 	SameTask = 0.7
+	// Continues joins a piece to an earlier task. Lower than SameTask: the
+	// earlier task is a whole conversation Jev reads only part of, and a
+	// further requirement on it ("对了，版本要从0.2开始") scores 0.5–0.7,
+	// while new asks score under 0.15 in the live evals.
+	Continues = 0.5
 	// Refuse marks a task illegal. Set high: a false refusal turns away a
 	// real user, while a miss still reaches Claude, which has rules of its own.
 	Refuse = 0.8
@@ -68,10 +74,10 @@ type Thread struct {
 	Transcript, Asked string
 }
 
-// Task is a group of pieces about the same thing. Thread, if set, is the
-// task in the inbox they continue. Messages lists, oldest first, every
-// message it draws on; a message with nothing to read (a sticker) is a task
-// of its own with no pieces.
+// Task is a group of pieces about the same thing: every piece of each of its
+// messages. Thread, if set, is the task in the inbox they continue. Messages
+// lists, oldest first, every message it draws on; a message with nothing to
+// read (a sticker) is a task of its own with no pieces.
 type Task struct {
 	Thread   string
 	Messages []string

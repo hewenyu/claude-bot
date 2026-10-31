@@ -44,8 +44,9 @@ func liveClient(t *testing.T) *jev.Client {
 	return jev.New(cfg.TypeSafe.APIKey)
 }
 
-// groupCase is a conversation whose messages mark each piece's task with
-// {A}, {B}, …; a piece without a mark belongs to the task of the mark before.
+// groupCase is a conversation whose messages start with the mark of their
+// task, {A}, {B}, …: one message is always one task, so the cases are about
+// telling messages apart.
 type groupCase struct {
 	name     string
 	messages []string
@@ -53,19 +54,24 @@ type groupCase struct {
 
 var groupCases = []groupCase{
 	{"bug, feature and docs, with a log", []string{
-		"{A}登录页在 Safari 上点登录按钮没反应。{B}另外能不能给导出功能加个 CSV 格式？",
-		"{A}按钮那个问题，日志我附上了\n{A}TypeError: Cannot read properties of undefined (reading 'submit') at login.js:42",
-		"{B}CSV 最好带表头。{C}还有，README 里的安装命令写错了，少了 -C 参数。",
+		"{A}登录页在 Safari 上点登录按钮没反应。",
+		"{B}另外能不能给导出功能加个 CSV 格式？",
+		"{A}按钮那个问题，日志我附上了\nTypeError: Cannot read properties of undefined (reading 'submit') at login.js:42",
+		"{B}CSV 最好带表头。",
+		"{C}还有，README 里的安装命令写错了，少了 -C 参数。",
 		"{A}顺便说下 Safari 上那个登录问题挺急的，客户在等。",
 	}},
-	{"comma-joined requests", []string{
-		"{A}继续做代码的那些内聚耦合性检查，常量设置，可读性 ,{B}然后更新readme",
+	{"two requests sent one after the other", []string{
+		"{A}继续做代码的那些内聚耦合性检查，常量设置，可读性",
+		"{B}然后更新readme",
 	}},
-	{"one request in many clauses", []string{
-		"{A}帮我在 README 里加一段安装说明，包括 macOS 和 Linux，最好附上截图",
+	{"one thought over two messages", []string{
+		"{A}到时候，我会为每个项目起一个对应的 Claude Code 进行 loop 的",
+		"{A}这样才是一个正常的多项目处理",
 	}},
 	{"same component, different work", []string{
-		"{A}Slack 渠道断线以后不会自动重连。{B}另外 Slack 的接入文档里没写 app token 去哪里拿。",
+		"{A}Slack 渠道断线以后不会自动重连。",
+		"{B}另外 Slack 的接入文档里没写 app token 去哪里拿。",
 	}},
 	{"follow-up refers back", []string{
 		"{A}把 issue #7 关掉吧",
@@ -78,27 +84,31 @@ var groupCases = []groupCase{
 		"{B}顺便问下 Telegram 怎么配代理？",
 	}},
 	{"numbered policy and a separate chore", []string{
-		"{A}以后的规则：\n1. 所有改动都走 PR\n2. 你自己开的 PR 验证后直接合并\n3. 别人的 PR 先审计再合并\n\n{B}对了，仓库里的二进制文件记得删了",
+		"{A}以后的规则：\n1. 所有改动都走 PR\n2. 你自己开的 PR 验证后直接合并\n3. 别人的 PR 先审计再合并",
+		"{B}对了，仓库里的二进制文件记得删了",
 	}},
 	{"video and release", []string{
-		"{A}帮我做一个开源推广的介绍视频，{B}然后把今天的修复发个版",
+		"{A}帮我做一个开源推广的介绍视频",
+		"{B}然后把今天的修复发个版",
 	}},
-	// Held out: written after the cutting and the question were settled.
-	{"held out: bug detail, then a feature", []string{
-		"{A}Discord 机器人发长消息会被截断，超过 2000 字就丢了。{B}能不能支持发图片？",
+	{"bug detail, then a feature", []string{
+		"{A}Discord 机器人发长消息会被截断，超过 2000 字就丢了。",
+		"{B}能不能支持发图片？",
 	}},
-	{"held out: interleaved", []string{
+	{"interleaved", []string{
 		"{A}status 命令里 pending 数量不对",
 		"{B}帮我看看 issue #20 是不是广告",
 		"{A}我刚又看了下，pending 显示 3 条但 inbox 里只有 1 条",
 	}},
-	{"held out: release steps and a broken link", []string{
-		"{A}把版本号改成 v0.2.0 发版，发完在群里通知一下大家。{B}另外飞书的 webhook 文档链接失效了",
+	{"release steps and a broken link", []string{
+		"{A}把版本号改成 v0.2.0 发版，发完在群里通知一下大家。",
+		"{B}另外飞书的 webhook 文档链接失效了",
 	}},
-	{"held out: two doc chores", []string{
-		"{A}帮我把 README 翻译成英文，{B}顺便把 LICENSE 的年份改成 2026",
+	{"two doc chores", []string{
+		"{A}帮我把 README 翻译成英文",
+		"{B}顺便把 LICENSE 的年份改成 2026",
 	}},
-	{"held out: one bug over three messages", []string{
+	{"one bug over three messages", []string{
 		"{A}telegram 收不到群消息",
 		"{A}私聊是好的",
 		"{A}是不是要关掉 privacy mode？",
@@ -379,7 +389,24 @@ var followUpCases = []struct {
 	{"new ask phrased as a continuation", []string{
 		"张三: 导出的 Excel 打开是乱码\nbot: 已修，v0.1.10",
 	}, "还有个事，帮我看看为什么 CI 这么慢", -1},
+	// The shape of a real conversation (task:mvv6adfh1), as the listener
+	// shows it: the opening ask, then the end of a long bot reply.
+	{"push to keep thinking after a long reply", []string{gatewayAsk}, "还是继续思考一下", 0},
+	{
+		"further requirement on a feature in progress",
+		[]string{gatewayAsk + "\nuser: 应用凭证全部搬进 gateway.json，react 写一个可视化网页\nbot: 收到，开始做"},
+		"对了，gateway的版本要从0.2开始", 0,
+	},
+	{"configuration detail of a feature in progress", []string{
+		"李四: 部署脚本报 permission denied\nbot: 已修，v0.1.8",
+		gatewayAsk + "\nuser: 应用凭证全部搬进 gateway.json，配置统一走 SQLite，GitHub token 和 jev api key 只用配一次就够了\nbot: 收到，开始做",
+	}, "当然还有，如果是需要登录多个 GitHub token 的话，你需要指定这个github token 服务哪些项目", 1},
 }
+
+const gatewayAsk = "user: 你评估一下要不要做一个类似聚合的功能：在本地起一个，只要项目里面 init 之后，自动初始化路由。" +
+	"这样所有数据都可以来源于这一个 Cloud BOT Gateway，也可以避免一些重复配置。\n" +
+	"bot: …3. 有了 gateway 以后，还保留各项目单独 `claude-bot start` 吗？（推荐保留）\n" +
+	"4. 查看先只做 CLI（`gateway list` / `gateway tasks`），不做网页，可以吗？\n\n回个比如「1 对，2A，3 保留，4 可以」，我就按这个开 PR。"
 
 func TestLiveFollowUps(t *testing.T) {
 	t.Parallel()
