@@ -1,6 +1,7 @@
 package lark
 
 import (
+	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/base64"
@@ -17,12 +18,14 @@ import (
 	"time"
 )
 
-// fakeAccounts scripts the registration endpoint: begin, then one poll reply per call.
+// fakeAccounts scripts the registration endpoint: begin, then one poll reply
+// per call; once the script runs out, every poll is pending.
 type fakeAccounts struct {
-	mu    sync.Mutex
-	link  string
-	polls []map[string]any
-	calls []url.Values
+	mu        sync.Mutex
+	link      string
+	expiresIn int // seconds; 60 when zero
+	polls     []map[string]any
+	calls     []url.Values
 }
 
 func (f *fakeAccounts) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -42,9 +45,13 @@ func (f *fakeAccounts) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.PostForm.Get("action") {
 	case "begin":
-		body = map[string]any{"device_code": "dc_1", "verification_uri_complete": f.link, "expires_in": 60, "interval": 1}
+		body = map[string]any{"device_code": "dc_1", "verification_uri_complete": f.link, "expires_in": cmp.Or(f.expiresIn, 60), "interval": 1}
 	case "poll":
-		body, f.polls = f.polls[0], f.polls[1:]
+		body = map[string]any{"error": "authorization_pending"}
+		if len(f.polls) > 0 {
+			body, f.polls = f.polls[0], f.polls[1:]
+		}
+
 		if status, ok := body["http_status"].(int); ok {
 			w.WriteHeader(status)
 
@@ -269,5 +276,65 @@ func TestRegistrar_Register_cancelled(t *testing.T) {
 	_, err := r.Register(ctx)
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrExpired) {
 		t.Errorf("Register() after cancel err = %v, want context.Canceled (not ErrExpired)", err)
+	}
+}
+
+// An app confirmed from a copy of the link without its user_code is never
+// reported to the device code: the poll stays pending until the link
+// expires. The wait must not be silent meanwhile.
+func TestRegistrar_Register_neverConfirmed(t *testing.T) {
+	t.Parallel()
+
+	r := newTestRegistrar(t, &fakeAccounts{expiresIn: 1})
+	r.waitNotice = 200 * time.Millisecond
+
+	var (
+		mu    sync.Mutex
+		lefts []time.Duration
+	)
+
+	r.OnWaiting = func(left time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		lefts = append(lefts, left)
+	}
+
+	start := time.Now()
+
+	_, err := r.Register(t.Context())
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("Register() err = %v, want ErrExpired", err)
+	}
+
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("Register() took %v, want it to end when the link expires", took)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(lefts) < 2 || len(lefts) > 6 {
+		t.Fatalf("OnWaiting called %d times over 1s every 200ms: %v", len(lefts), lefts)
+	}
+
+	for i, left := range lefts {
+		if left <= 0 || left > time.Second || i > 0 && left >= lefts[i-1] {
+			t.Errorf("OnWaiting left = %v, want a countdown within the link's second", lefts)
+
+			break
+		}
+	}
+}
+
+func TestRegistrar_Register_noWaitingNoticeWhenAnswered(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeAccounts{polls: []map[string]any{{"client_id": "cli_new", "client_secret": "sec"}}}
+	r := newTestRegistrar(t, f)
+	r.OnWaiting = func(left time.Duration) { t.Errorf("OnWaiting(%v) on an immediate answer", left) }
+
+	if _, err := r.Register(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }

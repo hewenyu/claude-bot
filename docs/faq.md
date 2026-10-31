@@ -12,6 +12,10 @@
 
 授权链接也会打印在终端里，可以复制到任何已登录飞书的浏览器里打开；终端下方还有它的二维码，用飞书 App 扫一下就行（终端宽度不足时会提示拉宽窗口）。加 `--no-open` 则只打印链接和二维码，不打开浏览器。
 
+**把链接发给别人去建飞书应用，init 一直「等待确认」**
+
+飞书只把凭证交给 init 打印出来的那个链接：确认页打开后会把链接里的 `user_code` 从地址栏去掉，从浏览器地址栏复制的地址仍能建出应用（对方页面显示创建成功），但这个应用不会传回 init，init 会一直等到链接过期。要让别人确认，用 `claude-bot init --no-open` 运行，把终端里打印的链接或二维码原样发给对方，自己先别打开。已经建好的应用，请对方在飞书开放平台该应用的「凭证与基础信息」里复制 App ID 和 App Secret，用 `claude-bot init --app-id <App ID> --app-secret <App Secret>` 接入（国际版加 `--domain lark`），或者在 gateway 页面里添加飞书渠道填进去。init 等待期间每两分钟会提示一次剩余时间和这个办法。
+
 **监听进程起不来 / 连不上**
 
 运行 `claude-bot gateway status` 查看每个项目的状态和出错原因，日志在 `~/.claude-bot/gateway.log`（还没迁进 gateway 的项目看 `claude-bot status` 和 `.claude-bot/serve.log`）。某个渠道出现致命错误（比如 token 无效或已被撤销）时，只停掉这一个渠道，其他渠道和其他项目继续运行：日志里会有一行 `channel stopped` 写明原因，`gateway status` 的 `stopped` 和 `errors` 会列出它，`claude-bot inbox` 也会提示；重新 `init` 这个渠道即可，gateway 几秒内自动用上新配置。项目显示 `busy` 时，说明它自己的监听进程还在跑，按提示在项目里运行 `claude-bot stop`。本机开了代理的情况见[代理](reference.md#代理)。

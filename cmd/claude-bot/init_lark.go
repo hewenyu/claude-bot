@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -151,22 +152,61 @@ func register(ctx context.Context, o initOptions, upgradeAppID string) (lark.Con
 
 		printLinkQR(link)
 
+		fmt.Println(shareHint)
+
 		if !o.noOpen {
 			openBrowser(ctx, link)
+			fmt.Println(reopenHint)
 		}
 
-		fmt.Println("等待确认 …")
+		fmt.Printf("等待确认 …（%s 前有效，可随时 Ctrl+C 退出）\n", expires.Format("15:04"))
 	}
 	r.OnTenantSwitch = func(string) {
 		fmt.Println("检测到 Lark 国际版租户，切换到 larksuite.com …")
 	}
 
+	hinted := false
+	r.OnWaiting = func(left time.Duration) {
+		fmt.Printf("仍在等待确认（链接还有%s有效）…\n", minutesLeft(left))
+
+		if !hinted {
+			hinted = true
+
+			fmt.Println(strayHint)
+		}
+	}
+
 	reg, err := r.Register(ctx)
 	if err != nil {
+		if errors.Is(err, lark.ErrExpired) {
+			fmt.Println(strayHint)
+		}
+
 		return lark.Config{}, fmt.Errorf("register app: %w", err)
 	}
 
 	return lark.Config{AppID: reg.AppID, AppSecret: reg.AppSecret, Domain: reg.Domain, Proxy: o.proxy}, nil
+}
+
+// The confirmation page answers only the link init printed: once opened it
+// drops the user_code from the address bar, and an app created from such a
+// copy is never handed back.
+const (
+	shareHint = "要让别人来确认：把上面的链接或二维码原样发给对方。不要从浏览器地址栏复制——" +
+		"页面打开后会去掉链接里的 user_code，用那个地址建出的应用传不回这里。"
+	reopenHint = "（浏览器已经打开了这个链接；要交给别人确认，最好 Ctrl+C 后加 --no-open 重新运行，让对方第一个打开它。）"
+	strayHint  = "  如果确认页已经显示创建成功、这里却没有反应，说明打开的不是上面这个链接（比如从浏览器地址栏复制的），那个应用不会传回来。\n" +
+		"  可以按 Ctrl+C 退出，在飞书开放平台该应用的「凭证与基础信息」里复制 App ID 和 App Secret，然后运行：\n" +
+		"    claude-bot init --app-id <App ID> --app-secret <App Secret>"
+)
+
+// minutesLeft renders the time left on the link, rounded up to minutes.
+func minutesLeft(d time.Duration) string {
+	if d < time.Minute {
+		return "不到 1 分钟"
+	}
+
+	return fmt.Sprintf(" %d 分钟", int((d+time.Minute-1)/time.Minute))
 }
 
 // printLinkQR shows link as a QR code for the Lark mobile app, when stdout is

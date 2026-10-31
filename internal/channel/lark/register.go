@@ -39,6 +39,9 @@ const (
 	maxPollFailures  = 3   // failed polls in a row that end the registration
 )
 
+// defaultWaitNotice is how often OnWaiting hears that no answer came yet.
+const defaultWaitNotice = 2 * time.Minute
+
 // Device-flow error codes.
 const (
 	codePending  = "authorization_pending"
@@ -78,11 +81,18 @@ type Registrar struct {
 	// OnTenantSwitch is called when the user turns out to belong to a tenant
 	// of the other deployment (DomainLark), whose endpoints take over.
 	OnTenantSwitch func(domain string)
+	// OnWaiting is called every couple of minutes while no answer has come,
+	// with the time left before the link expires. The platform only answers
+	// for the link it handed out: an app created from a copy without its
+	// user_code (the confirmation page drops it from the address bar once
+	// opened) never reaches us, and the wait would otherwise be silent.
+	OnWaiting func(left time.Duration)
 
 	http                 *http.Client
 	feishuHost, larkHost string        // accounts endpoints per deployment
 	linkHosts            []string      // hosts the authorization link may point to
 	intervalUnit         time.Duration // scales the poll interval sent in seconds
+	waitNotice           time.Duration // between OnWaiting calls
 }
 
 // NewRegistrar returns a Registrar for the official endpoints. proxy follows
@@ -97,6 +107,7 @@ func NewRegistrar(proxy transport.ProxyFunc) *Registrar {
 			},
 		},
 		intervalUnit: time.Second,
+		waitNotice:   defaultWaitNotice,
 		feishuHost:   "accounts.feishu.cn",
 		larkHost:     "accounts.larksuite.com",
 		linkHosts: []string{
@@ -149,7 +160,7 @@ func (r *Registrar) Register(ctx context.Context) (Registered, error) {
 	pollCtx, cancel := context.WithDeadline(ctx, expires)
 	defer cancel()
 
-	reg, err := r.poll(pollCtx, begin)
+	reg, err := r.poll(pollCtx, begin, expires)
 	if err != nil && pollCtx.Err() != nil {
 		if ctx.Err() != nil {
 			return Registered{}, fmt.Errorf("registration cancelled: %w", ctx.Err())
@@ -161,11 +172,13 @@ func (r *Registrar) Register(ctx context.Context) (Registered, error) {
 	return reg, err
 }
 
-// poll waits for the user's decision on the device code from begin.
-func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, error) {
+// poll waits for the user's decision on the device code from begin, whose
+// link expires at expires.
+func (r *Registrar) poll(ctx context.Context, begin regResponse, expires time.Time) (Registered, error) {
 	host, domain := r.feishuHost, DomainFeishu
 	interval := time.Duration(positive(begin.Interval, defaultInterval)) * r.intervalUnit
 	failures := 0
+	lastNotice := time.Now()
 
 	for {
 		res, err := r.post(ctx, host, url.Values{"action": {"poll"}, "device_code": {begin.DeviceCode}})
@@ -203,12 +216,26 @@ func (r *Registrar) poll(ctx context.Context, begin regResponse) (Registered, er
 			interval += slowDownStep * r.intervalUnit
 		}
 
+		r.noteWaiting(&lastNotice, expires)
+
 		select {
 		case <-ctx.Done():
 			return Registered{}, ctx.Err()
 		case <-time.After(interval):
 		}
 	}
+}
+
+// noteWaiting calls OnWaiting with the time left on the link when waitNotice
+// has passed since *last.
+func (r *Registrar) noteWaiting(last *time.Time, expires time.Time) {
+	if r.OnWaiting == nil || time.Since(*last) < r.waitNotice {
+		return
+	}
+
+	*last = time.Now()
+
+	r.OnWaiting(time.Until(expires))
 }
 
 // registered checks the app the user authorized against the one requested.
