@@ -73,15 +73,17 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 2. **修好并验证**：先复现问题，再修；补上或更新测试；跑项目的测试和 lint（比如 `make test`、`make lint`），全部通过；再实际构建、运行一遍，亲手确认问题真的修好了、功能真的能用。只靠测试通过不算验证。
 3. **让 Codex 审一遍**（本机同时装了 `codex` 和 `hc` 才做，`command -v codex && command -v hc` 有一个找不到就跳过）：先 commit，然后在仓库根目录用 `hc` 在后台起一个 Codex 审查，等它跑完读结论：
    ```bash
-   hc kill codex-review; hc rm codex-review; rm -f .git/codex-review.md   # 清掉上一轮留下的
-   hc run --bg --no-notify --name codex-review --cwd "$PWD" \
-     codex exec review --base origin/<主分支> -o .git/codex-review.md
-   hc wait codex-review --timeout 900   # 输出的 reason 是 timeout 就再等一次，exit 才是跑完了
-   cat .git/codex-review.md             # 没有这个文件就用 hc read codex-review --lines 200 看出了什么错
-   hc kill codex-review; hc rm codex-review
+   out=$(git rev-parse --git-path codex-review.md); rm -f "$out"
+   hc run --bg --no-notify --cwd "$PWD" codex exec review --base origin/<主分支> -o "$out"
+   ```
+   输出里的 `address`（比如 `t4`）就是这个审查终端，后面都用它（终端名是全机共享的，不要起固定的名字，免得和别的项目撞上）：
+   ```bash
+   hc wait <address> --timeout 900   # 输出的 reason 是 timeout 就再等一次，exit 才是跑完了
+   cat "$(git rev-parse --git-path codex-review.md)"   # 没有这个文件就用 hc read <address> --lines 200 看出了什么错
+   hc kill <address>; hc rm <address>
    ```
    - Codex 的每条意见你自己判断：确实有问题的修好、重新按第 2 步验证、commit 后再审一轮；不认同的，在 PR 正文里写明理由。最多审 3 轮，还剩确实有问题又修不好的，不要合并，回复说明卡在哪、等人拍板。
-   - 不管审完、出错还是超时，最后都要 `hc kill codex-review; hc rm codex-review` 把这个终端关掉。Codex 跑不起来（没登录、额度用完）的，在 PR 正文里说明没审，照常往下走。
+   - 不管审完、出错还是超时，最后都要 `hc kill <address>; hc rm <address>` 把这个终端关掉。Codex 跑不起来（没登录、额度用完）的，在 PR 正文里说明没审，照常往下走。
 4. **提交并开 PR**：
    ```bash
    git push -u origin bot/42-fix-timeout
