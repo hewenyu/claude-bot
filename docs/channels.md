@@ -27,6 +27,10 @@
 | `im:message:send_as_bot` | 以 bot 身份发消息 |
 | `im:resource` | 下载图片和文件 |
 | `im:message.reactions:write_only` | 用表情回应"已收到" |
+| `contact:contact.base:readonly` | 读取通讯录基本信息（查发送者） |
+| `contact:user.base:readonly` | 读取用户名字，消息的 `sender.name` 才有值 |
+
+飞书的消息事件里只有发送者的 open_id，名字要用通讯录接口查（查到的会缓存 24 小时）。少了后两项权限，或者发送者不在应用的通讯录权限范围内（开放平台「权限管理 → 数据权限 → 通讯录权限范围」），消息照收不误，只是 `sender` 里只有 id，gateway 日志里会有一条 `lark sender name` 的警告。
 
 权限需要变多时，再运行一次 `claude-bot init`，它会对同一个应用补充授权，不会新建应用。如果企业需要管理员审批，`init` 会列出尚未生效的权限。
 
@@ -86,6 +90,7 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
          - mpim:history
          - files:read
          - reactions:write
+         - users:read
    settings:
      event_subscriptions:
        bot_events:
@@ -106,7 +111,7 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
 
 在频道里 @bot 的消息，回复会发在这条消息的 thread 里，并 @ 提问的人；私信里直接回复。回复里的 `<!channel>`、`<!here>` 这类全员提醒不会生效。
 
-权限：manifest 里的 scope 依次用于：收 @bot 的消息、发消息、收私信、用 `get` 读取频道 / 私有频道 / 群聊私信里的消息、下载附件、用 👀 表情回应。
+权限：manifest 里的 scope 依次用于：收 @bot 的消息、发消息、收私信、用 `get` 读取频道 / 私有频道 / 群聊私信里的消息、下载附件、用 👀 表情回应、查发送者的名字（Slack 的事件里只有用户 id）。早先按旧 manifest 建的应用，在 OAuth & Permissions 里补上 `users:read` 并重新安装到工作区（bot token 不变），否则 `sender` 里只有 id。
 
 ## 钉钉
 

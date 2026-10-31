@@ -124,7 +124,7 @@ func (c *Channel) session(ctx context.Context, bot Bot, deliver func(channel.Mes
 
 		touch()
 
-		hello, end, err := c.frame(conn, data, bot, deliver)
+		hello, end, err := c.frame(ctx, conn, data, bot, deliver)
 		if hello {
 			connected = true
 
@@ -141,7 +141,7 @@ func (c *Channel) session(ctx context.Context, bot Bot, deliver func(channel.Mes
 // frame acknowledges and handles one Socket Mode frame. hello reports that
 // the connection is up; end that Slack asked to reconnect (err says whether
 // that can help).
-func (c *Channel) frame(conn *websocket.Conn, data []byte, bot Bot, deliver func(channel.Message) error) (hello, end bool, err error) {
+func (c *Channel) frame(ctx context.Context, conn *websocket.Conn, data []byte, bot Bot, deliver func(channel.Message) error) (hello, end bool, err error) {
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		c.log.Warn("slack socket: bad frame", "err", err)
@@ -168,13 +168,13 @@ func (c *Channel) frame(conn *websocket.Conn, data []byte, bot Bot, deliver func
 
 		return false, true, nil
 	case envelopeEvents:
-		c.handle(env.Payload, bot, deliver)
+		c.handle(ctx, env.Payload, bot, deliver)
 	}
 
 	return false, false, nil
 }
 
-func (c *Channel) handle(payload json.RawMessage, bot Bot, deliver func(channel.Message) error) {
+func (c *Channel) handle(ctx context.Context, payload json.RawMessage, bot Bot, deliver func(channel.Message) error) {
 	var p struct {
 		Event event `json:"event"`
 	}
@@ -188,6 +188,8 @@ func (c *Channel) handle(payload json.RawMessage, bot Bot, deliver func(channel.
 	if !ok {
 		return
 	}
+
+	c.nameSender(ctx, &msg)
 
 	if err := deliver(msg); err != nil {
 		c.log.Error("slack deliver", "id", msg.ID, "err", err)

@@ -273,6 +273,7 @@ func TestListen_deliversAndAcks(t *testing.T) {
 		`{"envelope_id":"e2","type":"events_api","payload":{"event":{"type":"app_mention","channel":"C1","user":"U1","text":"<@UBOT> hi","ts":"1.2"}}}`,
 		`{"type":"disconnect","reason":"refresh_requested"}`,
 	}
+	f.answer["users.info"] = `{"ok":true,"user":{"id":"U1","name":"ann","real_name":"Ann Lee","profile":{"display_name":"Annie","real_name":"Ann Lee"}}}`
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -285,7 +286,7 @@ func TestListen_deliversAndAcks(t *testing.T) {
 		done <- ch.Listen(ctx, func(m channel.Message) error { got <- m; return nil }, func() { readies <- struct{}{} })
 	}()
 
-	if m := receive(t, got, "a delivered message"); m.ID != "slack:C1/1.2" || m.Text != "hi" || m.ChatType != channel.ChatGroup {
+	if m := receive(t, got, "a delivered message"); m.ID != "slack:C1/1.2" || m.Text != "hi" || m.ChatType != channel.ChatGroup || m.Sender.Name != "Annie" {
 		t.Errorf("delivered %+v", m)
 	}
 
@@ -325,6 +326,36 @@ func receive[T any](t *testing.T, ch <-chan T, what string) T {
 		var zero T
 
 		return zero
+	}
+}
+
+// Without users:read the sender stays an id, the message still arrives, and
+// the failed lookup is not repeated for the next message.
+func TestListen_senderNameUnavailable(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.frames = []string{
+		`{"envelope_id":"e1","type":"events_api","payload":{"event":{"type":"message","channel_type":"im","channel":"D1","user":"U1","text":"one","ts":"1.1"}}}`,
+		`{"envelope_id":"e2","type":"events_api","payload":{"event":{"type":"message","channel_type":"im","channel":"D1","user":"U1","text":"two","ts":"1.2"}}}`,
+	}
+	f.answer["users.info"] = `{"ok":false,"error":"missing_scope"}`
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	got := make(chan channel.Message, 2)
+
+	go func() { _ = ch.Listen(ctx, func(m channel.Message) error { got <- m; return nil }, func() {}) }()
+
+	for _, want := range []string{"one", "two"} {
+		if m := receive(t, got, "a delivered message"); m.Text != want || m.Sender.ID != "U1" || m.Sender.Name != "" {
+			t.Errorf("delivered %+v, want %q from U1 without a name", m, want)
+		}
+	}
+
+	if n := len(f.called("users.info")); n != 1 {
+		t.Errorf("users.info called %d times, want 1", n)
 	}
 }
 
@@ -434,6 +465,10 @@ func TestGet(t *testing.T) {
 
 	if got.ID != "slack:C1/1.5" || got.Text != "the reply" || got.ReplyTo != "slack:C1/1.0" || got.ChatType != channel.ChatGroup {
 		t.Errorf("Get() = %+v", got)
+	}
+
+	if calls := f.called("users.info"); len(calls) != 1 || calls[0].Params.Get("user") != "U1" {
+		t.Errorf("users.info calls = %+v, want one for U1", calls)
 	}
 
 	if _, err := ch.Get(t.Context(), "C1/2.0"); err == nil {

@@ -18,7 +18,8 @@ import (
 )
 
 // scopes the bot needs: receive DMs and group @-mentions, read and send
-// messages, download attachments, react with an acknowledgement emoji.
+// messages, download attachments, react with an acknowledgement emoji, look
+// up senders' names.
 var scopes = []string{
 	"im:message",
 	"im:message.p2p_msg:readonly",
@@ -26,6 +27,8 @@ var scopes = []string{
 	"im:message:send_as_bot",
 	"im:resource",
 	"im:message.reactions:write_only",
+	"contact:contact.base:readonly",
+	"contact:user.base:readonly",
 }
 
 // Device-flow timing (RFC 8628), in seconds where the server sends seconds.
