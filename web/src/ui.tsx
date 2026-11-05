@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { channel } from "./format";
+import { Icon } from "./icons";
 import { ChannelLogo, hasLogo } from "./logos";
 
 /** The channel's official logo; a lettered tile for a channel without one. */
@@ -23,6 +24,11 @@ export function ChannelBadge({ name, size = "md" }: { name: string; size?: "sm" 
 
 export function Dot({ tone, pulse }: { tone: "ok" | "warn" | "bad" | "off" | "info"; pulse?: boolean }) {
   return <span className={`dot dot-${tone}${pulse ? " dot-pulse" : ""}`} aria-hidden />;
+}
+
+/** Text for screen readers only: what a dot or a tooltip says to the eye. */
+export function SrOnly({ children }: { children: ReactNode }) {
+  return <span className="sr-only">{children}</span>;
 }
 
 /** Copies text; says so for a moment. */
@@ -76,14 +82,34 @@ export function Banner({ tone, children }: { tone: "warn" | "bad" | "info"; chil
   );
 }
 
-/** A dialog; Escape or the backdrop closes it. */
+const focusable = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/** A dialog; Escape or the backdrop closes it, and Tab stays inside it. */
 export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>("input, select, button")?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return onClose();
+      if (e.key !== "Tab" || !ref.current) return;
+
+      const items = [...ref.current.querySelectorAll<HTMLElement>(focusable)];
+      if (!items.length) return;
+
+      const first = items[0];
+      const last = items[items.length - 1];
+      const inside = ref.current.contains(document.activeElement);
+
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     document.addEventListener("keydown", onKey);
 
     return () => {
@@ -98,7 +124,7 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="btn btn-ghost btn-icon" onClick={onClose} aria-label="关闭">
-            ×
+            <Icon name="cross" />
           </button>
         </div>
         <div className="modal-body">{children}</div>

@@ -3,7 +3,8 @@ import { api, ApiError } from "./api";
 import { ago, fullTime } from "./format";
 import { usePoll } from "./hooks";
 import type { ChannelType, ChannelView, ProjectStatus, SecretView, TestResult } from "./types";
-import { Banner, ChannelBadge, Dot, Empty, Modal, errorText, toast } from "./ui";
+import { Icon } from "./icons";
+import { Banner, ChannelBadge, Command, Dot, Empty, Modal, errorText, toast } from "./ui";
 
 interface Props {
   project: ProjectStatus;
@@ -89,7 +90,9 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
       ? { tone: "ok" as const, text: "已连接" }
       : p.state === "starting"
         ? { tone: "warn" as const, text: "连接中" }
-        : { tone: "off" as const, text: "未连接" };
+        : p.state === "failed"
+          ? { tone: "bad" as const, text: "没连上" }
+          : { tone: "off" as const, text: "未连接" };
 
   const runTest = () => {
     setTest("running");
@@ -101,7 +104,7 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
       <header className="card-head">
         <ChannelBadge name={view.name} />
         <div className="card-title">
-          <h3>{view.label || view.name}</h3>
+          <h2>{view.label || view.name}</h2>
           <span className={`state state-${status.tone}`}>
             <Dot tone={status.tone} pulse={status.tone === "warn"} />
             {status.text}
@@ -109,7 +112,13 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
         </div>
       </header>
 
-      {stopped && <p className="card-error">{p.errors?.[view.name]}</p>}
+      {stopped && (
+        <div className="card-recover">
+          <p className="card-error">{p.errors?.[view.name] ?? "出错"}</p>
+          <p className="muted small">其他渠道照常工作。在这里改了配置，gateway 会自动重连；要改的是平台那边的设置（比如开发者后台），改好后重启 gateway：</p>
+          <Command>claude-bot gateway restart</Command>
+        </div>
+      )}
 
       <dl className="fields">
         {(type?.fields ?? []).map((f) => {
@@ -134,7 +143,10 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
       </div>
 
       {test && test !== "running" && (
-        <p className={`test ${test.ok ? "test-ok" : "test-bad"}`}>{test.ok ? `✓ 凭证有效：${test.identity}` : `✗ ${test.error}`}</p>
+        <p className={`test ${test.ok ? "test-ok" : "test-bad"}`}>
+          <Icon name={test.ok ? "check" : "cross"} />
+          {test.ok ? `凭证有效：${test.identity}` : test.error}
+        </p>
       )}
 
       <div className="card-actions">
@@ -156,7 +168,7 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
 function AddCard({ types, onPick }: { types: ChannelType[]; onPick: (t: ChannelType) => void }) {
   return (
     <article className="card card-add">
-      <h3>添加渠道</h3>
+      <h2>添加渠道</h2>
       <p className="muted small">同一个 bot 可以同时接多个渠道。</p>
       <div className="add-grid">
         {types.map((t) => (
@@ -261,7 +273,10 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
         })}
         <p className="muted small">测试连接只核对凭证（问平台「我是谁」），不建立长连接，不会抢走正在运行的连接的消息。</p>
         {test && test !== "running" && (
-          <p className={`test ${test.ok ? "test-ok" : "test-bad"}`}>{test.ok ? `✓ 凭证有效：${test.identity}` : `✗ ${test.error}`}</p>
+          <p className={`test ${test.ok ? "test-ok" : "test-bad"}`}>
+            <Icon name={test.ok ? "check" : "cross"} />
+            {test.ok ? `凭证有效：${test.identity}` : test.error}
+          </p>
         )}
         {error && <p className="test test-bad">{error}</p>}
       </form>

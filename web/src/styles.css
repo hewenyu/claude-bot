@@ -23,6 +23,16 @@
   --info-soft: #e9f0fc;
   --off: #a39f96;
   --off-soft: #f0eee9;
+  /* Status as text: the hues above are for dots, borders and washes; words
+     in a status color use these, which read at 4.5:1 or better on every
+     surface and wash. */
+  --ok-text: #1f7a43;
+  --warn-text: #8a5a00;
+  --bad-text: #b02a2a;
+  --info-text: #2a56b8;
+  /* Fills that carry white text: a deeper fire of the accent and the fault red. */
+  --accent-fill: #b4532e;
+  --danger-fill: #b83232;
   --bot: #fff4ee;
   --bot-line: #f2d8c9;
   --shadow: 0 1px 2px rgb(30 25 15 / 0.05), 0 4px 16px rgb(30 25 15 / 0.05);
@@ -50,6 +60,10 @@
     --bad-soft: #3d1c1b;
     --info-soft: #1a2a46;
     --off-soft: #2a2825;
+    --ok-text: #5cc98a;
+    --warn-text: #e8b04a;
+    --bad-text: #f07a7a;
+    --info-text: #7fa6f0;
     --bot: #2b211b;
     --bot-line: #4a3326;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25);
@@ -101,6 +115,7 @@ code,
 
 p {
   margin: 0 0 0.5em;
+  text-wrap: pretty;
 }
 
 p:last-child {
@@ -276,12 +291,53 @@ p:last-child {
 }
 
 .gear {
-  width: 10px;
-  text-align: center;
+  width: 16px;
+  display: grid;
+  place-items: center;
   color: var(--sidebar-muted);
 }
 
+.gear .icon {
+  width: 16px;
+  height: 16px;
+}
+
 /* ---------- small parts ---------- */
+
+.icon {
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.125em;
+}
+
+/* Its containers are positioned (below), so it stays inside scrolling strips
+   instead of widening the page. */
+.nav-item,
+.chip,
+.task-row,
+.pill {
+  position: relative;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.replies {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-variant-numeric: tabular-nums;
+}
 
 .dot {
   width: 8px;
@@ -337,6 +393,11 @@ p:last-child {
 }
 
 @media (prefers-color-scheme: dark) {
+  /* The bench is only a shade darker than the page at night: rule it off. */
+  .sidebar {
+    border-right: 1px solid var(--line);
+  }
+
   .badge:not(.badge-logo) {
     box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18);
   }
@@ -387,7 +448,7 @@ p:last-child {
 
 .pill-accent,
 .sidebar .pill-accent {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
 }
 
@@ -410,17 +471,17 @@ p:last-child {
 
 .tag-warn {
   background: var(--warn-soft);
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
 .tag-info {
   background: var(--info-soft);
-  color: var(--info);
+  color: var(--info-text);
 }
 
 .tag-ok {
   background: var(--ok-soft);
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .tag-off {
@@ -438,15 +499,15 @@ p:last-child {
 }
 
 .state-ok {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .state-warn {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
 .state-bad {
-  color: var(--bad);
+  color: var(--bad-text);
 }
 
 .chip {
@@ -502,41 +563,31 @@ p:last-child {
 }
 
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: #fff;
 }
 
 .btn-primary:hover:not(:disabled) {
-  border-color: var(--accent);
-  filter: brightness(1.06);
+  border-color: var(--accent-fill);
+  filter: brightness(1.08);
 }
 
 .btn-danger {
-  background: var(--bad);
-  border-color: var(--bad);
+  background: var(--danger-fill);
+  border-color: var(--danger-fill);
   color: #fff;
 }
 
+/* A destructive action among the page's own controls: red words, no fill
+   until the confirm. */
 .btn-danger-text {
-  color: var(--bad);
+  color: var(--bad-text);
 }
 
 .btn-ghost.btn-danger-text:hover:not(:disabled) {
   background: var(--bad-soft);
-  color: var(--bad);
-}
-
-/* A destructive action that sits among the page's own controls: red, but
-   not filled until you mean it. */
-.btn-danger-outline {
-  color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
-}
-
-.btn-danger-outline:hover:not(:disabled) {
-  background: var(--bad-soft);
-  border-color: var(--bad);
+  color: var(--bad-text);
 }
 
 .btn-xs {
@@ -545,9 +596,9 @@ p:last-child {
 }
 
 .btn-icon {
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1;
-  padding: 2px 8px;
+  padding: 4px 6px;
 }
 
 .command {
@@ -621,7 +672,7 @@ p:last-child {
   border-radius: 14px;
   background: var(--accent-soft);
   color: var(--accent-text);
-  font-size: 24px;
+  font-size: 26px;
   margin-bottom: 12px;
 }
 
@@ -726,12 +777,16 @@ p:last-child {
   min-height: 420px;
 }
 
+/* Nothing to open: the list alone, its empty state says why. */
+.tasks.solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .task-list,
 .conversation {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
   min-height: 0;
   overflow: auto;
 }
@@ -788,7 +843,7 @@ p:last-child {
 }
 
 .seg-count {
-  opacity: 0.6;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1030,7 +1085,7 @@ p:last-child {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--warn);
+  color: var(--warn-text);
   font-size: 12px;
   font-weight: 600;
   margin: 4px 0 10px;
@@ -1126,7 +1181,6 @@ p:last-child {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
@@ -1145,12 +1199,22 @@ p:last-child {
   gap: 1px;
 }
 
-.card-title h3 {
+.card-title h2 {
   font-size: 15px;
 }
 
+.card-recover {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-recover .command {
+  margin: 0;
+}
+
 .card-error {
-  color: var(--bad);
+  color: var(--bad-text);
   font-size: 13px;
   background: var(--bad-soft);
   border-radius: 7px;
@@ -1197,11 +1261,10 @@ p:last-child {
 
 .card-add {
   border-style: dashed;
-  box-shadow: none;
   background: transparent;
 }
 
-.card-add h3 {
+.card-add h2 {
   font-size: 15px;
 }
 
@@ -1234,16 +1297,23 @@ p:last-child {
   border-radius: 7px;
   padding: 6px 10px;
   margin: 0;
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.test .icon {
+  margin-top: 0.2em;
 }
 
 .test-ok {
   background: var(--ok-soft);
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .test-bad {
   background: var(--bad-soft);
-  color: var(--bad);
+  color: var(--bad-text);
 }
 
 /* ---------- settings ---------- */
@@ -1327,7 +1397,7 @@ p:last-child {
 }
 
 .req {
-  color: var(--bad);
+  color: var(--bad-text);
 }
 
 .note {
@@ -1358,20 +1428,68 @@ p:last-child {
 }
 
 .toast-bad {
-  background: var(--bad);
+  background: var(--danger-fill);
   color: #fff;
 }
 
 /* ---------- narrow screens ---------- */
 
 @media (max-width: 960px) {
+  /* minmax(0, …): a long path or command must not widen the page past the screen. */
   .shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
+  /* The bench folds into two rows: brand and settings, then the projects
+     in one sideways strip, the ones that need you first. */
   .sidebar {
-    max-height: 40vh;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    padding: 10px;
+    overflow: visible;
+  }
+
+  .brand {
+    flex: 1 1 auto;
+    padding: 2px 4px;
+    min-width: 0;
+  }
+
+  .nav-label,
+  .nav-foot .nav-sub,
+  .nav-path {
+    display: none;
+  }
+
+  .nav-foot {
+    margin-top: 0;
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .nav-list {
+    order: 1;
+    flex: 1 0 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    scrollbar-width: none;
+  }
+
+  .nav-list > li {
+    flex: none;
+  }
+
+  .nav-item {
+    padding: 6px 10px;
+    max-width: 240px;
+  }
+
+  .nav-item.active {
+    box-shadow: inset 0 -2px 0 var(--accent);
   }
 
   .main {
@@ -1406,12 +1524,12 @@ p:last-child {
 
 /* ---------- GitHub tokens ---------- */
 
+/* Rows ruled off inside the card, not a second box within it. */
 .token-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border-block: 1px solid var(--line);
 }
 
 .token-row {
@@ -1419,7 +1537,7 @@ p:last-child {
   grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  padding: 9px 12px;
+  padding: 9px 0;
 }
 
 .token-row + .token-row {
@@ -1471,10 +1589,6 @@ p:last-child {
 .check:has(input:checked) {
   border-color: var(--accent);
   background: var(--accent-soft);
-}
-
-.state-bad {
-  color: var(--bad);
 }
 
 .add-option:disabled {
