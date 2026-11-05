@@ -315,7 +315,7 @@ Weights run 400 / 500 / 550 / 600 / 650; 550 is the "selected" weight on active 
 
 ## Layout
 
-The shell is a 264px rail beside a fluid main column. The rail is sticky and scrolls on its own: brand (orb + name), a jump field with its ⌘K hint, 总览, the project list (broken first, then waiting, then the rest) and, pinned at the foot behind a hairline, shared settings and the gateway's uptime and version.
+The shell is a 264px rail beside a fluid main column. The rail is sticky and scrolls on its own: brand (app icon + name), a jump field with its ⌘K hint, 总览, the project list (broken first, then waiting, then the rest) and, pinned at the foot behind a hairline, shared settings and the gateway's uptime and version.
 
 Pages are centered columns padded 44px top, 40px sides, 72px bottom. Home and settings use the narrow column (max 840px); a project uses the wide one (max 1320px). On home the briefing header is followed by sections 40px apart (28px for the first), stacked cards 12px apart and a floating dock pinned to the bottom of the column, which content fades under (a gradient from transparent to the page at 45%).
 
@@ -384,10 +384,10 @@ Pills throughout; ink speaks, outlines wait.
 - **Group label:** 12px weight 500 secondary ink, sentence case.
 - **Tabs:** 36px pills, 16px sides, 14px weight 550 secondary ink; active gets the active fill and ink, with a count inside.
 - **Segmented control:** a 3px-padded hover-grey track (11px radius) of 30px buttons; the "on" one is surface with the segment shadow.
-- **Mobile:** a 52px sticky top bar (menu, orb + name, search) on the page colour with a bottom hairline; the rail slides in as a drawer.
+- **Mobile:** a 52px sticky top bar (menu, app icon + name, search) on the page colour with a bottom hairline; the rail slides in as a drawer.
 
 ### Presence orb (signature component)
-A matte radial disc of light, 18 / 24 / 44px (36px on phones beside the headline). Calm is periwinkle; **working** breathes (2.8s, scale 1.08, opacity 0.82); **broken** turns a soft red (#fde3e3 → #f3a9ab → #e3676b); **off** turns grey (#ececf0 → #c9c9d1 → #9d9da8). It appears beside the brand (calm or working only), beside the home headline (where it turns red when anything is broken) and on the offline and sign-in screens (off); the gateway has one presence.
+A matte radial disc of light, 18 / 24 / 44px (36px on phones beside the headline). Calm is periwinkle; **working** breathes (2.8s, scale 1.08, opacity 0.82); **broken** turns a soft red (#fde3e3 → #f3a9ab → #e3676b); **off** turns grey (#ececf0 → #c9c9d1 → #9d9da8). It appears inside the app icon beside the brand (calm, or breathing while a bot works), beside the home headline (where it turns red when anything is broken) and on the offline and sign-in screens (off); the gateway has one presence.
 
 ### Problem card (signature component)
 What happened, the fix, and how. A 40px tinted icon tile (12px radius, the state's wash and ink, or the channel's logo), a 15px title, a one-line plain-language diagnosis, a ghost "怎么修" toggle and one ink-pill action (open the right console, copy a command, or go to the editor). Opened, it gains the float shadow and unfolds (0.28s) behind a hairline into numbered steps: 24px ink discs, a 550-weight step title, secondary detail, an optional command strip or link. Under the steps, the platform's raw error sits in a sunken mono block with its own copy button. The first problem is open on arrival.
@@ -409,7 +409,7 @@ The dock is a 52px surface pill with the float shadow, a search icon, a prompt a
 ### Icons and channel badges
 Icons are drawn line icons in `icons.tsx`, one stroke weight, in the text colour, sized by the surrounding font size. Channel badges are official logos drawn as is (GitHub's takes the ink); a channel without one gets a lettered Badge Grey tile.
 
-**The app icon** (`docs/logo.svg`, inlined as the page's favicon, and above the README title) is an ink tile with 15/64 rounding, a white terminal prompt `›` and the presence orb after it: the bot, awake in the terminal. The orb uses the orb's own gradient and stops. The SVG follows `prefers-color-scheme`, lifting the tile and its edge in dark so it doesn't sink into a dark tab bar. Inside the page the orb alone stays the brand mark, because it also reports presence.
+**The app icon** (`docs/logo.svg`, inlined as the page's favicon, and above the README title) is an ink tile with 15/64 rounding, a white terminal prompt `›` and the presence orb after it: the bot, awake in the terminal. The orb uses the orb's own gradient and stops. The SVG follows `prefers-color-scheme`, lifting the tile and its edge in dark so it doesn't sink into a dark tab bar. Inside the page it is the brand mark too (`AppIcon`, 28px in the rail, 22px in the mobile top bar), and its orb breathes while a bot works, so the brand still reports presence.
 
 ### Motion
 One easing, `cubic-bezier(0.16, 1, 0.3, 1)`, for unfolding, popping, rising and the drawer (0.16–0.32s). Ambient motion is limited to the orb, working marks and skeleton fades. `prefers-reduced-motion` turns every animation and transition off.
