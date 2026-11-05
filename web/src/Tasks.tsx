@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "./api";
 import { ago, channel, fullTime, taskStateLabel } from "./format";
 import { useNow, usePoll } from "./hooks";
-import { BigIcon, Icon } from "./icons";
+import { Icon } from "./icons";
 import { Markdown } from "./markdown";
 import { go, href } from "./route";
 import type { Entry, ProjectStatus, TaskDetail, TaskState, TaskSummary } from "./types";
-import { Banner, ChannelBadge, CopyButton, Dot, Empty, SrOnly, errorText } from "./ui";
+import { Banner, ChannelBadge, CopyButton, Empty, Mark, SrOnly, errorText } from "./ui";
 
 /**
  * The page shows the open tasks; handled ones are archived on their own and
@@ -37,8 +37,9 @@ const stateTone: Record<TaskState, "warn" | "info" | "ok" | "off"> = {
 /** Why nothing has come in, for a project whose messages cannot arrive yet; the banner above says how to fix it. */
 const noTasksYet: Partial<Record<ProjectStatus["state"], string>> = {
   starting: "渠道正在连接，连上后新消息会出现在这里。",
-  failed: "这个项目没连上，消息进不来。处理好上面的问题后，新消息会出现在这里。",
-  idle: "这个项目还没有渠道，消息进不来。",
+  failed: "消息现在进不来。按上面的步骤修好后，新消息会出现在这里。",
+  busy: "消息现在被旧进程收走了。按上面的步骤停掉它后，新消息会出现在这里。",
+  idle: "接上渠道后，新消息会出现在这里。",
   stopped: "gateway 没在运行，消息进不来。",
 };
 
@@ -77,11 +78,11 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
   if (tasks.data && !tasks.data.length) {
     return (
       <div className="panel-empty">
-        <Empty title="还没有任务" icon={<BigIcon name="inbox" />}>
+        <Empty title="还没有任务" icon={<Icon name="inbox" />}>
           <p>{noTasksYet[project.state] ?? "私聊 bot、在群里 @ 它，或者在接了 GitHub 渠道的仓库里开 issue，消息经 Jev 归成一件件事后会出现在这里。"}</p>
           {project.screening > 0 && (
             <p>
-              <Dot tone="info" pulse /> 有 {project.screening} 条消息正在筛选。
+              <Mark tone="info" live /> 有 {project.screening} 条消息正在筛选。
             </p>
           )}
         </Empty>
@@ -119,7 +120,7 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
       {/* Nothing to pick: the list says why, and an empty pane beside it would only repeat it. */}
       {(current || shown.length > 0) && (
         <section className="conversation" aria-label="对话">
-          {current ? <Conversation project={project.id} id={current} /> : <Empty title="选一个任务，查看完整对话" icon={<BigIcon name="chat" />} />}
+          {current ? <Conversation project={project.id} id={current} /> : <Empty title="选一个任务，查看完整记录" icon={<Icon name="chat" />} />}
         </section>
       )}
     </div>
@@ -155,7 +156,7 @@ function EmptyView({ view, query, elsewhere, archivedCount, onSwitch, onClear }:
 
   if (view === "open") {
     return (
-      <Empty title="没有进行中的任务" icon={<BigIcon name="check" />}>
+      <Empty title="没有进行中的任务" icon={<Icon name="check" />}>
         <p>{archivedCount > 0 ? `处理完的 ${archivedCount} 件已自动归档。` : ""}有新消息或追问时，任务会出现在这里。</p>
         {archivedCount > 0 && (
           <button type="button" className="btn btn-ghost" onClick={onSwitch}>
@@ -174,21 +175,25 @@ function EmptyView({ view, query, elsewhere, archivedCount, onSwitch, onClear }:
 }
 
 function TaskRow({ task: t, project, active, now }: { task: TaskSummary; project: number; active: boolean; now: number }) {
+  const tone = stateTone[t.state];
+
   return (
     <li>
       <a className={`task-row${active ? " active" : ""}`} href={href({ page: "project", project, tab: "tasks", task: t.id })} aria-current={active ? "true" : undefined}>
-        <div className="task-row-top">
-          <span className={`tag tag-${stateTone[t.state]}`}>
-            {t.state === "working" && <Dot tone="info" pulse />}
-            {taskStateLabel[t.state]}
-          </span>
+        <span className="task-row-top">
+          <Mark tone={tone} live={t.state === "working"} />
           <span className="task-title">{t.title || "（没有文字）"}</span>
-        </div>
-        <div className="task-row-meta">
+          <time dateTime={t.updated_at} title={fullTime(t.updated_at)}>
+            {ago(t.updated_at, now)}
+          </time>
+        </span>
+        <span className="task-row-meta">
           <ChannelBadge name={t.channel} size="sm" />
-          <span>{chatKind(t)}</span>
-          {t.senders.length > 0 && <span className="ellipsis">· {t.senders.slice(0, 2).join("、")}{t.senders.length > 2 ? ` 等 ${t.senders.length} 人` : ""}</span>}
-          <span className="grow" />
+          <span className={`tone-${tone} strong`}>{taskStateLabel[t.state]}</span>
+          <span className="ellipsis">
+            {chatKind(t)}
+            {t.senders.length > 0 && ` · ${t.senders.slice(0, 2).join("、")}${t.senders.length > 2 ? ` 等 ${t.senders.length} 人` : ""}`}
+          </span>
           {t.replies > 0 && (
             <span className="replies" title={`bot 回复了 ${t.replies} 次`}>
               <Icon name="reply" />
@@ -196,10 +201,7 @@ function TaskRow({ task: t, project, active, now }: { task: TaskSummary; project
               <SrOnly> 次回复</SrOnly>
             </span>
           )}
-          <time dateTime={t.updated_at} title={fullTime(t.updated_at)}>
-            {ago(t.updated_at, now)}
-          </time>
-        </div>
+        </span>
       </a>
     </li>
   );
@@ -268,32 +270,58 @@ function Conversation({ project, id }: { project: number; id: string }) {
       <header className="conv-head">
         <div className="conv-title">
           <h2>{t.title || "（没有文字）"}</h2>
-          <span className={`tag tag-${stateTone[t.state]}`}>{taskStateLabel[t.state]}</span>
-        </div>
-        <div className="conv-meta">
-          <ChannelBadge name={t.channel} size="sm" />
-          <span>
-            {t.channel === "github" ? channel(t.channel).label : `${channel(t.channel).label} · ${chatKind(t)}`}
+          <span className="conv-actions">
+            {t.link && (
+              <a className="btn btn-ghost btn-sm" href={t.link} target="_blank" rel="noreferrer noopener">
+                在 GitHub 打开
+                <Icon name="external" />
+              </a>
+            )}
+            <CopyButton text={t.id} icon label="复制任务 id" />
           </span>
-          <span className="mono" title="会话 id">
-            {t.chat_id}
-          </span>
-          <span>· 创建于 {ago(t.created_at, now)}</span>
-          <span className="grow" />
-          {t.link && (
-            <a className="btn btn-ghost btn-xs" href={t.link} target="_blank" rel="noreferrer noopener">
-              在 GitHub 打开 ↗
-            </a>
-          )}
-          <CopyButton text={t.id} label="复制任务 id" />
         </div>
+        <dl className="pass">
+          <div>
+            <dt>来源</dt>
+            <dd>
+              <ChannelBadge name={t.channel} size="sm" />
+              {t.channel === "github" ? channel(t.channel).label : `${channel(t.channel).label} ${chatKind(t)}`}
+            </dd>
+          </div>
+          <div>
+            <dt>状态</dt>
+            <dd className={`tone-${stateTone[t.state]}`}>
+              <Mark tone={stateTone[t.state]} live={t.state === "working"} />
+              {taskStateLabel[t.state]}
+            </dd>
+          </div>
+          <div>
+            <dt>参与者</dt>
+            <dd className="ellipsis">{t.senders.join("、") || "—"}</dd>
+          </div>
+          <div>
+            <dt>bot 回复</dt>
+            <dd>{t.replies} 次</dd>
+          </div>
+          <div>
+            <dt>创建于</dt>
+            <dd title={fullTime(t.created_at)}>{ago(t.created_at, now)}</dd>
+          </div>
+        </dl>
+        <p className="conv-id mono" title="会话 id">
+          {t.chat_id}
+        </p>
       </header>
 
       <ol className="timeline">
         {ts.map((turn, i) => (
           <li key={turn.index}>
-            {i === firstNew && <div className="new-divider">以下 {t.unhandled} 段还没处理</div>}
-            <Bubble turn={turn} now={now} />
+            {i === firstNew && (
+              <div className="new-divider">
+                <span>以下 {t.unhandled} 条 bot 还没处理</span>
+              </div>
+            )}
+            <Message turn={turn} now={now} />
           </li>
         ))}
       </ol>
@@ -301,22 +329,22 @@ function Conversation({ project, id }: { project: number; id: string }) {
   );
 }
 
-function Bubble({ turn, now }: { turn: Turn; now: number }) {
+function Message({ turn, now }: { turn: Turn; now: number }) {
   const first = turn.entries[0];
 
   if (turn.kind === "bot") {
     return (
-      <div className="bubble-row bot">
-        <div className="bubble bubble-bot">
-          <div className="bubble-head">
-            <span className="who">bot</span>
-            <time dateTime={first.at} title={fullTime(first.at)}>
-              {ago(first.at, now)}
-            </time>
-          </div>
+      <article className="entry entry-bot">
+        <header className="entry-head">
+          <span className="role">bot</span>
+          <time dateTime={first.at} title={fullTime(first.at)}>
+            {ago(first.at, now)}
+          </time>
+        </header>
+        <div className="entry-body">
           <Markdown text={first.text ?? ""} />
         </div>
-      </div>
+      </article>
     );
   }
 
@@ -325,33 +353,30 @@ function Bubble({ turn, now }: { turn: Turn; now: number }) {
   const files = turn.entries.filter((e) => e.file);
 
   return (
-    <div className="bubble-row user">
-      <div className="avatar" aria-hidden>
-        {who.slice(0, 1).toUpperCase()}
-      </div>
-      <div className="bubble bubble-user">
-        <div className="bubble-head">
-          <span className="who" title={first.sender?.id}>
-            {who}
+    <article className="entry">
+      <header className="entry-head">
+        <span className="who" title={first.sender?.id}>
+          {who}
+        </span>
+        <time dateTime={first.at} title={fullTime(first.at)}>
+          {ago(first.at, now)}
+        </time>
+        {first.reply_to && (
+          <span className="muted" title={first.reply_to}>
+            · 回复了一条消息
           </span>
-          <time dateTime={first.at} title={fullTime(first.at)}>
-            {ago(first.at, now)}
-          </time>
-          {first.reply_to && (
-            <span className="muted" title={first.reply_to}>
-              · 回复了一条消息
-            </span>
-          )}
-        </div>
+        )}
+      </header>
+      <div className="entry-body">
         {text && <div className="plain">{text}</div>}
         {files.map((f) => (
           <div key={f.file} className="file" title={f.file}>
-            <span aria-hidden>📎</span>
-            <span className="file-name">{f.file!.split("/").pop()}</span>
-            <CopyButton text={f.file!} label="复制路径" />
+            <Icon name="paperclip" />
+            <span className="file-name mono">{f.file!.split("/").pop()}</span>
+            <CopyButton text={f.file!} icon label="复制路径" />
           </div>
         ))}
       </div>
-    </div>
+    </article>
   );
 }

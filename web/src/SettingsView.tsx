@@ -4,21 +4,26 @@ import { shortPath } from "./format";
 import { usePoll } from "./hooks";
 import type { GitHubProject, GitHubToken, Overview, SecretView, Settings } from "./types";
 import { Icon } from "./icons";
-import { Banner, Dot, Modal, errorText, toast } from "./ui";
+import { Banner, Mark, Modal, errorText, toast } from "./ui";
 
 export function SettingsView({ overview }: { overview: Overview }) {
   const settings = usePoll(api.settings, null, "settings");
 
-  if (settings.error && !settings.data) return <Banner tone="bad">读不到设置：{errorText(settings.error)}</Banner>;
-  if (!settings.data) return <div className="conv-loading" aria-busy="true" />;
+  if (settings.error && !settings.data)
+    return (
+      <div className="page page-narrow">
+        <Banner tone="bad">读不到设置：{errorText(settings.error)}</Banner>
+      </div>
+    );
+  if (!settings.data) return <div className="page page-narrow loading" aria-busy="true" />;
 
   return (
-    <div className="settings">
-      <header className="project-head">
-        <div className="project-title">
-          <h1>共用设置</h1>
-        </div>
-        <p className="muted">所有项目共用，只配一次。存在 {shortPath(overview.home)}/gateway.db，只有你能读。</p>
+    <div className="page page-narrow settings">
+      <header className="phead">
+        <h1>共用设置</h1>
+        <p className="muted">
+          所有项目共用，只配一次。存在 <span className="mono wrap-any">{shortPath(overview.home)}/gateway.db</span>，只有你能读。
+        </p>
       </header>
 
       <SecretSetting
@@ -74,8 +79,8 @@ function SecretSetting({
 
 function SecretState({ value, missing }: { value: SecretView; missing: string }) {
   return (
-    <span className={`state state-${value.set ? "ok" : "warn"}`}>
-      <Dot tone={value.set ? "ok" : "warn"} />
+    <span className={`state-text tone-${value.set ? "ok" : "bad"}`}>
+      <Mark tone={value.set ? "ok" : "bad"} />
       {value.set ? `已设置 ${value.hint ?? ""}` : missing}
     </span>
   );
@@ -122,7 +127,7 @@ function ReplaceSecret({ label, value, save, onSaved }: { label: string; value: 
         </button>
       </form>
       {error && (
-        <p className="test test-bad">
+        <p className="result result-bad">
           <Icon name="cross" />
           {error}
         </p>
@@ -148,48 +153,48 @@ function GitHubTokens({ settings, onSaved }: { settings: Settings; onSaved: () =
           <SecretState value={def.token} missing={projects.length ? "没有默认 token，GitHub 渠道连不上" : "未设置"} />
         </div>
       </header>
-      <p className="muted">
-        默认 token 给所有接了 GitHub 的项目用，一般一个就够。有项目属于另一个账号（比如公司组织和个人仓库），再加一个 token，指定它服务哪些项目。保存前会用 token
-        访问它要服务的每个仓库，都能访问才保存。
-      </p>
+      <p className="muted">接了 GitHub 的项目都用默认 token，一般一个就够。保存前会用它访问每个要服务的仓库，都能访问才保存。</p>
 
-      <ul className="token-list">
-        <li className="token-row">
-          <div className="token-main">
-            <span className="token-name">默认</span>
-            <span className="muted small">{def.token.set ? hint(def.token) : "未设置"}</span>
-          </div>
+      <div className="token-block">
+        <div className="token-line">
+          <span className="token-name">默认 token</span>
           <Serves names={def.projects} empty={projects.length ? "没有项目用它" : "还没有项目接 GitHub"} />
-          <span className="muted small">在下面替换</span>
-        </li>
-        {named.map((t) => (
-          <li key={t.name} className="token-row">
-            <div className="token-main">
-              <span className="token-name mono">{t.name}</span>
-              <span className={`small ${t.token.set ? "muted" : "state-bad"}`}>{t.token.set ? hint(t.token) : "token 丢了，请重新填"}</span>
-            </div>
-            <Serves names={t.projects} empty="没有项目用它" />
-            <div className="token-actions">
-              <button type="button" className="btn btn-xs" onClick={() => setEditing(t)}>
-                编辑
-              </button>
-              <button type="button" className="btn btn-xs btn-ghost btn-danger-text" onClick={() => setRemoving(t)}>
-                删除
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      <div className="token-default">
-        <span className="small muted">替换默认 token：</span>
+        </div>
         <ReplaceSecret label="默认 GitHub token" value={def.token} save={(v) => api.saveSettings({ github_token: v })} onSaved={onSaved} />
       </div>
 
-      <div>
-        <button type="button" className="btn" onClick={() => setEditing("new")} disabled={!projects.length} title={projects.length ? undefined : "还没有项目接 GitHub 渠道"}>
-          + 为另一个账号添加 token
-        </button>
+      <div className="token-block">
+        <div className="token-line">
+          <span className="token-name">其他账号的 token</span>
+          <span className="muted small">有项目属于另一个账号（比如公司组织和个人仓库）时，加一个 token 并指定它服务哪些项目。</span>
+        </div>
+        {named.length > 0 && (
+          <ul className="token-list">
+            {named.map((t) => (
+              <li key={t.name} className="token-row">
+                <div className="token-main">
+                  <span className="mono strong">{t.name}</span>
+                  <span className={`small ${t.token.set ? "muted" : "tone-bad"}`}>{t.token.set ? hint(t.token) : "token 丢了，请重新填"}</span>
+                </div>
+                <Serves names={t.projects} empty="没有项目用它" />
+                <div className="token-actions">
+                  <button type="button" className="btn btn-sm" onClick={() => setEditing(t)}>
+                    编辑
+                  </button>
+                  <button type="button" className="btn btn-sm btn-ghost btn-danger-text" onClick={() => setRemoving(t)}>
+                    删除
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div>
+          <button type="button" className="btn" onClick={() => setEditing("new")} disabled={!projects.length} title={projects.length ? undefined : "还没有项目接 GitHub 渠道"}>
+            <Icon name="plus" />
+            添加 token
+          </button>
+        </div>
       </div>
 
       {editing && (
@@ -316,7 +321,7 @@ function TokenEditor({
           <span className="muted small">不勾的项目用默认 token；原来用这个 token、现在不勾的项目，改回默认 token。</span>
         </fieldset>
         {error && (
-          <p className="test test-bad">
+          <p className="result result-bad">
             <Icon name="cross" />
             {error}
           </p>
@@ -365,7 +370,7 @@ function ConfirmRemoveToken({ token, onClose, onDone }: { token: GitHubToken; on
       ) : (
         <p>没有项目在用它，删除后 gateway 里就没有这个 token 了。</p>
       )}
-      {error && <p className="test test-bad">{error}</p>}
+      {error && <p className="result result-bad">{error}</p>}
     </Modal>
   );
 }

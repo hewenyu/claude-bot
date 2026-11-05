@@ -1,191 +1,203 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { api, AuthError, hasToken, OfflineError } from "./api";
-import { channel, projectStateLabel, shortPath, uptime } from "./format";
+import { allProblems } from "./diagnose";
+import { uptime } from "./format";
+import { Home } from "./Home";
 import { useNow, usePoll } from "./hooks";
+import { Icon } from "./icons";
+import { Palette } from "./Palette";
 import { ProjectView } from "./ProjectView";
-import { go, href, useRoute } from "./route";
+import { href, useRoute, type Route } from "./route";
 import { SettingsView } from "./SettingsView";
-import type { Overview, ProjectStatus } from "./types";
-import { BigIcon, Icon } from "./icons";
-import { Banner, Command, Dot, Empty, SrOnly, Toasts } from "./ui";
-
-export function projectTone(p: ProjectStatus): "ok" | "warn" | "bad" | "off" {
-  switch (p.state) {
-    case "running":
-      return p.stopped?.length ? "bad" : "ok";
-    case "starting":
-    case "busy":
-      return "warn";
-    case "failed":
-      return "bad";
-    default:
-      return "off";
-  }
-}
-
-const severity = { bad: 0, warn: 1, ok: 2, off: 3 };
-
-/** Projects that need you first; otherwise in the gateway's order. */
-export function bySeverity(projects: ProjectStatus[]): ProjectStatus[] {
-  return [...projects].sort((a, b) => severity[projectTone(a)] - severity[projectTone(b)]);
-}
-
-/** The project's state in words; a running project with a stopped channel says which. */
-export function projectLabel(p: ProjectStatus): string {
-  const stopped = p.stopped ?? [];
-  if (p.state !== "running" || !stopped.length) return projectStateLabel[p.state];
-
-  return stopped.length === 1 ? `${channel(stopped[0]).label} 已停止` : `${stopped.length} 个渠道已停止`;
-}
+import { bySeverity, presence, projectLabel, projectTone } from "./status";
+import type { Overview } from "./types";
+import { Banner, Command, Empty, Mark, Orb, SrOnly, Toasts } from "./ui";
 
 export function App() {
   const route = useRoute();
   const overview = usePoll(api.overview, 3000, "overview");
   const data = overview.data;
-
-  // With nothing chosen, open the project that most needs you.
-  useEffect(() => {
-    if (route.page === "home" && data?.projects.length) go({ page: "project", project: bySeverity(data.projects)[0].id, tab: "tasks" });
-  }, [route.page, data]);
+  const offline = overview.error instanceof OfflineError;
+  const [palette, setPalette] = useState(false);
+  const [drawer, setDrawer] = useState(false);
 
   // A background tab says when something is broken.
   const broken = data?.projects.filter((p) => projectTone(p) === "bad").length ?? 0;
-  const offline = overview.error instanceof OfflineError;
   useEffect(() => {
     document.title = offline ? "已断开 · claude-bot gateway" : broken ? `${broken} 个项目出错 · claude-bot gateway` : "claude-bot gateway";
   }, [broken, offline]);
 
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((x) => !x);
+      }
+    };
+    window.addEventListener("keydown", on);
+
+    return () => window.removeEventListener("keydown", on);
+  }, []);
+
+  // Going somewhere closes the drawer.
+  useEffect(() => setDrawer(false), [route]);
+
   if (!hasToken() || overview.error instanceof AuthError) return <AuthScreen />;
-  if (!data && overview.error instanceof OfflineError) return <OfflineScreen />;
+  if (!data && offline) return <OfflineScreen />;
   if (!data) return <div className="boot" aria-busy="true" />;
 
   const project = route.page === "project" ? data.projects.find((p) => p.id === route.project) : undefined;
 
   return (
-    <div className="shell">
-      <Sidebar overview={data} active={route.page === "project" ? route.project : route.page} offline={overview.error instanceof OfflineError} />
-      <main className="main">
-        {overview.error instanceof OfflineError && <Banner tone="bad">和 gateway 断开了，正在重连…下面是断开前的数据。</Banner>}
-        {!data.jev && (
-          <Banner tone="warn">
-            还没有 TypeSafe API key：每条消息都要先经过 Jev，没有 key 时 gateway 不会连接任何项目。<a href={href({ page: "settings" })}>去设置</a>
-          </Banner>
+    <div className={`shell${drawer ? " drawer-open" : ""}`}>
+      <Rail overview={data} route={route} offline={offline} onSearch={() => setPalette(true)} onClose={() => setDrawer(false)} />
+      {drawer && <div className="drawer-backdrop" onClick={() => setDrawer(false)} />}
+
+      <div className="main">
+        <header className="topbar">
+          <button type="button" className="icon-btn" onClick={() => setDrawer(true)} aria-label="打开项目列表">
+            <Icon name="menu" />
+          </button>
+          <a className="topbar-brand" href={href({ page: "home" })}>
+            <Orb state={presence(data, offline) === "working" ? "working" : "calm"} size="sm" />
+            claude-bot
+          </a>
+          <button type="button" className="icon-btn" onClick={() => setPalette(true)} aria-label="跳转">
+            <Icon name="search" />
+          </button>
+        </header>
+
+        {offline && (
+          <div className="page-banner">
+            <Banner tone="bad">和 gateway 断开了，正在重连…下面是断开前的数据。</Banner>
+          </div>
         )}
+
+        {route.page === "home" && <Home overview={data} onSearch={() => setPalette(true)} />}
         {route.page === "settings" && <SettingsView overview={data} />}
         {route.page === "project" && project && (
           <ProjectView key={project.id} project={project} overview={data} tab={route.tab} task={route.task} onChanged={overview.reload} />
         )}
         {route.page === "project" && !project && (
-          <Empty title="没有这个项目">
-            <p>它可能已经从 gateway 里移除了。</p>
-          </Empty>
+          <div className="page page-narrow">
+            <Empty title="没有这个项目" icon={<Icon name="folder" />}>
+              <p>它可能已经从 gateway 里移除了。</p>
+              <a className="btn" href={href({ page: "home" })}>
+                回到总览
+              </a>
+            </Empty>
+          </div>
         )}
-        {route.page === "home" && !data.projects.length && <NoProjects />}
-      </main>
+      </div>
+
+      {palette && <Palette overview={data} onClose={() => setPalette(false)} />}
       <Toasts />
     </div>
   );
 }
 
-function Sidebar({ overview, active, offline }: { overview: Overview; active: number | string; offline: boolean }) {
+function Rail({ overview, route, offline, onSearch, onClose }: { overview: Overview; route: Route; offline: boolean; onSearch: () => void; onClose: () => void }) {
   const now = useNow();
+  const problems = allProblems(overview).length;
+  const active = route.page === "project" ? route.project : route.page;
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
 
   return (
-    <nav className="sidebar" aria-label="项目">
-      <div className="brand">
-        <div className="brand-mark" aria-hidden />
-        <div>
-          <div className="brand-name">claude-bot gateway</div>
-          <div className="brand-meta">
-            <Dot tone={offline ? "bad" : "ok"} pulse={!offline} />
-            {offline ? "已断开" : `运行中 · ${overview.version ?? overview.self}`}
-            {!offline && overview.started_at && <span title={`pid ${overview.pid}`}> · 已运行 {uptime(overview.started_at, now)}</span>}
-          </div>
-        </div>
+    <nav className="rail" aria-label="导航">
+      <div className="rail-top">
+        <a className="brand" href={href({ page: "home" })}>
+          <Orb state={presence(overview, offline) === "working" ? "working" : "calm"} />
+          <span>claude-bot</span>
+        </a>
+        <button type="button" className="icon-btn rail-close" onClick={onClose} aria-label="关闭项目列表">
+          <Icon name="cross" />
+        </button>
       </div>
 
-      <div className="nav-label">
-        项目 <span className="count">{overview.projects.length}</span>
-      </div>
-      <ul className="nav-list">
-        {bySeverity(overview.projects).map((p) => (
-          <li key={p.id}>
-            <a className={`nav-item${active === p.id ? " active" : ""}`} href={href({ page: "project", project: p.id, tab: "tasks" })} aria-current={active === p.id ? "page" : undefined}>
-              <Dot tone={projectTone(p)} pulse={p.state === "starting"} />
-              <span className="nav-text">
-                <span className="nav-name">{p.name}</span>
-                {p.state === "running" && !p.stopped?.length ? (
-                  <span className="nav-sub nav-path" title={p.dir}>
-                    <SrOnly>运行中，</SrOnly>
-                    {shortPath(p.dir)}
-                  </span>
-                ) : (
-                  <span className="nav-sub">{projectLabel(p)}</span>
-                )}
-              </span>
-              {p.pending > 0 && (
-                <span className="pill pill-accent" title={`${p.pending} 件进行中`}>
-                  <span aria-hidden>{p.pending}</span>
-                  <SrOnly>，{p.pending} 件进行中</SrOnly>
+      <button type="button" className="rail-search" onClick={onSearch}>
+        <Icon name="search" />
+        <span>跳转</span>
+        <kbd>{mac ? "⌘K" : "Ctrl K"}</kbd>
+      </button>
+
+      <a className={`rail-item${active === "home" ? " active" : ""}`} href={href({ page: "home" })} aria-current={active === "home" ? "page" : undefined}>
+        <Icon name="home" />
+        <span className="rail-name">总览</span>
+        {problems > 0 && (
+          <span className="count count-bad" title={`${problems} 件事需要你处理`}>
+            {problems}
+            <SrOnly> 件事需要你处理</SrOnly>
+          </span>
+        )}
+      </a>
+
+      <h2 className="rail-label">项目</h2>
+      <ul className="rail-list">
+        {bySeverity(overview.projects).map((p) => {
+          const tone = projectTone(p);
+          const on = active === p.id;
+
+          return (
+            <li key={p.id}>
+              <a className={`rail-item${on ? " active" : ""}`} href={href({ page: "project", project: p.id, tab: "tasks" })} aria-current={on ? "page" : undefined}>
+                <Mark tone={tone} />
+                <span className="rail-text">
+                  <span className="rail-name">{p.name}</span>
+                  {tone !== "ok" && <span className={`rail-sub tone-${tone}`}>{projectLabel(p)}</span>}
+                  {tone === "ok" && <SrOnly>，运行中</SrOnly>}
                 </span>
-              )}
-            </a>
-          </li>
-        ))}
-        {!overview.projects.length && <li className="nav-empty">还没有项目</li>}
+                {p.pending > 0 && (
+                  <span className="count" title={`${p.pending} 件进行中`}>
+                    {p.pending}
+                    <SrOnly> 件进行中</SrOnly>
+                  </span>
+                )}
+              </a>
+            </li>
+          );
+        })}
+        {!overview.projects.length && <li className="rail-empty">还没有项目</li>}
       </ul>
 
-      <div className="nav-foot">
-        <a className={`nav-item${active === "settings" ? " active" : ""}`} href={href({ page: "settings" })}>
-          <span className="gear">
-            <Icon name="gear" />
-          </span>
-          <span className="nav-text">
-            <span className="nav-name">共用设置</span>
-            <span className="nav-sub">TypeSafe key · GitHub token</span>
-          </span>
-          {(!overview.jev || !overview.github_token) && <Dot tone={overview.jev ? "off" : "warn"} />}
+      <div className="rail-foot">
+        <a className={`rail-item${active === "settings" ? " active" : ""}`} href={href({ page: "settings" })} aria-current={active === "settings" ? "page" : undefined}>
+          <Icon name="gear" />
+          <span className="rail-name">共用设置</span>
+          {!overview.jev && <Mark tone="bad" />}
         </a>
+        <p className="rail-status" title={overview.pid ? `pid ${overview.pid}` : undefined}>
+          <Mark tone={offline ? "bad" : "ok"} />
+          {offline ? "gateway 已断开" : `gateway 运行中${overview.started_at ? ` · ${uptime(overview.started_at, now)}` : ""}`}
+          <span className="rail-version">{overview.version ?? overview.self}</span>
+        </p>
       </div>
     </nav>
   );
 }
 
-function NoProjects() {
-  return (
-    <div className="center-page">
-      <Empty title="还没有项目" icon={<BigIcon name="folder" />}>
-        <p>在要值守的仓库里运行 init，项目会自动登记到 gateway，几秒内出现在这里：</p>
-        <Command>cd 你的项目 && claude-bot init</Command>
-        <p className="muted">以前用 claude-bot start 单独跑的项目，在仓库里运行：</p>
-        <Command>claude-bot gateway import</Command>
-      </Empty>
-    </div>
-  );
-}
-
 function AuthScreen() {
   return (
-    <div className="center-page full">
-      <Empty title="需要访问令牌" icon={<BigIcon name="key" />}>
-        <p>这个页面能看到各项目的对话、改渠道凭证，所以要带着令牌打开。在终端里运行：</p>
-        <Command>claude-bot gateway open</Command>
-        <p className="muted">它会用带令牌的地址打开这个页面；令牌存在这个浏览器里，之后直接打开也行。</p>
-      </Empty>
+    <div className="solo">
+      <Orb state="off" size="lg" />
+      <h1>需要访问令牌</h1>
+      <p>这个页面能看到各项目的对话、改渠道凭证，所以要带着令牌打开。在终端里运行：</p>
+      <Command>claude-bot gateway open</Command>
+      <p className="muted">它会用带令牌的地址打开这个页面；令牌存在这个浏览器里，之后直接打开也行。</p>
     </div>
   );
 }
 
 function OfflineScreen() {
   return (
-    <div className="center-page full">
-      <Empty title="连不上 gateway" icon={<BigIcon name="power" />}>
-        <p>gateway 可能没在运行。在终端里启动它：</p>
-        <Command>claude-bot gateway start</Command>
-        <p className="muted">
-          <Dot tone="warn" pulse /> 正在每隔几秒重试，连上后自动恢复。
-        </p>
-      </Empty>
+    <div className="solo">
+      <Orb state="off" size="lg" />
+      <h1>连不上 gateway</h1>
+      <p>gateway 可能没在运行。在终端里启动它：</p>
+      <Command>claude-bot gateway start</Command>
+      <p className="muted retry">
+        <Mark tone="warn" live />
+        正在每隔几秒重试，连上后自动恢复。
+      </p>
     </div>
   );
 }

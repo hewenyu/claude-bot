@@ -1,400 +1,436 @@
 ---
 name: claude-bot gateway
-description: The local page onto the gateway — which channels are up, what the bot is working on, and the full record of each task.
+description: The local page onto the gateway — what needs you, what the bot is doing, and the full record of each task.
 colors:
-  kiln-terracotta: "#c8643f"
-  kiln-terracotta-deep: "#b4532e"
-  terracotta-wash: "#fbeee7"
-  fired-clay-ink: "#9c4524"
-  on-accent: "#ffffff"
-  running-green: "#2f9e5b"
-  running-green-ink: "#1f7a43"
-  running-green-wash: "#e7f5ec"
-  amber-wait: "#c98a12"
-  amber-wait-ink: "#8a5a00"
-  amber-wait-wash: "#fcf3dd"
-  fault-red: "#d14343"
-  fault-red-ink: "#b02a2a"
-  fault-red-deep: "#b83232"
-  fault-red-wash: "#fcebea"
-  note-blue: "#3b6fd8"
-  note-blue-ink: "#2a56b8"
-  note-blue-wash: "#e9f0fc"
-  idle-stone: "#a39f96"
-  idle-stone-wash: "#f0eee9"
-  logbook-paper: "#f6f5f2"
-  clean-page: "#ffffff"
-  margin-paper: "#fbfaf8"
-  logbook-ink: "#1d1c1a"
-  pencil-grey: "#6f6b63"
-  ruled-line: "#e7e3dc"
-  ruled-line-strong: "#d6d1c7"
-  bench-charcoal: "#1f1e1c"
-  bench-charcoal-raised: "#2a2926"
-  chalk: "#e9e6df"
-  worn-chalk: "#9b978d"
-  bot-reply-wash: "#fff4ee"
-  bot-reply-line: "#f2d8c9"
+  periwinkle: "#5b5bd6"
+  periwinkle-ink: "#4646c0"
+  periwinkle-wash: "#efeffd"
+  orb-glow: "#e0e0ff"
+  orb-mid: "#8f8ff2"
+  live-green: "#30a46c"
+  live-green-ink: "#18794e"
+  live-green-wash: "#e9f6ef"
+  waiting-amber: "#f0a020"
+  waiting-amber-ink: "#9a4d00"
+  waiting-amber-wash: "#fff4e0"
+  broken-red: "#e5484d"
+  broken-red-ink: "#c52a2f"
+  broken-red-deep: "#c52a2f"
+  broken-red-wash: "#feeeef"
+  off-grey: "#b3b3bd"
+  page-white: "#ffffff"
+  surface: "#ffffff"
+  rail-grey: "#f7f7f8"
+  sunken: "#f4f4f6"
+  hover: "#eeeef2"
+  active: "#e8e8ee"
+  hairline: "#ececf1"
+  hairline-strong: "#d9d9e1"
+  ink: "#0d0d0d"
+  ink-secondary: "#63636e"
+  badge-grey: "#6b7280"
 typography:
   headline:
     fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
-    fontSize: "22px"
-    fontWeight: 600
-    letterSpacing: "-0.01em"
+    fontSize: "28px"
+    fontWeight: 650
+    lineHeight: 1.25
+    letterSpacing: "-0.02em"
+  headline-sm:
+    fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
+    fontSize: "26px"
+    fontWeight: 650
+    lineHeight: 1.25
+    letterSpacing: "-0.02em"
   title:
     fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
-    fontSize: "16px"
-    fontWeight: 600
-    lineHeight: 1.4
+    fontSize: "20px"
+    fontWeight: 650
+    lineHeight: 1.35
     letterSpacing: "-0.01em"
-  subtitle:
+  title-sm:
     fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
     fontSize: "15px"
     fontWeight: 600
-    letterSpacing: "-0.01em"
+    lineHeight: 1.4
   body:
     fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.55
-  body-sm:
+  record:
     fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
-    fontSize: "13px"
+    fontSize: "14.5px"
     fontWeight: 400
-    lineHeight: 1.55
+    lineHeight: 1.7
+  control:
+    fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
+    fontSize: "13.5px"
+    fontWeight: 500
+  meta:
+    fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
+    fontSize: "12.5px"
+    fontWeight: 400
   caption:
     fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
     fontSize: "12px"
-    fontWeight: 400
-    lineHeight: 1.55
-  label:
-    fontFamily: "system-ui, -apple-system, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif"
-    fontSize: "11px"
-    fontWeight: 600
-    letterSpacing: "0.08em"
+    fontWeight: 500
   mono:
     fontFamily: "ui-monospace, \"SF Mono\", \"JetBrains Mono\", Menlo, Consolas, monospace"
     fontSize: "0.92em"
 rounded:
-  xs: "4px"
-  sm: "6px"
-  control: "7px"
-  md: "8px"
-  lg: "10px"
-  bubble: "12px"
-  xl: "14px"
-  full: "999px"
-spacing:
-  xxs: "4px"
   xs: "6px"
   sm: "8px"
-  md: "10px"
+  control: "10px"
+  md: "12px"
   lg: "14px"
-  xl: "16px"
-  2xl: "22px"
-  3xl: "28px"
+  card: "18px"
+  overlay: "22px"
+  full: "999px"
+spacing:
+  2xs: "4px"
+  xs: "6px"
+  sm: "8px"
+  md: "12px"
+  lg: "16px"
+  xl: "24px"
+  2xl: "32px"
+  3xl: "40px"
 components:
   button:
-    backgroundColor: "{colors.clean-page}"
-    textColor: "{colors.logbook-ink}"
-    typography: "{typography.body-sm}"
-    rounded: "{rounded.control}"
-    padding: "5px 12px"
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.ink}"
+    typography: "{typography.control}"
+    rounded: "{rounded.full}"
+    padding: "0 14px"
+    height: "34px"
+  button-hover:
+    backgroundColor: "{colors.hover}"
   button-primary:
-    backgroundColor: "{colors.kiln-terracotta-deep}"
-    textColor: "{colors.on-accent}"
-    typography: "{typography.body-sm}"
-    rounded: "{rounded.control}"
-    padding: "5px 12px"
+    backgroundColor: "{colors.ink}"
+    textColor: "{colors.page-white}"
+    typography: "{typography.control}"
+    rounded: "{rounded.full}"
+    padding: "0 14px"
+    height: "34px"
   button-ghost:
     backgroundColor: "transparent"
-    textColor: "{colors.pencil-grey}"
-    rounded: "{rounded.control}"
-    padding: "5px 12px"
-  button-ghost-hover:
-    backgroundColor: "{colors.idle-stone-wash}"
-    textColor: "{colors.logbook-ink}"
-  button-danger:
-    backgroundColor: "{colors.fault-red-deep}"
-    textColor: "{colors.on-accent}"
-    rounded: "{rounded.control}"
-    padding: "5px 12px"
-  input:
-    backgroundColor: "{colors.clean-page}"
-    textColor: "{colors.logbook-ink}"
-    rounded: "{rounded.control}"
-    padding: "6px 10px"
-  card:
-    backgroundColor: "{colors.clean-page}"
-    rounded: "{rounded.lg}"
-    padding: "14px 16px"
-  nav-item:
-    textColor: "{colors.chalk}"
-    rounded: "{rounded.md}"
-    padding: "8px 10px"
-  nav-item-active:
-    backgroundColor: "{colors.bench-charcoal-raised}"
-    textColor: "{colors.chalk}"
-  tab:
-    textColor: "{colors.pencil-grey}"
-    padding: "8px 12px"
-  tab-active:
-    textColor: "{colors.logbook-ink}"
-  pill:
-    backgroundColor: "{colors.idle-stone-wash}"
-    textColor: "{colors.pencil-grey}"
+    textColor: "{colors.ink-secondary}"
     rounded: "{rounded.full}"
-    padding: "0 7px"
-    height: "18px"
-  tag-ok:
-    backgroundColor: "{colors.running-green-wash}"
-    textColor: "{colors.running-green-ink}"
-    padding: "1px 7px"
-  tag-warn:
-    backgroundColor: "{colors.amber-wait-wash}"
-    textColor: "{colors.amber-wait-ink}"
-    padding: "1px 7px"
-  bubble-user:
-    backgroundColor: "{colors.margin-paper}"
-    textColor: "{colors.logbook-ink}"
-    rounded: "{rounded.bubble}"
-    padding: "9px 13px"
-  bubble-bot:
-    backgroundColor: "{colors.bot-reply-wash}"
-    textColor: "{colors.logbook-ink}"
-    rounded: "{rounded.bubble}"
-    padding: "9px 13px"
-  banner-warn:
-    backgroundColor: "{colors.amber-wait-wash}"
-    textColor: "{colors.logbook-ink}"
-    rounded: "{rounded.lg}"
-    padding: "10px 14px"
-  banner-bad:
-    backgroundColor: "{colors.fault-red-wash}"
-    textColor: "{colors.logbook-ink}"
-    rounded: "{rounded.lg}"
-    padding: "10px 14px"
-  command:
-    backgroundColor: "{colors.margin-paper}"
+    padding: "0 14px"
+    height: "34px"
+  button-danger:
+    backgroundColor: "{colors.broken-red-deep}"
+    textColor: "#ffffff"
+    rounded: "{rounded.full}"
+    padding: "0 14px"
+    height: "34px"
+  button-sm:
+    typography: "{typography.meta}"
+    rounded: "{rounded.full}"
+    padding: "0 10px"
+    height: "28px"
+  icon-button:
+    backgroundColor: "transparent"
+    textColor: "{colors.ink-secondary}"
+    rounded: "{rounded.control}"
+    size: "32px"
+  input:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
+    padding: "0 12px"
+    height: "38px"
+  rail-item:
+    textColor: "{colors.ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
+    padding: "7px 10px"
+  rail-item-active:
+    backgroundColor: "{colors.active}"
+  tab:
+    textColor: "{colors.ink-secondary}"
+    rounded: "{rounded.full}"
+    padding: "0 16px"
+    height: "36px"
+  tab-active:
+    backgroundColor: "{colors.active}"
+    textColor: "{colors.ink}"
+  chip:
+    textColor: "{colors.ink}"
+    rounded: "{rounded.full}"
+    padding: "0 10px 0 7px"
+    height: "28px"
+  count:
+    backgroundColor: "{colors.periwinkle-wash}"
+    textColor: "{colors.periwinkle-ink}"
+    rounded: "{rounded.full}"
+    padding: "0 6px"
+    height: "20px"
+  count-bad:
+    backgroundColor: "{colors.broken-red-wash}"
+    textColor: "{colors.broken-red-ink}"
+  card:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.card}"
+    padding: "18px 20px"
+  problem-card:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.card}"
+    padding: "16px 18px"
+  rows-panel:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.card}"
+    padding: "6px"
+  row:
     rounded: "{rounded.md}"
-    padding: "6px 6px 6px 12px"
+    padding: "10px 12px"
+  command:
+    backgroundColor: "{colors.sunken}"
+    rounded: "{rounded.md}"
+    padding: "4px 4px 4px 14px"
+  banner-bad:
+    backgroundColor: "{colors.broken-red-wash}"
+    textColor: "{colors.broken-red-ink}"
+    rounded: "{rounded.lg}"
+    padding: "12px 16px"
+  banner-warn:
+    backgroundColor: "{colors.waiting-amber-wash}"
+    textColor: "{colors.waiting-amber-ink}"
+    rounded: "{rounded.lg}"
+    padding: "12px 16px"
+  banner-info:
+    backgroundColor: "{colors.periwinkle-wash}"
+    textColor: "{colors.periwinkle-ink}"
+    rounded: "{rounded.lg}"
+    padding: "12px 16px"
+  dock:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.ink-secondary}"
+    rounded: "{rounded.full}"
+    padding: "0 14px 0 20px"
+    height: "52px"
   modal:
-    backgroundColor: "{colors.clean-page}"
-    rounded: "{rounded.xl}"
-    width: "520px"
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.overlay}"
+    width: "540px"
+  palette:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.overlay}"
+    width: "640px"
   toast:
-    backgroundColor: "{colors.bench-charcoal}"
-    textColor: "{colors.chalk}"
-    rounded: "9px"
-    padding: "9px 14px"
+    backgroundColor: "{colors.ink}"
+    textColor: "{colors.page-white}"
+    rounded: "{rounded.full}"
+    padding: "10px 18px"
 ---
 
 # Design System: claude-bot gateway
 
 ## Overview
 
-**Creative North Star: "The Workshop Logbook"**
+**Creative North Star: "The Briefing"**
 
-The gateway page is the logbook kept next to a workbench. Warm, slightly creamy paper holds the record: which project is connected, which task the bot picked up, every message in the thread and every reply it wrote. A dark charcoal bench runs down the left edge, where the projects sit like tools on a rail. One terracotta stamp, Kiln Terracotta, marks what is yours to act on, and it marks almost nothing else. Everything else on the page is ink, pencil and ruled lines.
+The gateway page reads like the home screen of a current AI product, not an operations console. A quiet grey rail lists the projects the way a history list would, and one centered column answers the only two questions the visitor has: what needs me, and what is the bot doing. The headline counts the things that need you. Each of those things is a card in plain language that carries its own fix. Below sit the tasks in progress, and the healthy projects collapse to a single line of chips.
 
-The page is for checking in, not for spending time in. It is calm at rest, so the moment something breaks it reads instantly, because the only saturated colors on the paper are status colors. The feel is soft and friendly: rounded corners, generous padding and conversation bubbles that read like a chat you were part of. Don't let the look drift toward a terminal or an operations console. Density is moderate. Rows stay on one line, and Chinese text never breaks after every character.
+The page is white and almost colourless. Ink-black does the work of emphasis: the primary action is an ink pill, the numbered fix steps are ink discs. One periwinkle accent belongs to the gateway's presence: a soft matte orb that breathes while a bot works and takes a calm red tint when something is broken. The same periwinkle marks selection, focus and links, and nothing else. Status colours appear only where state is reported, and state is always carried by shape as well as colour.
 
-The world rules out three things by name: the SaaS dashboard look (KPI tiles, charts, gradient hero cards), the cold developer-tool look (blue-grey neon dark consoles) and decoration of any kind (illustrations, mascots, ornamental gradients). Type is the system font stack, so the page stays self-contained inside the Go binary.
+A task's message record is a read-only log, not a conversation. Entries are separated by hairlines, the bot's entries are tagged with a small periwinkle label, and nobody speaks in bubbles. Type is the operating system's own, because the page ships inside a Go binary.
 
 **Key Characteristics:**
-- Warm paper and ink neutrals, with a dark charcoal sidebar ("the bench").
-- One brand accent (Kiln Terracotta), used for the primary action, active navigation and the bot's voice.
-- A fixed status vocabulary: green running, amber waiting or starting, red fault, stone idle, blue note.
-- Surfaces separated by hairline borders and tonal steps, not by shadow.
-- Soft, friendly forms: 7–10px radius on controls and panels, 12–14px on bubbles and dialogs, full rounding on pills.
-- System fonts only, CJK-first stack, with a monospace face for paths, ids and commands.
-- Light and dark themes follow `prefers-color-scheme`. Both are first-class.
+- White page, soft grey rail, ink-black primary pills, one periwinkle accent.
+- A presence orb as the page's only signature ornament.
+- State marks that read without colour: filled, ring, struck, hollow, mini-orb.
+- Problem cards with a plain diagnosis, numbered fix steps, a command to copy and the raw error.
+- Generous rounding: 18px panels, 22px overlays, pills for every button, tab and chip.
+- Flat in the page; shadows only on things that float, plus an open problem card.
+- System fonts and tabular figures; light and dark themes follow `prefers-color-scheme`.
 
 ## Colors
 
-Warm paper-and-ink neutrals, one fired-clay accent, and a small set of status colors that are the only other saturated hues allowed on the page.
+A near-neutral white-and-ink palette, one periwinkle accent, and Radix-like status hues that each come with a separate ink and wash.
 
 ### Primary
-- **Kiln Terracotta** (#c8643f; dark theme #e07a52): The brand stamp. Used for the active-tab underline, the 2px inset bar on the active sidebar item, the focus ring, hover borders on choosable options, the accent pill and the brand mark.
-- **Kiln Terracotta Deep** (#b4532e, both themes): The accent as a fill under white text: the primary button and the count pill. White on it reads 4.98:1, where white on Kiln Terracotta is only 3.9:1.
-- **Terracotta Wash** (#fbeee7; dark #3a2519): The selected-row fill in the task list, the checked state of option checkboxes and the tile behind empty-state icons.
-- **Fired Clay Ink** (#9c4524; dark #f1a07f): Terracotta as text. Used for links, the bot's name in a conversation and the glyph in empty-state icons. Use this, not Kiln Terracotta, whenever the accent has to be read as text.
+- **Periwinkle** (`periwinkle`; dark #8484f0): The focus ring (2px, 2px offset), the input focus border and its 22% halo, text selection (28% mix), the caret, the checked option tile's border, the hover border of a choosable add-a-channel tile, and the deepest stop of the orb.
+- **Periwinkle Ink** (`periwinkle-ink`; dark #a9a9fa): The accent as text: links, step links, the "working" state word, the bot's role tag, counts and the info banner.
+- **Periwinkle Wash** (`periwinkle-wash`; dark #23234a): Behind counts, the bot's role tag, info banners, the empty-state icon tile, the "where to get it" strip in forms and a checked option tile.
+- **Orb Glow** and **Orb Mid** (`orb-glow`, `orb-mid`; dark #d4d4ff, #9393f5): The two lighter stops of the orb's radial gradient (centre at 50% 45%), and of the mini-orb state mark. They are not used anywhere else.
 
 ### Status
-These carry state and nothing else. Each has three forms: the hue (dots, chip and divider rules, banner borders), an ink for words in that status (state text, tag text, inline errors, test results; 4.5:1 or better on every surface and wash), and a wash (tag, banner and test-result backgrounds). Dark-theme inks: green #5cc98a, amber #e8b04a, red #f07a7a, blue #7fa6f0.
-- **Running Green** (#2f9e5b), its ink and its wash (#e7f5ec; dark #173223): connected, running, test passed.
-- **Amber Wait** (#c98a12), its ink and its wash (#fcf3dd; dark #3a2e12): starting, busy, needs attention but not broken, and the "new messages" divider.
-- **Fault Red** (#d14343), its ink and its wash (#fcebea; dark #3d1c1b): failed, disconnected (including a running project with one channel stopped), errors, destructive actions and required-field marks. **Fault Red Deep** (#b83232) is the fill under white text: the final destructive confirm and failure toasts.
-- **Note Blue** (#3b6fd8), its ink and its wash (#e9f0fc; dark #1a2a46): informational notes and banners.
-- **Idle Stone** (#a39f96) and **Idle Stone Wash** (#f0eee9; dark #2a2825): stopped or unknown, and neutral pills, skeletons and the segmented control's track.
+Each state has a hue for marks and tinted borders, an ink for words (4.5:1 or better on white and on its wash) and a wash for backgrounds.
+- **Live Green** (`live-green`, ink, wash; dark #3dbf7f / #5fd49a / #142b1f): Connected, running, test passed, a copy just done.
+- **Waiting Amber** (`waiting-amber`, ink, wash; dark #f0a836 / #ffbe5c / #33260f): Starting, busy, waiting for the bot, port taken, and the "not yet handled" divider in a task record.
+- **Broken Red** (`broken-red`, ink, wash; dark #ec5d5e / #ff8a8a / #3a1a1c): Failed, disconnected, errors, required-field marks, destructive menu items. **Broken Red Deep** (same in both themes) is the fill under white text: the destructive confirm and a failure toast.
+- **Off Grey** (`off-grey`; dark #5c5c66): The hollow ring of a stopped or unknown project.
 
 ### Neutral
-- **Logbook Paper** (#f6f5f2; dark #171614): The page background behind everything in the main column.
-- **Clean Page** (#ffffff; dark #1f1e1b): Panels, cards, inputs, dialogs and sticky headers. One tonal step up from the paper.
-- **Margin Paper** (#fbfaf8; dark #23221f): The step between paper and page. Used for user message bubbles, command blocks and row hover.
-- **Logbook Ink** (#1d1c1a; dark #ece9e2): Primary text.
-- **Pencil Grey** (#6f6b63; dark #a19c92): Secondary text, metadata, inactive tabs and ghost buttons.
-- **Ruled Line** (#e7e3dc; dark #2f2d29): Hairline borders and dividers on every surface.
-- **Ruled Line Strong** (#d6d1c7; dark #3d3a35): Button and input borders, the dashed outline of empty panels and the small separator rule in meta rows.
-- **Bench Charcoal** (#1f1e1c; dark #121110): The sidebar and toast background.
-- **Bench Charcoal Raised** (#2a2926; dark #1c1b19): Sidebar hover and active fills, sidebar pills and the footer rule.
-- **Chalk** (#e9e6df) and **Worn Chalk** (#9b978d): Text and secondary text on the bench. The same in both themes.
-- **Bot Reply Wash** (#fff4ee; dark #2b211b) and **Bot Reply Line** (#f2d8c9; dark #4a3326): The bot's message bubble, a terracotta-tinted paper so its voice is recognizable without reading the name.
+- **Page White** (`page-white`; dark #0f0f10): The page.
+- **Surface** (`surface`; dark #1a1a1a): Cards, rows panels, inputs, the dock, menus, dialogs, the palette. Identical to the page in light; one step up in dark.
+- **Rail Grey** (`rail-grey`; dark #171717): The project rail and the task list panel.
+- **Sunken** (`sunken`; dark #1f1f1f): Command strips, raw errors, notes, code in the record, disabled inputs, row hover.
+- **Hover** and **Active** (`hover`, `active`; dark #262626, #2e2e2e): Hover fills on rail items, tabs, chips and menus; the active rail item, tab and task row; the segmented control's track.
+- **Hairline** and **Hairline Strong** (`hairline`, `hairline-strong`; dark #2a2a2a, #3b3b3b): Every border and divider; button, input and kbd borders and the dashed empty panel.
+- **Ink** (`ink`; dark #ededed): Text, and the fill of the primary pill, step numbers and toasts.
+- **Ink Secondary** (`ink-secondary`; dark #a3a3a3): Metadata, inactive tabs, ghost buttons, placeholders, labels.
+- **Badge Grey** (`badge-grey`): The lettered tile for a channel without an official logo.
 
 ### Named Rules
-**The One Stamp Rule.** Kiln Terracotta marks the single thing to act on (one filled primary button per view), the current location (active tab, active sidebar item) or the bot's voice. It is never used as a background tint for a whole region, and never as a status color.
+**The One Periwinkle Rule.** Periwinkle belongs to presence, selection, focus and links. It never fills a button, never tints a region larger than a strip or tile, and never stands in for a status.
 
-**The Status-Only Saturation Rule.** Apart from the accent, the only saturated hues on the page are the five status colors, and they appear only where they report real state. A green dot means connected, and nothing is green for decoration.
+**The Ink Pill Rule.** Emphasis is ink, not colour. The action to take is an ink-black pill (`button-primary`), one per card, form or dialog; a save button turns primary only once its field holds something to save.
 
-**The Ink Rule.** Words never take a status hue or Kiln Terracotta directly at 11–13px: they take the matching ink (`--ok-text`, `--warn-text`, `--bad-text`, `--info-text`), and white text sits only on the deep fills. The hues stay for dots, rules and borders.
+**The Ink-for-Words Rule.** Words in a state take that state's ink; the bare hue is for marks and tinted borders only. White text sits only on Broken Red Deep and on the ink pill in light mode.
 
-**The Two Themes Rule.** Every color is defined for both themes in `:root`, and the dark set is overridden under `prefers-color-scheme: dark`. A new color isn't done until it has a dark value.
+**The Two Themes Rule.** Every token is defined in `:root` and overridden under `prefers-color-scheme: dark`. In dark, tinted card borders fall back to the plain hairline so red and amber don't glow.
 
 ## Typography
 
-**Display Font:** none. The page has no display tier.
+**Display Font:** none; the page has no display tier.
 **Body Font:** system-ui (with -apple-system, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif)
 **Label/Mono Font:** ui-monospace (with SF Mono, JetBrains Mono, Menlo, Consolas, monospace)
 
-**Character:** The operating system's own voice, Latin and CJK alike, with no web fonts to load. The monospace face is there to mark machine text (paths, ids, file names, commands), not to set a mood.
+**Character:** The operating system's own voice for Latin and CJK alike, set tight at the top (650 weight, negative tracking) and calm everywhere else. Mono marks machine text; it never sets a mood.
 
 ### Hierarchy
-- **Headline** (600, 22px, letter-spacing -0.01em): The project name at the top of a project view. There is one per page.
-- **Title** (600, 16px, 1.4): Conversation titles, dialog titles and empty-state titles.
-- **Subtitle** (600, 15px): Channel card titles.
-- **Body** (400, 14px, 1.55): The default for everything, including message bubbles.
-- **Body Small** (400–500, 13px): Buttons, form labels (weight 500), card fields, project meta and banners' secondary text.
-- **Caption** (400–500, 12px): Row metadata, bubble headers, timestamps, the sidebar's sub-lines and status text (weight 500).
-- **Label** (600, 11px, letter-spacing 0.08em, uppercase): Sidebar section labels. Tags and pills share the 11px size at weights 600 and 500.
-- **Mono** (0.92em of its context): Inline code, paths (12px), file names and command blocks.
+- **Headline** (650, 28px, 1.25, -0.02em; 23px below 880px): The home briefing's sentence, beside the orb. Balanced wrapping.
+- **Headline Small** (650, 26px, 1.25, -0.02em): A project's name. The offline and sign-in screens use 24px at the same weight.
+- **Title** (650, 20px, 1.35, -0.01em): A task's title above its record. Dialog titles use 17px at 650.
+- **Title Small** (600, 15px, 1.4): Section headings, problem titles, step titles in the big welcome steps. Card and empty-state titles use 16px at 600.
+- **Body** (400, 14px, 1.55): Everything by default, including rail items and inputs.
+- **Record** (400, 14.5px, 1.7, max 720px): The body of an entry in a task record.
+- **Control** (500, 13.5px): Buttons, step detail, links under steps. Meta lines and chips use 13px.
+- **Meta** (400, 12.5px): Row sub-lines, task meta, raw-error header, small buttons.
+- **Caption** (500, 12px): Rail sub-lines and group labels, palette group labels, counts (600), timestamps. Pass labels and kbd use 11.5px.
+- **Mono** (0.92em of context): Commands, paths, raw errors, ids, the version number.
+
+Weights run 400 / 500 / 550 / 600 / 650; 550 is the "selected" weight on active rail items, tabs and form labels.
 
 ### Named Rules
-**The No-Wrap Meta Rule.** Metadata in a row stays on one line. Only the free-text part (senders, titles) is allowed to truncate with an ellipsis. Everything else keeps its width, because CJK text would otherwise break after every character.
+**The Two-Size List Rule.** A list row has two sizes: a title and a sub-line. Rank inside it by weight, not by adding a third size.
 
-**The Machine Text Rule.** Anything a user might copy into a terminal (paths, ids, commands, token hints) is set in mono. Prose never is.
+**The Machine Text Rule.** Anything the user might paste into a terminal (commands, paths, ids, raw errors) is mono; prose never is.
+
+**The Tabular Figures Rule.** Times, counts and the reply tally use `tabular-nums` so columns don't jitter as they update.
 
 ## Layout
 
-The page is an app shell: a fixed 264px sidebar (the bench) and a fluid main column with padding of 22px top, 28px sides and 40px bottom. The main column is a vertical stack with a 14px gap. A project view stacks its head (name, state, path, channel health chips), a tab row and the tab's content.
+The shell is a 264px rail beside a fluid main column. The rail is sticky and scrolls on its own: brand (orb + name), a jump field with its ⌘K hint, 总览, the project list (broken first, then waiting, then the rest) and, pinned at the foot behind a hairline, shared settings and the gateway's uptime and version.
 
-The task view is a two-pane split: a task list of 300–380px beside the conversation, which takes the rest. Each pane scrolls on its own and has a sticky header. Channel cards sit in an auto-fill grid (minimum 360px per card, 14px gap) and stretch to equal height, so their footers line up. Within a card, fields are a two-column definition grid whose label column is at least 170px, so values start at the same x across cards. Settings and explanatory text are capped at 760px.
+Pages are centered columns padded 44px top, 40px sides, 72px bottom. Home and settings use the narrow column (max 840px); a project uses the wide one (max 1320px). On home the briefing header is followed by sections 40px apart (28px for the first), stacked cards 12px apart and a floating dock pinned to the bottom of the column, which content fades under (a gradient from transparent to the page at 45%).
 
-Spacing runs on a small set of steps (4, 6, 8, 10, 14, 16, 22, 28px). 14px is the default gap between panels, and 6–10px the gap inside rows. The conversation timeline uses 18px padding and 14px between messages.
+A project stacks its header (name, state, path, channel chips), pill tabs and the tab's content. Tasks split into a 340px sticky list on a rail-grey panel and the record (max 820px), 28px apart; 300px and 20px below 1080px. Channel cards sit in an auto-fill grid of at least 340px with 16px gaps; fields inside are a label/value grid with a label column of at least 130px.
 
-Below 960px the shell stacks into a single `minmax(0, 1fr)` column, so a long path or command can never widen the page. The sidebar folds into two rows: the brand with 共用设置 beside it, then the projects as one sideways-scrolling strip (paths hidden, states shown), the active one underlined in Kiln Terracotta. The main padding drops to 16px, the task view becomes one column and card fields stack label-over-value.
+Spacing steps are 4, 6, 8, 12, 16, 24, 32, 40px, with 2px between list items and 10px/14px inside controls.
 
-When a project has no task to open, the task list takes the full width on its own, and its empty state says why.
+Below 880px the rail becomes a drawer (min(300px, 86vw), a dimmed backdrop) opened from a 52px sticky top bar that also carries search, so the dock is hidden. Padding drops to 24px 16px 56px, problem actions wrap under the text, rows drop their time and logos, the task view becomes one column, the pass header becomes a two-column grid and fields stack.
 
 ## Elevation & Depth
 
-The system is flat by direction. Surfaces are told apart by tonal steps (Logbook Paper → Margin Paper → Clean Page) and by Ruled Line hairlines, not by shadow. Overlays are the only things that float. A dialog lifts on a large soft shadow over a warm, 45%-opaque dark backdrop, and a toast is a charcoal slip in the bottom-right corner.
-
-Cards, the task list and the conversation pane carry no shadow, only their hairline border. A bordered list inside a card (the GitHub tokens) is ruled off with top and bottom hairlines, never boxed a second time.
+Flat in the page, lifted when floating. Depth inside the page comes from the rail's grey, the sunken grey of command strips, and hairline borders. Shadows mark what floats above the page: the dock, menus, dialogs, the palette, toasts and the mobile drawer. Two state responses borrow the float shadow: an open problem card (the one being read) and a choosable add-a-channel tile on hover (which also lifts 1px). Overlays dim the page with `rgb(12 12 20 / 0.38)`.
 
 ### Shadow Vocabulary
-- **Overlay lift** (`box-shadow: 0 20px 60px rgb(0 0 0 / 0.3)`): Dialogs only.
-- **Toast lift** (`box-shadow: 0 1px 2px rgb(30 25 15 / 0.05), 0 4px 16px rgb(30 25 15 / 0.05)`; dark `0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.25)`): Toasts, which float over content.
-- **Selected segment** (`box-shadow: 0 1px 2px rgb(0 0 0 / 0.08)`): The "on" button in a segmented control. This is a state cue, not elevation.
+- **Float** (`0 10px 30px -8px rgb(20 20 40 / 0.14), 0 2px 6px rgb(20 20 40 / 0.06)`; dark `0 10px 30px -8px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3)`): The dock at rest, menus, toasts, an open problem card, a hovered add tile.
+- **Pop** (`0 24px 60px -16px rgb(20 20 40 / 0.28), 0 4px 12px rgb(20 20 40 / 0.08)`; dark `0 24px 60px -16px rgb(0 0 0 / 0.7), 0 4px 12px rgb(0 0 0 / 0.35)`): Dialogs, the palette, the open drawer, the dock on hover.
+- **Segment on** (`0 1px 3px rgb(20 20 40 / 0.1)`): The selected button in a segmented control; a state cue, not elevation.
 
 ### Named Rules
-**The Flat Page Rule.** Nothing that sits in the page flow casts a shadow. A shadow means "floating above the page" (dialog, toast) or "currently selected" (segment), and never "this is a card".
+**The Float-Only Shadow Rule.** Nothing in the page flow casts a shadow at rest. A shadow means floating (dock, menu, dialog, palette, toast, drawer) or a state the user caused (the open problem card, a hovered choice, a selected segment).
 
 ## Shapes
 
-The forms are soft and friendly. Corners are rounded everywhere: 4px on inline code, skeleton bars and the corner of a bubble's tail; 6px on channel badges and segment buttons; 7px on buttons, inputs, file rows and inline results; 8px on sidebar items, command blocks and option tiles; 10px on panels, cards and banners; 12px on message bubbles; 14px on dialogs and empty-state icon tiles. Pills, chips and avatars are fully round, and status dots are 8px circles (6px inside tags).
+Soft and round. Every button, tab, chip, count, toast, the dock and the bot's role tag is a full pill (999px). Panels are 18px (cards, problem cards, rows panels, the task list, empty panels); dialogs and the palette are 22px; banners, menus, the pass header, add tiles and the empty-state icon tile are 14px; rows, task rows, command strips, raw errors, problem icon tiles, palette items and notes are 12px; inputs, rail items, the jump field and icon buttons are 10px; segment buttons and large badges 8px; kbd, badges and inline code 6px.
 
-Message bubbles have one tightened corner (4px) on the speaker's side: top-left for people, top-right for the bot. That is the tail, without drawing a tail.
+Marks and the orb are perfect circles. Borders are 1px hairlines; a dashed border means empty or addable (empty task panel, the add-a-channel card).
 
-Borders are 1px hairlines. Dashed borders mean "empty or addable": empty panels and the add-a-channel card. When softness has to be adjusted, err rounder and roomier, never tighter.
+### Named Rules
+**The Shape-and-Colour Rule.** A state mark is a 10px circle (8px in chips, rail status and healthy chips) whose shape carries the state on its own: filled is up, a 2.5px ring is waiting, filled with a struck bar is broken, a 2px hollow grey ring is off, a mini-orb is the bot at work. Colour confirms; it never carries state alone.
 
 ## Components
 
 ### Buttons
-Quiet outlines by default, with exactly one terracotta fill where the main action is.
-- **Shape:** gently rounded (7px), with 5px × 12px padding and 13px text. An optional 6px gap holds an icon.
-- **Default:** Clean Page fill, Ruled Line Strong border, Logbook Ink text. On hover the border darkens to Pencil Grey.
-- **Primary:** Kiln Terracotta Deep fill and border, white text. On hover it brightens 8% (`filter: brightness(1.08)`). A save button turns primary only once its field has something to save, so a page of forms never shows two at rest.
-- **Ghost:** transparent and borderless with Pencil Grey text. On hover it gets an Idle Stone Wash fill and Logbook Ink text. Used for copy, close and secondary row actions.
-- **Danger:** a Fault Red Deep fill for the final confirm of a destructive action. **Danger text** (a ghost button in Fault Red ink, Fault Red Wash on hover) is for a destructive action that sits among other controls, such as 移除项目 in the project header, so it doesn't shout until it's meant.
-- **Disabled:** 55% opacity and a default cursor.
-- **Sizes:** extra-small (12px, 1px × 7px) for in-row actions. The icon button (18px icon) is for close.
+Pills throughout; ink speaks, outlines wait.
+- **Shape:** full pill, 34px tall, 14px sides, 13.5px weight 500, 6px icon gap (15px icons).
+- **Default:** surface fill, strong hairline border, ink text; hover fill.
+- **Primary:** ink fill and border, page-coloured text; hover mixes 18% of the page into the ink. Used for the fix on a problem card and a form's submit.
+- **Ghost:** transparent, secondary ink; hover turns the text ink. "怎么修 / 收起" and copy buttons.
+- **Danger:** Broken Red Deep fill with white text for the final destructive confirm. **Danger text** is a ghost in Broken Red ink with a red wash on hover.
+- **Small:** 28px, 10px sides, 12.5px. **Icon button:** 32px, 10px radius, 17px icon, hover fill; a copy icon turns Live Green ink when done.
+- **Disabled:** 50% opacity, no pointer events.
 
-### Status indicators
-- **Dot:** an 8px circle in a status color. A live connection pulses (1.6s ease-in-out to 35% opacity), and the pulse stops under `prefers-reduced-motion`.
-- **Tag:** an 11px, weight-600 label on a status wash with the status color as text, radius 5px and an optional 6px dot. Used for task state.
-- **State text:** a 12px, weight-500 dot plus label in the status color. Used for project and channel state.
-- **Chip:** a fully round, hairline-bordered capsule holding a channel badge and its name. It takes a red-tinted border when that channel is failing.
-
-### Pills
-- **Style:** fully round, 18px tall, 11px weight-500 text, Idle Stone Wash with Pencil Grey text. Used for counts.
-- **Accent pill:** a Kiln Terracotta Deep fill with white text, for counts of open tasks ("2 进行中"). In the sidebar, neutral pills take the Bench Charcoal Raised fill.
+### State marks, counts and chips
+- **Mark:** see The Shape-and-Colour Rule. Working marks breathe (2s, scale 0.72).
+- **State text:** mark plus a 13px weight-500 word in the state's ink.
+- **Count:** 20px pill, 12px weight 600, periwinkle wash and ink; red wash for broken counts, hover grey for quiet ones.
+- **Chip:** 28px hairline pill with a channel logo or mark and a name; a broken channel's chip takes a 40% red-tinted border.
 
 ### Cards / Containers
-- **Corner style:** 10px.
-- **Background:** Clean Page on Logbook Paper.
-- **Shadow strategy:** none (see The Flat Page Rule).
-- **Border:** a 1px Ruled Line. A dashed Ruled Line Strong border means an empty panel or the add-a-channel card.
-- **Internal padding:** 14px × 16px with a 10px internal gap. The footer is pinned to the bottom behind a hairline rule.
-- **Inline error:** Fault Red text on Fault Red Wash, 7px radius, 6px × 10px, wrapping anywhere so long ids and paths don't overflow.
+- **Corner style:** 18px.
+- **Background:** surface on the page; the task list sits on rail grey without a border.
+- **Shadow strategy:** none at rest (The Float-Only Shadow Rule).
+- **Border:** 1px hairline; broken cards mix 28-32% Broken Red into it, waiting ones 40% Waiting Amber (plain hairline in dark).
+- **Internal padding:** 18px × 20px with a 16px gap; a footer is pinned to the bottom behind a hairline.
+- **Rows panel:** a 6px-padded panel of 12px-radius rows (10px × 12px) that hover to sunken.
 
 ### Inputs / Fields
-- **Style:** Clean Page fill, 1px Ruled Line Strong border, 7px radius, 6px × 10px padding, inheriting the 14px body text.
-- **Focus:** the global 2px Kiln Terracotta ring with a 2px offset.
-- **Labels:** 13px weight 500 above the field, with a red asterisk for required fields. Validation messages are 12px Fault Red text beneath.
-- **Checkbox tiles:** a bordered 7px tile. When checked, its border turns Kiln Terracotta and its fill Terracotta Wash.
-- **Credentials:** a stored secret is never shown. The field shows only a hint of its last characters and a placeholder inviting a new value.
+- **Style:** 38px, 10px radius, strong hairline, surface fill, 14px text, secondary-ink placeholder.
+- **Focus:** periwinkle border plus a 3px periwinkle halo at 22%.
+- **Labels:** 13px weight 550 above, a red asterisk when required.
+- **Option tiles:** a 12px hairline tile with a checkbox; checked turns the border periwinkle and the fill periwinkle wash.
+- **Disabled:** sunken fill, secondary ink.
 
 ### Navigation
-- **Sidebar:** Bench Charcoal with Chalk text. The brand block (mark, name, live status line) sits on top, then an uppercase 11px section label with a count, then the project items, broken ones first, then waiting ones, then the rest. Settings is pinned to the bottom behind a hairline rule. A healthy project's sub-line is its path; any other project's is its state in words ("钉钉 已停止", "出错"). In the dark theme a hairline separates the bench from the page.
-- **Sidebar item:** 8px × 10px with an 8px radius, a status dot, the name (weight 500) and a 12px Worn Chalk sub-line. On hover it gets the Bench Charcoal Raised fill. When active it gets the same fill plus a 2px Kiln Terracotta inset bar on the left edge.
-- **Tabs:** an underline tab row on a hairline. Inactive tabs are Pencil Grey weight 500. The active tab is Logbook Ink with a 2px Kiln Terracotta underline.
-- **Segmented control:** a group of `aria-pressed` buttons on an Idle Stone Wash track with a 2px inset and 6px-radius segments. The selected segment becomes Clean Page with the selected-segment shadow. Counts sit inside in Pencil Grey, with tabular numbers.
+- **Rail:** rail-grey, 12px × 10px padding, 2px between items (a hairline on its right edge in dark only). Items are 36px min, 10px radius, 14px; hover fill, active fill plus weight 550. A project item holds a mark, its name, an optional state sub-line in the state's ink and an open-task count.
+- **Group label:** 12px weight 500 secondary ink, sentence case.
+- **Tabs:** 36px pills, 16px sides, 14px weight 550 secondary ink; active gets the active fill and ink, with a count inside.
+- **Segmented control:** a 3px-padded hover-grey track (11px radius) of 30px buttons; the "on" one is surface with the segment shadow.
+- **Mobile:** a 52px sticky top bar (menu, orb + name, search) on the page colour with a bottom hairline; the rail slides in as a drawer.
 
-### Conversation (signature component)
-A task's full thread, read like a chat you were part of.
-- **Layout:** people on the left with a 28px round initial avatar. The bot is on the right with no avatar.
-- **People's bubbles:** Margin Paper with a Ruled Line border.
-- **Bot's bubbles:** Bot Reply Wash with a Bot Reply Line border, and the bot's name in Fired Clay Ink.
-- **Bubble size and text:** up to 680px or 85% of the pane, padded 9px × 13px, and wrapping anywhere.
-- **Header:** a 12px line with the sender (weight 600) and time.
-- **Attachments:** hairline rows with a mono file name.
-- **New messages:** an Amber Wait divider with a hairline on each side, labelled in 12px weight 600.
-- **Markdown:** inside bubbles, inline code gets a 7% ink tint and code blocks a Clean Page box.
+### Presence orb (signature component)
+A matte radial disc of light, 18 / 24 / 44px (36px on phones beside the headline). Calm is periwinkle; **working** breathes (2.8s, scale 1.08, opacity 0.82); **broken** turns a soft red (#fde3e3 → #f3a9ab → #e3676b); **off** turns grey (#ececf0 → #c9c9d1 → #9d9da8). It appears beside the brand (calm or working only), beside the home headline (where it turns red when anything is broken) and on the offline and sign-in screens (off); the gateway has one presence.
 
-### Command block (signature component)
-A terminal command to run, with its copy button. It is a Margin Paper strip with a Ruled Line border and 8px radius. The command is mono, on one line, and scrolls horizontally. A ghost "复制" button sits on the right and reads "已复制" for 1.5s after use. It appears in empty states, banners and dialogs, wherever the next step happens in a terminal.
+### Problem card (signature component)
+What happened, the fix, and how. A 40px tinted icon tile (12px radius, the state's wash and ink, or the channel's logo), a 15px title, a one-line plain-language diagnosis, a ghost "怎么修" toggle and one ink-pill action (open the right console, copy a command, or go to the editor). Opened, it gains the float shadow and unfolds (0.28s) behind a hairline into numbered steps: 24px ink discs, a 550-weight step title, secondary detail, an optional command strip or link. Under the steps, the platform's raw error sits in a sunken mono block with its own copy button. The first problem is open on arrival.
 
-### Banners and toasts
-- **Banner:** a full-width strip at the top of the main column, 10px radius, padded 10px × 14px. It uses a status wash with a 30–35% status-tinted border. "Bad" banners use `role="alert"`; the others use `role="status"`. Each one says what happened and what to do next.
-- **Toast:** a Bench Charcoal slip in the bottom-right corner, 9px radius, 13px text, at most 380px wide. It disappears after 4s. A failure toast is Fault Red with white text.
+### Command strip
+A sunken 12px strip, mono 13px on one line that scrolls sideways, with a copy icon button that confirms with a check for 1.5s. Used wherever the next step happens in a terminal.
 
-### Icons
-Drawn, not typed: a small set of 24-unit line icons (`web/src/icons.tsx`) at a 1.75 stroke with round caps and joins, in the text color. They cover the inbox, check, cross, chat, power, folder, key, gear and reply. An icon is sized by the font-size around it; empty states set it at 26px on a 52px Terracotta Wash tile. Unicode glyphs never stand in for icons.
+### Task record (signature component)
+A read-only log. The header is a title, actions and a **pass**: one 14px-radius hairline strip of labelled segments (11.5px label over a 13.5px weight-550 value) for source, state, participants, bot replies and created time. Entries run down a single column separated by hairlines, 18px apart: a 13px head (sender in 600 or the periwinkle "bot" role pill, then the time) over the body at 14.5/1.7. Attachments are file lines with a paperclip. Messages the bot hasn't handled sit under an amber divider with a hairline on each side.
 
-### Channel badge
-A channel's official logo, drawn as is with no tile behind it (GitHub's logo takes the text color). It is 28px in cards and 18px inline. A channel without a logo gets a lettered grey tile (#6b7280, white text), which picks up a faint inner ring in dark mode.
+### Dock and jump palette (signature component)
+The dock is a 52px surface pill with the float shadow, a search icon, a prompt and a ⌘K kbd; on hover it rises 1px to the pop shadow. ⌘K (or the dock, the rail field, the mobile search) opens the palette: 640px, 22px radius, pop shadow, dropped 14vh from the top. A 58px input row over grouped results (12px group labels), each item a 12px-radius row with a logo, mark or icon, a title, a secondary sub-line and an arrow on the highlighted item.
+
+### Banners, dialogs and toasts
+- **Banner:** 14px radius, 12px × 16px, the state's wash and ink with a 16px icon; bad banners are `role="alert"`.
+- **Dialog:** 540px (660px wide), 22px radius, pop shadow, rises in (0.26s); hairline above the footer.
+- **Toast:** an ink pill at bottom centre, 13.5px, float shadow, gone after 4s; a failure toast is Broken Red Deep.
+
+### Icons and channel badges
+Icons are drawn line icons in `icons.tsx`, one stroke weight, in the text colour, sized by the surrounding font size. Channel badges are official logos drawn as is (GitHub's takes the ink); a channel without one gets a lettered Badge Grey tile.
+
+### Motion
+One easing, `cubic-bezier(0.16, 1, 0.3, 1)`, for unfolding, popping, rising and the drawer (0.16–0.32s). Ambient motion is limited to the orb, working marks and skeleton fades. `prefers-reduced-motion` turns every animation and transition off.
 
 ## Do's and Don'ts
 
 ### Do:
-- **Do** keep Kiln Terracotta (#c8643f) for one primary action per view, the current location and the bot's voice (The One Stamp Rule).
-- **Do** use a status color only to report real state, with its wash as the background and the strong form as text or dot.
-- **Do** separate surfaces with a 1px Ruled Line and a tonal step from Logbook Paper to Clean Page.
-- **Do** define every new color for both themes under `prefers-color-scheme`.
-- **Do** set paths, ids, file names and commands in the mono stack, and give terminal commands the copyable command block.
-- **Do** keep row metadata on one line and let only free text truncate (The No-Wrap Meta Rule).
-- **Do** wrap error text anywhere (`overflow-wrap: anywhere`), because it carries ids and paths that don't break on their own.
-- **Do** keep forms soft: 7px on controls, 10px on panels, 12–14px on bubbles and dialogs. When unsure, round up and add room.
-- **Do** set status words in the status ink, never in the bare hue (The Ink Rule).
-- **Do** give anything a dot or a tooltip says a screen-reader equivalent in the text (`SrOnly`), inside a positioned container so it can't widen a scrolling strip.
-- **Do** honor `prefers-reduced-motion`. The status pulse and skeleton shimmer are the only ambient motion, and both stop.
+- **Do** make the action an ink-black pill, one per card, form or dialog (The Ink Pill Rule).
+- **Do** keep periwinkle (#5b5bd6) for presence, selection, focus and links (The One Periwinkle Rule).
+- **Do** carry every state with shape and colour together: filled, ring, struck, hollow, mini-orb (The Shape-and-Colour Rule).
+- **Do** set state words in the state's ink, with its wash behind banners, tiles and counts.
+- **Do** write a problem as a plain diagnosis, numbered steps, a command to copy and the raw error.
+- **Do** keep in-page surfaces flat and give the float or pop shadow only to things that float (The Float-Only Shadow Rule).
+- **Do** round generously: pills for controls, 18px for panels, 22px for overlays.
+- **Do** set commands, paths, ids and raw errors in mono, and times and counts in tabular figures.
+- **Do** define every new colour for both themes.
+- **Do** honor `prefers-reduced-motion`.
 
 ### Don't:
-- **Don't** build a SaaS dashboard: no KPI tiles, charts, big-number stat cards or gradient hero cards.
-- **Don't** drift into a cold developer-tool look: no blue-grey neon dark consoles. The dark theme stays warm charcoal and chalk.
-- **Don't** add decoration: no illustrations, mascots, ornamental gradients or background patterns.
-- **Don't** load web fonts. The page ships inside the Go binary and uses the system stack.
-- **Don't** put shadows on in-page surfaces such as cards, lists and panes (The Flat Page Rule).
-- **Don't** use Kiln Terracotta as a status color or as a fill for whole regions.
-- **Don't** display a stored credential. Show its last few characters at most.
+- **Don't** frame the task record as a chat: no bubbles, no avatars, no assistant voice. It is a read-only log.
+- **Don't** fill a button or a region with periwinkle, or use it as a status colour.
+- **Don't** report state with colour alone.
+- **Don't** load web fonts; the page ships inside the Go binary and uses the system stack.
+- **Don't** put a shadow on a card, row panel or list at rest.
 - **Don't** use Unicode glyphs or emoji as icons; draw them in `icons.tsx`.
+- **Don't** display a stored credential beyond its last few characters.
