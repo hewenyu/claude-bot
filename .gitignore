@@ -49,3 +49,8 @@ tmp/
 
 # gateway page sources: dependencies (the built page in internal/webui/static is committed)
 web/node_modules/
+
+.claude/skills/
+.claude/agents/
+.claude/*.json
+.impeccable
