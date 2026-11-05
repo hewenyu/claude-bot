@@ -39,17 +39,7 @@ func cmdInbox(ctx context.Context, project string, args []string) error {
 		return errNoJev
 	}
 
-	var tasks []inbox.Task
-
-	if *wait > 0 {
-		wctx, cancel := context.WithTimeout(ctx, *wait)
-		tasks, err = a.inbox.WaitTasks(wctx, inboxPoll)
-
-		cancel()
-	} else {
-		tasks, err = a.inbox.PendingTasks()
-	}
-
+	tasks, err := a.pendingTasks(ctx, *wait)
 	if err != nil {
 		return err
 	}
@@ -66,6 +56,35 @@ func cmdInbox(ctx context.Context, project string, args []string) error {
 	}
 
 	return writeLines(lines)
+}
+
+// pendingTasks returns the pending tasks, waiting up to wait for one. A
+// task whose chat was closed on the platform is settled, not returned:
+// the listener may not have noticed yet.
+func (a *app) pendingTasks(ctx context.Context, wait time.Duration) ([]inbox.Task, error) {
+	wctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	for {
+		var (
+			tasks []inbox.Task
+			err   error
+		)
+
+		if wait > 0 {
+			tasks, err = a.inbox.WaitTasks(wctx, inboxPoll)
+		} else {
+			tasks, err = a.inbox.PendingTasks()
+		}
+
+		if err != nil || len(tasks) == 0 {
+			return nil, err
+		}
+
+		if tasks = a.settleClosed(ctx, tasks); len(tasks) > 0 || wctx.Err() != nil {
+			return tasks, nil
+		}
+	}
 }
 
 // show records how much of each task Claude is shown, so that closing it

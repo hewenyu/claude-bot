@@ -106,6 +106,14 @@ type Channel interface {
 	Ack(ctx context.Context, msg Message) error
 }
 
+// Closable is a Channel whose chats can be closed on the platform, by anyone
+// and from anywhere: a GitHub issue closed, a PR closed or merged.
+type Closable interface {
+	// ClosedAt reports when the chat (a platform chat id) was closed, or
+	// the zero time while it is open.
+	ClosedAt(ctx context.Context, chatID string) (time.Time, error)
+}
+
 // ID builds a protocol message id.
 func ID(channel, platformID string) string {
 	return channel + ":" + platformID

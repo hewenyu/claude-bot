@@ -516,6 +516,28 @@ func TestActions(t *testing.T) {
 	}
 }
 
+func TestClosedAt(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.json("GET /repos/o/r/issues/1", issue{Number: 1, State: stateOpen})
+	f.json("GET /repos/o/r/issues/2", issue{Number: 2, State: stateClosed, ClosedAt: after, PullRequest: &struct{}{}})
+
+	ctx := context.Background()
+
+	if at, err := ch.ClosedAt(ctx, "o/r/1"); err != nil || !at.IsZero() {
+		t.Errorf("ClosedAt(open) = %v, %v; want zero", at, err)
+	}
+
+	if at, err := ch.ClosedAt(ctx, "o/r/2"); err != nil || !at.Equal(after) {
+		t.Errorf("ClosedAt(merged) = %v, %v; want %v", at, err, after)
+	}
+
+	if _, err := ch.ClosedAt(ctx, "x/y/1"); err == nil {
+		t.Error("ClosedAt of another repository succeeded")
+	}
+}
+
 func TestAuthorship(t *testing.T) {
 	t.Parallel()
 

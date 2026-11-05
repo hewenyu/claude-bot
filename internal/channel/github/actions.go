@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/hewenyu/claude-bot/internal/channel"
 )
 
 // Issue and PR states, and why an issue was closed.
@@ -47,6 +50,28 @@ func (c *Channel) Close(ctx context.Context, id string, notPlanned bool) error {
 	body := map[string]string{"state": stateClosed, "state_reason": reason}
 
 	return c.send(ctx, http.MethodPatch, c.repoPath("/issues/%d", r.number), body, nil)
+}
+
+var _ channel.Closable = (*Channel)(nil)
+
+// ClosedAt implements channel.Closable: when the issue or PR chatID
+// ("<owner>/<repo>/<number>") was closed or merged, zero while it is open.
+func (c *Channel) ClosedAt(ctx context.Context, chatID string) (time.Time, error) {
+	r, err := c.parseRef(chatID)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	var i issue
+	if err := c.get(ctx, c.repoPath("/issues/%d", r.number), nil, &i); err != nil {
+		return time.Time{}, err
+	}
+
+	if i.State != stateClosed {
+		return time.Time{}, nil
+	}
+
+	return i.ClosedAt, nil
 }
 
 // Merge merges the PR that id belongs to with method (MergeSquash,

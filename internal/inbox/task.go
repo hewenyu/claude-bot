@@ -125,6 +125,21 @@ func (t *Task) Close() bool {
 	return true
 }
 
+// ClosedAt marks the task handled because its chat was closed on the
+// platform at at. It reports whether the task is done: not if someone wrote
+// after the closing, which still waits for an answer.
+func (t *Task) ClosedAt(at time.Time) bool {
+	for _, e := range t.Entries[min(t.Handled, len(t.Entries)):] {
+		if e.Kind == EntryUser && e.At.After(at) {
+			return false
+		}
+	}
+
+	t.Handled, t.Shown = len(t.Entries), 0
+
+	return true
+}
+
 // LastUserMessage is the id of the latest message in the task, the one a
 // reply answers.
 func (t Task) LastUserMessage() string {

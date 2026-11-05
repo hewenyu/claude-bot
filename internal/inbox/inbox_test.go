@@ -164,6 +164,25 @@ func TestTask_CloseKeepsWhatArrivedMeanwhile(t *testing.T) {
 	}
 }
 
+func TestTask_ClosedAtKeepsWhatCameAfter(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	tk := task("task:1", now, "a")
+	tk.Shown = 1 // Claude has it
+
+	if !tk.ClosedAt(now.Add(time.Minute)) || tk.Handled != 1 || tk.Shown != 0 {
+		t.Errorf("closed after it: done = false, or Handled %d, Shown %d; want done, 1, 0", tk.Handled, tk.Shown)
+	}
+
+	// Someone writes after the closing: that waits for an answer.
+	tk.Append("lark:om_b", []Entry{{Kind: EntryUser, Message: "lark:om_b", At: now.Add(2 * time.Minute), Text: "b"}})
+
+	if tk.ClosedAt(now.Add(time.Minute)) || tk.Handled != 1 {
+		t.Errorf("closed before the follow-up: done, or Handled %d; want pending, 1", tk.Handled)
+	}
+}
+
 func TestTask_AppendIsIdempotent(t *testing.T) {
 	t.Parallel()
 
