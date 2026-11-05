@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { channel } from "./format";
 import { Icon } from "./icons";
 import { ChannelLogo, hasLogo } from "./logos";
 
+export type Tone = "ok" | "warn" | "bad" | "off" | "info";
+
 /** The channel's official logo; a lettered tile for a channel without one. */
-export function ChannelBadge({ name, size = "md" }: { name: string; size?: "sm" | "md" }) {
+export function ChannelBadge({ name, size = "md" }: { name: string; size?: "sm" | "md" | "lg" }) {
   const c = channel(name);
 
   if (hasLogo(name)) {
@@ -22,33 +24,54 @@ export function ChannelBadge({ name, size = "md" }: { name: string; size?: "sm" 
   );
 }
 
-export function Dot({ tone, pulse }: { tone: "ok" | "warn" | "bad" | "off" | "info"; pulse?: boolean }) {
-  return <span className={`dot dot-${tone}${pulse ? " dot-pulse" : ""}`} aria-hidden />;
+/**
+ * A state mark: shape and colour both carry it, so it reads without colour.
+ * ok is filled, warn a ring, bad struck through, off a hollow grey ring,
+ * info (the bot at work) a small breathing orb.
+ */
+export function Mark({ tone, live }: { tone: Tone; live?: boolean }) {
+  return <span className={`mark mark-${tone}${live ? " mark-live" : ""}`} aria-hidden />;
 }
 
-/** Text for screen readers only: what a dot or a tooltip says to the eye. */
+/** The gateway's presence: calm when all is well, breathing while a bot works, red when something is broken. */
+export function Orb({ state = "calm", size = "md" }: { state?: "calm" | "working" | "bad" | "off"; size?: "sm" | "md" | "lg" }) {
+  return <span className={`orb orb-${size} orb-${state}`} aria-hidden />;
+}
+
+/** Text for screen readers only: what a mark or a tooltip says to the eye. */
 export function SrOnly({ children }: { children: ReactNode }) {
   return <span className="sr-only">{children}</span>;
 }
 
-/** Copies text; says so for a moment. */
-export function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
-  const [done, setDone] = useState(false);
+function useFlag(ms = 1500): [boolean, () => void] {
+  const [on, setOn] = useState(false);
 
   useEffect(() => {
-    if (!done) return;
-    const t = window.setTimeout(() => setDone(false), 1500);
+    if (!on) return;
+    const t = window.setTimeout(() => setOn(false), ms);
 
     return () => window.clearTimeout(t);
-  }, [done]);
+  }, [on, ms]);
+
+  return [on, () => setOn(true)];
+}
+
+/** Copies text; says so for a moment. With icon, a square icon button. */
+export function CopyButton({ text, label = "复制", icon }: { text: string; label?: string; icon?: boolean }) {
+  const [done, flag] = useFlag();
+  const copy = () => navigator.clipboard.writeText(text).then(flag);
+
+  if (icon) {
+    return (
+      <button type="button" className={`icon-btn${done ? " done" : ""}`} onClick={copy} aria-label={`${label}：${text}`} title={done ? "已复制" : label}>
+        <Icon name={done ? "check" : "copy"} />
+      </button>
+    );
+  }
 
   return (
-    <button
-      type="button"
-      className="btn btn-ghost btn-xs"
-      onClick={() => navigator.clipboard.writeText(text).then(() => setDone(true))}
-      aria-label={`${label}：${text}`}
-    >
+    <button type="button" className="btn btn-ghost btn-sm" onClick={copy} aria-label={`${label}：${text}`}>
+      <Icon name={done ? "check" : "copy"} />
       {done ? "已复制" : label}
     </button>
   );
@@ -59,7 +82,7 @@ export function Command({ children }: { children: string }) {
   return (
     <div className="command">
       <code>{children}</code>
-      <CopyButton text={children} />
+      <CopyButton text={children} icon label="复制命令" />
     </div>
   );
 }
@@ -77,20 +100,19 @@ export function Empty({ title, children, icon }: { title: string; children?: Rea
 export function Banner({ tone, children }: { tone: "warn" | "bad" | "info"; children: ReactNode }) {
   return (
     <div className={`banner banner-${tone}`} role={tone === "bad" ? "alert" : "status"}>
-      {children}
+      <Icon name={tone === "info" ? "chat" : "alert"} />
+      <div>{children}</div>
     </div>
   );
 }
 
 const focusable = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-/** A dialog; Escape or the backdrop closes it, and Tab stays inside it. */
-export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-
+/** Keeps Tab inside ref while mounted, closes on Escape, and gives focus back on close. */
+function useTrap(ref: RefObject<HTMLElement | null>, onClose: () => void, first = "input, select, button") {
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("input, select, button")?.focus();
+    ref.current?.querySelector<HTMLElement>(first)?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") return onClose();
       if (e.key !== "Tab" || !ref.current) return;
@@ -98,16 +120,16 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
       const items = [...ref.current.querySelectorAll<HTMLElement>(focusable)];
       if (!items.length) return;
 
-      const first = items[0];
-      const last = items[items.length - 1];
+      const head = items[0];
+      const tail = items[items.length - 1];
       const inside = ref.current.contains(document.activeElement);
 
-      if (e.shiftKey && (document.activeElement === first || !inside)) {
+      if (e.shiftKey && (document.activeElement === head || !inside)) {
         e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        tail.focus();
+      } else if (!e.shiftKey && (document.activeElement === tail || !inside)) {
         e.preventDefault();
-        first.focus();
+        head.focus();
       }
     };
     document.addEventListener("keydown", onKey);
@@ -117,19 +139,70 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
       prev?.focus();
     };
   }, [onClose]);
+}
+
+/** A dialog; Escape or the backdrop closes it, and Tab stays inside it. */
+export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useTrap(ref, onClose);
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={ref}>
+      <div className={`modal${wide ? " modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} ref={ref}>
         <div className="modal-head">
           <h2>{title}</h2>
-          <button type="button" className="btn btn-ghost btn-icon" onClick={onClose} aria-label="关闭">
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">
             <Icon name="cross" />
           </button>
         </div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
+    </div>
+  );
+}
+
+/** A "⋯" button with a small menu of actions. */
+export function Menu({ label, items }: { label: string; items: { label: string; danger?: boolean; onSelect: () => void }[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+
+  return (
+    <div className="menu" ref={ref}>
+      <button type="button" className="icon-btn" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Icon name="more" />
+      </button>
+      {open && (
+        <div className="menu-pop" role="menu">
+          {items.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              role="menuitem"
+              className={it.danger ? "danger" : undefined}
+              onClick={() => {
+                setOpen(false);
+                it.onSelect();
+              }}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -162,6 +235,7 @@ export function Toasts() {
     <div className="toasts" aria-live="polite">
       {items.map((t) => (
         <div key={t.id} className={`toast toast-${t.tone}`}>
+          <Icon name={t.tone === "ok" ? "check" : "alert"} />
           {t.text}
         </div>
       ))}

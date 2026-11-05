@@ -3,8 +3,9 @@ import { api, ApiError } from "./api";
 import { ago, fullTime } from "./format";
 import { usePoll } from "./hooks";
 import type { ChannelType, ChannelView, ProjectStatus, SecretView, TestResult } from "./types";
+import { channelDocs, consoles } from "./diagnose";
 import { Icon } from "./icons";
-import { Banner, ChannelBadge, Command, Dot, Empty, Modal, errorText, toast } from "./ui";
+import { Banner, ChannelBadge, Empty, Mark, Modal, errorText, toast } from "./ui";
 
 interface Props {
   project: ProjectStatus;
@@ -30,9 +31,7 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
 
   return (
     <div className="channels">
-      <p className="lede">
-        这个项目的 bot 接了哪些渠道。凭证存在本机的 gateway 数据库里，保存后 gateway 几秒内用新配置重新连接，不用重启。一个应用只能属于一个项目。
-      </p>
+      <p className="lede">凭证只存在本机的 gateway 数据库里。保存后几秒内自动重连，不用重启。一个应用只能属于一个项目。</p>
 
       <div className="cards">
         {channels.data.map((c) => (
@@ -85,7 +84,7 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
   const stopped = p.stopped?.includes(view.name);
   const connected = p.connected?.includes(view.name);
   const status = stopped
-    ? { tone: "bad" as const, text: "已停止" }
+    ? { tone: "bad" as const, text: "已断开" }
     : connected
       ? { tone: "ok" as const, text: "已连接" }
       : p.state === "starting"
@@ -100,25 +99,17 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
   };
 
   return (
-    <article className="card">
+    <article className={`card channel-card${stopped || status.text === "没连上" ? " card-bad" : ""}`}>
       <header className="card-head">
-        <ChannelBadge name={view.name} />
+        <ChannelBadge name={view.name} size="lg" />
         <div className="card-title">
           <h2>{view.label || view.name}</h2>
-          <span className={`state state-${status.tone}`}>
-            <Dot tone={status.tone} pulse={status.tone === "warn"} />
+          <span className={`state-text tone-${status.tone}`}>
+            <Mark tone={status.tone} live={status.tone === "warn"} />
             {status.text}
           </span>
         </div>
       </header>
-
-      {stopped && (
-        <div className="card-recover">
-          <p className="card-error">{p.errors?.[view.name] ?? "出错"}</p>
-          <p className="muted small">其他渠道照常工作。在这里改了配置，gateway 会自动重连；要改的是平台那边的设置（比如开发者后台），改好后重启 gateway：</p>
-          <Command>claude-bot gateway restart</Command>
-        </div>
-      )}
 
       <dl className="fields">
         {(type?.fields ?? []).map((f) => {
@@ -128,28 +119,20 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
           return (
             <div key={f.key} className="field-row">
               <dt>{f.label}</dt>
-              <dd className={secret || !v ? "muted" : "mono"}>
-                {secret ? (secret.set ? `已设置 ${secret.hint ?? ""}` : "未设置") : (v as string) || "默认"}
-              </dd>
+              <dd className={secret || !v ? "muted" : "mono"}>{secret ? (secret.set ? `已设置 ${secret.hint ?? ""}` : "未设置") : (v as string) || "默认"}</dd>
             </div>
           );
         })}
       </dl>
 
-      <div className="card-foot">
-        <span className="muted small" title={fullTime(view.updated_at)}>
-          {view.app_key} · {ago(view.updated_at)}更新
-        </span>
-      </div>
-
       {test && test !== "running" && (
-        <p className={`test ${test.ok ? "test-ok" : "test-bad"}`}>
+        <p className={`result ${test.ok ? "result-ok" : "result-bad"}`} role="status">
           <Icon name={test.ok ? "check" : "cross"} />
           {test.ok ? `凭证有效：${test.identity}` : test.error}
         </p>
       )}
 
-      <div className="card-actions">
+      <div className="card-foot">
         <button type="button" className="btn" onClick={onEdit}>
           编辑
         </button>
@@ -157,7 +140,10 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
           {test === "running" ? "测试中…" : "测试连接"}
         </button>
         <span className="grow" />
-        <button type="button" className="btn btn-ghost btn-danger-text" onClick={onRemove}>
+        <span className="card-meta" title={`${view.app_key} · ${fullTime(view.updated_at)}`}>
+          {ago(view.updated_at)}更新
+        </span>
+        <button type="button" className="btn btn-ghost btn-danger-text btn-sm" onClick={onRemove}>
           移除
         </button>
       </div>
@@ -168,12 +154,14 @@ function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: Chann
 function AddCard({ types, onPick }: { types: ChannelType[]; onPick: (t: ChannelType) => void }) {
   return (
     <article className="card card-add">
-      <h2>添加渠道</h2>
-      <p className="muted small">同一个 bot 可以同时接多个渠道。</p>
+      <div className="card-title">
+        <h2>添加渠道</h2>
+        <p className="muted small">同一个 bot 可以同时接多个渠道，选一个开始：</p>
+      </div>
       <div className="add-grid">
         {types.map((t) => (
           <button key={t.name} type="button" className="add-option" onClick={() => onPick(t)} disabled={!!t.unavailable} title={t.unavailable}>
-            <ChannelBadge name={t.name} />
+            <ChannelBadge name={t.name} size="lg" />
             <span className="add-label">
               {t.label}
               {t.unavailable && <span className="add-why">{t.unavailable}</span>}
@@ -235,6 +223,24 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
       }
     >
       <form id="channel-form" className="form" onSubmit={save}>
+        <div className="where">
+          <ChannelBadge name={type.name} size="lg" />
+          <div>
+            <p className="where-title">凭证在哪里拿</p>
+            <p className="where-links">
+              {consoles[type.name] && (
+                <a href={consoles[type.name].href} target="_blank" rel="noreferrer noopener">
+                  {consoles[type.name].label}
+                  <Icon name="external" />
+                </a>
+              )}
+              <a href={channelDocs(type.name)} target="_blank" rel="noreferrer noopener">
+                {type.label} 接入说明
+                <Icon name="external" />
+              </a>
+            </p>
+          </div>
+        </div>
         {type.note && <p className="note">{type.note}</p>}
         {!current && type.add_note && <p className="note">{type.add_note}</p>}
         {type.fields.map((f) => {
@@ -271,14 +277,14 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
             </label>
           );
         })}
-        <p className="muted small">测试连接只核对凭证（问平台「我是谁」），不建立长连接，不会抢走正在运行的连接的消息。</p>
+        <p className="muted small">先点「测试连接」：它只问平台「我是谁」来核对凭证，不建立长连接，不会抢走正在运行的连接的消息。</p>
         {test && test !== "running" && (
-          <p className={`test ${test.ok ? "test-ok" : "test-bad"}`}>
+          <p className={`result ${test.ok ? "result-ok" : "result-bad"}`} role="status">
             <Icon name={test.ok ? "check" : "cross"} />
             {test.ok ? `凭证有效：${test.identity}` : test.error}
           </p>
         )}
-        {error && <p className="test test-bad">{error}</p>}
+        {error && <p className="result result-bad">{error}</p>}
       </form>
     </Modal>
   );
@@ -316,7 +322,7 @@ function ConfirmRemove({ project: p, channel: c, onClose, onDone }: { project: P
       }
     >
       <p>gateway 会断开 {c.label}，删掉它的凭证。之后发给这个渠道的消息不会再进来。</p>
-      {error && <p className="test test-bad">{error}</p>}
+      {error && <p className="result result-bad">{error}</p>}
     </Modal>
   );
 }
