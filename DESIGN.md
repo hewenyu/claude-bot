@@ -409,6 +409,8 @@ The dock is a 52px surface pill with the float shadow, a search icon, a prompt a
 ### Icons and channel badges
 Icons are drawn line icons in `icons.tsx`, one stroke weight, in the text colour, sized by the surrounding font size. Channel badges are official logos drawn as is (GitHub's takes the ink); a channel without one gets a lettered Badge Grey tile.
 
+**The app icon** (`docs/logo.svg`, inlined as the page's favicon, and above the README title) is an ink tile with 15/64 rounding, a white terminal prompt `›` and the presence orb after it: the bot, awake in the terminal. The orb uses the orb's own gradient and stops. The SVG follows `prefers-color-scheme`, lifting the tile and its edge in dark so it doesn't sink into a dark tab bar. Inside the page the orb alone stays the brand mark, because it also reports presence.
+
 ### Motion
 One easing, `cubic-bezier(0.16, 1, 0.3, 1)`, for unfolding, popping, rising and the drawer (0.16–0.32s). Ambient motion is limited to the orb, working marks and skeleton fades. `prefers-reduced-motion` turns every animation and transition off.
 

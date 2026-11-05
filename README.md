@@ -1,3 +1,5 @@
+<img src="docs/logo.svg" width="64" height="64" alt="claude-bot">
+
 # claude-bot
 
 ![Go](https://img.shields.io/badge/go-1.27+-00ADD8?logo=go)

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .t0 { stop-color: #2a2a32 } .t1 { stop-color: #0d0d0f } .edge { stroke-opacity: .12 }
+    .o1 { stop-color: #e0e0ff } .o2 { stop-color: #8f8ff2 } .o3 { stop-color: #5b5bd6 }
+    @media (prefers-color-scheme: dark) {
+      .t0 { stop-color: #3c3c47 } .t1 { stop-color: #1d1d23 } .edge { stroke-opacity: .2 }
+      .o1 { stop-color: #d4d4ff } .o2 { stop-color: #9393f5 } .o3 { stop-color: #6363dd }
+    }
+  </style>
+  <defs>
+    <linearGradient id="tile" x2="0" y2="1">
+      <stop class="t0" offset="0"/>
+      <stop class="t1" offset="1"/>
+    </linearGradient>
+    <radialGradient id="orb" cy=".45" r=".5">
+      <stop class="o1" offset="0"/>
+      <stop class="o2" offset=".52"/>
+      <stop class="o3" offset="1"/>
+    </radialGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#tile)"/>
+  <rect class="edge" x="2.5" y="2.5" width="59" height="59" rx="14.5" fill="none" stroke="#fff"/>
+  <path d="M14.4 21 25.4 32 14.4 43" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="43.4" cy="32" r="9.5" fill="url(#orb)"/>
+</svg>

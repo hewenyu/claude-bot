@@ -130,6 +130,10 @@ func (a *app) serve(ctx context.Context, ask screen.Asker) error {
 
 	go a.screener(ctx, ask, a.screen)
 
+	if a.closable() {
+		go a.watchClosed(ctx)
+	}
+
 	return a.listen(ctx)
 }
 

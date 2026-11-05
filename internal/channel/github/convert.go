@@ -127,6 +127,7 @@ type issue struct {
 	HTMLURL     string    `json:"html_url"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	ClosedAt    time.Time `json:"closed_at"` // zero while open
 	PullRequest *struct{} `json:"pull_request"`
 }
 

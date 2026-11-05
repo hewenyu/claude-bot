@@ -65,7 +65,7 @@ claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop
 | `new` | 还没处理的用户 entry，要回应的就是这些；前面的是上下文 |
 | `handled` `shown` | 已处理到第几个 entry、上次 `inbox` 输出时有几个，由 claude-bot 维护 |
 
-`reply <task:id>` 回在这件事最新的那条用户消息下，回复记进 `entries`，然后把 `inbox` 上次给出的 entry 标记为已处理；Claude 处理期间又来了新的 entry，这件事留在待处理里（`reply` 输出 `still pending`），下次 `inbox` 再给出来。所有读写都在 `inbox/tasks.lock` 上加锁，监听进程和命令不会互相覆盖。旧版本留下的 `inbox/pending/` 消息，监听进程启动时会挪回 `incoming/` 重新筛选。
+`reply <task:id>` 回在这件事最新的那条用户消息下，回复记进 `entries`，然后把 `inbox` 上次给出的 entry 标记为已处理；Claude 处理期间又来了新的 entry，这件事留在待处理里（`reply` 输出 `still pending`），下次 `inbox` 再给出来。会话在平台上被关掉的（GitHub 的 issue 被关闭、PR 被关闭或合并，不管是谁在哪儿关的），这件事直接算已处理：监听进程启动时和之后每分钟查一遍待处理的事，`inbox` 给出之前也会再查一次；关闭之后又有人说了话的，照样留在待处理里。所有读写都在 `inbox/tasks.lock` 上加锁，监听进程和命令不会互相覆盖。旧版本留下的 `inbox/pending/` 消息，监听进程启动时会挪回 `incoming/` 重新筛选。
 
 Jev 调用失败（网络、限流、key 失效）时，消息留在 `incoming/`，监听进程退避重试（最长 5 分钟一次），错误写进 `serve.log`，`status` 的 `screening` 显示还有几条在等。没筛过的内容不会交给 Claude。注意聊天内容和文本附件的开头会发给 TypeSafe 的服务器。
 
