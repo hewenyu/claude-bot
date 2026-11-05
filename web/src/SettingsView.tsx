@@ -3,6 +3,7 @@ import { api } from "./api";
 import { shortPath } from "./format";
 import { usePoll } from "./hooks";
 import type { GitHubProject, GitHubToken, Overview, SecretView, Settings } from "./types";
+import { Icon } from "./icons";
 import { Banner, Dot, Modal, errorText, toast } from "./ui";
 
 export function SettingsView({ overview }: { overview: Overview }) {
@@ -61,7 +62,7 @@ function SecretSetting({
     <section className="card setting">
       <header className="card-head">
         <div className="card-title">
-          <h3>{title}</h3>
+          <h2>{title}</h2>
           <SecretState value={value} missing={missing} />
         </div>
       </header>
@@ -116,11 +117,16 @@ function ReplaceSecret({ label, value, save, onSaved }: { label: string; value: 
           onChange={(e) => setInput(e.target.value)}
           aria-label={label}
         />
-        <button type="submit" className="btn btn-primary" disabled={!input.trim() || busy}>
+        <button type="submit" className={`btn${input.trim() ? " btn-primary" : ""}`} disabled={!input.trim() || busy}>
           {busy ? "验证中…" : "验证并保存"}
         </button>
       </form>
-      {error && <p className="test test-bad">✗ {error}</p>}
+      {error && (
+        <p className="test test-bad">
+          <Icon name="cross" />
+          {error}
+        </p>
+      )}
     </>
   );
 }
@@ -138,7 +144,7 @@ function GitHubTokens({ settings, onSaved }: { settings: Settings; onSaved: () =
     <section className="card setting">
       <header className="card-head">
         <div className="card-title">
-          <h3>GitHub token</h3>
+          <h2>GitHub token</h2>
           <SecretState value={def.token} missing={projects.length ? "没有默认 token，GitHub 渠道连不上" : "未设置"} />
         </div>
       </header>
@@ -154,7 +160,7 @@ function GitHubTokens({ settings, onSaved }: { settings: Settings; onSaved: () =
             <span className="muted small">{def.token.set ? hint(def.token) : "未设置"}</span>
           </div>
           <Serves names={def.projects} empty={projects.length ? "没有项目用它" : "还没有项目接 GitHub"} />
-          <span />
+          <span className="muted small">在下面替换</span>
         </li>
         {named.map((t) => (
           <li key={t.name} className="token-row">
@@ -309,7 +315,12 @@ function TokenEditor({
           ))}
           <span className="muted small">不勾的项目用默认 token；原来用这个 token、现在不勾的项目，改回默认 token。</span>
         </fieldset>
-        {error && <p className="test test-bad">✗ {error}</p>}
+        {error && (
+          <p className="test test-bad">
+            <Icon name="cross" />
+            {error}
+          </p>
+        )}
       </form>
     </Modal>
   );

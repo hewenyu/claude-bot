@@ -1,17 +1,18 @@
 import { useEffect } from "react";
 import { api, AuthError, hasToken, OfflineError } from "./api";
-import { projectStateLabel, shortPath, uptime } from "./format";
+import { channel, projectStateLabel, shortPath, uptime } from "./format";
 import { useNow, usePoll } from "./hooks";
 import { ProjectView } from "./ProjectView";
 import { go, href, useRoute } from "./route";
 import { SettingsView } from "./SettingsView";
 import type { Overview, ProjectStatus } from "./types";
-import { Banner, Command, Dot, Empty, Toasts } from "./ui";
+import { BigIcon, Icon } from "./icons";
+import { Banner, Command, Dot, Empty, SrOnly, Toasts } from "./ui";
 
 export function projectTone(p: ProjectStatus): "ok" | "warn" | "bad" | "off" {
   switch (p.state) {
     case "running":
-      return p.stopped?.length ? "warn" : "ok";
+      return p.stopped?.length ? "bad" : "ok";
     case "starting":
     case "busy":
       return "warn";
@@ -22,15 +23,37 @@ export function projectTone(p: ProjectStatus): "ok" | "warn" | "bad" | "off" {
   }
 }
 
+const severity = { bad: 0, warn: 1, ok: 2, off: 3 };
+
+/** Projects that need you first; otherwise in the gateway's order. */
+export function bySeverity(projects: ProjectStatus[]): ProjectStatus[] {
+  return [...projects].sort((a, b) => severity[projectTone(a)] - severity[projectTone(b)]);
+}
+
+/** The project's state in words; a running project with a stopped channel says which. */
+export function projectLabel(p: ProjectStatus): string {
+  const stopped = p.stopped ?? [];
+  if (p.state !== "running" || !stopped.length) return projectStateLabel[p.state];
+
+  return stopped.length === 1 ? `${channel(stopped[0]).label} 已停止` : `${stopped.length} 个渠道已停止`;
+}
+
 export function App() {
   const route = useRoute();
   const overview = usePoll(api.overview, 3000, "overview");
   const data = overview.data;
 
-  // With nothing chosen, open the first project.
+  // With nothing chosen, open the project that most needs you.
   useEffect(() => {
-    if (route.page === "home" && data?.projects.length) go({ page: "project", project: data.projects[0].id, tab: "tasks" });
+    if (route.page === "home" && data?.projects.length) go({ page: "project", project: bySeverity(data.projects)[0].id, tab: "tasks" });
   }, [route.page, data]);
+
+  // A background tab says when something is broken.
+  const broken = data?.projects.filter((p) => projectTone(p) === "bad").length ?? 0;
+  const offline = overview.error instanceof OfflineError;
+  useEffect(() => {
+    document.title = offline ? "已断开 · claude-bot gateway" : broken ? `${broken} 个项目出错 · claude-bot gateway` : "claude-bot gateway";
+  }, [broken, offline]);
 
   if (!hasToken() || overview.error instanceof AuthError) return <AuthScreen />;
   if (!data && overview.error instanceof OfflineError) return <OfflineScreen />;
@@ -85,19 +108,25 @@ function Sidebar({ overview, active, offline }: { overview: Overview; active: nu
         项目 <span className="count">{overview.projects.length}</span>
       </div>
       <ul className="nav-list">
-        {overview.projects.map((p) => (
+        {bySeverity(overview.projects).map((p) => (
           <li key={p.id}>
             <a className={`nav-item${active === p.id ? " active" : ""}`} href={href({ page: "project", project: p.id, tab: "tasks" })} aria-current={active === p.id ? "page" : undefined}>
               <Dot tone={projectTone(p)} pulse={p.state === "starting"} />
               <span className="nav-text">
                 <span className="nav-name">{p.name}</span>
-                <span className="nav-sub" title={p.dir}>
-                  {p.state === "running" && !p.stopped?.length ? shortPath(p.dir) : projectStateLabel[p.state]}
-                </span>
+                {p.state === "running" && !p.stopped?.length ? (
+                  <span className="nav-sub nav-path" title={p.dir}>
+                    <SrOnly>运行中，</SrOnly>
+                    {shortPath(p.dir)}
+                  </span>
+                ) : (
+                  <span className="nav-sub">{projectLabel(p)}</span>
+                )}
               </span>
               {p.pending > 0 && (
-                <span className="pill pill-accent" title={`${p.pending} 件待处理`}>
-                  {p.pending}
+                <span className="pill pill-accent" title={`${p.pending} 件进行中`}>
+                  <span aria-hidden>{p.pending}</span>
+                  <SrOnly>，{p.pending} 件进行中</SrOnly>
                 </span>
               )}
             </a>
@@ -108,8 +137,8 @@ function Sidebar({ overview, active, offline }: { overview: Overview; active: nu
 
       <div className="nav-foot">
         <a className={`nav-item${active === "settings" ? " active" : ""}`} href={href({ page: "settings" })}>
-          <span className="gear" aria-hidden>
-            ⚙
+          <span className="gear">
+            <Icon name="gear" />
           </span>
           <span className="nav-text">
             <span className="nav-name">共用设置</span>
@@ -125,7 +154,7 @@ function Sidebar({ overview, active, offline }: { overview: Overview; active: nu
 function NoProjects() {
   return (
     <div className="center-page">
-      <Empty title="还没有项目" icon={<span className="big-icon">⌁</span>}>
+      <Empty title="还没有项目" icon={<BigIcon name="folder" />}>
         <p>在要值守的仓库里运行 init，项目会自动登记到 gateway，几秒内出现在这里：</p>
         <Command>cd 你的项目 && claude-bot init</Command>
         <p className="muted">以前用 claude-bot start 单独跑的项目，在仓库里运行：</p>
@@ -138,7 +167,7 @@ function NoProjects() {
 function AuthScreen() {
   return (
     <div className="center-page full">
-      <Empty title="需要访问令牌" icon={<span className="big-icon">⚿</span>}>
+      <Empty title="需要访问令牌" icon={<BigIcon name="key" />}>
         <p>这个页面能看到各项目的对话、改渠道凭证，所以要带着令牌打开。在终端里运行：</p>
         <Command>claude-bot gateway open</Command>
         <p className="muted">它会用带令牌的地址打开这个页面；令牌存在这个浏览器里，之后直接打开也行。</p>
@@ -150,7 +179,7 @@ function AuthScreen() {
 function OfflineScreen() {
   return (
     <div className="center-page full">
-      <Empty title="连不上 gateway" icon={<span className="big-icon">⏻</span>}>
+      <Empty title="连不上 gateway" icon={<BigIcon name="power" />}>
         <p>gateway 可能没在运行。在终端里启动它：</p>
         <Command>claude-bot gateway start</Command>
         <p className="muted">

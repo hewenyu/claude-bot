@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { api } from "./api";
-import { projectTone } from "./App";
+import { projectLabel, projectTone } from "./App";
 import { ChannelsPanel } from "./Channels";
-import { channel, projectStateLabel, shortPath } from "./format";
+import { channel, shortPath } from "./format";
 import { go, href } from "./route";
 import { TasksPanel } from "./Tasks";
 import type { Overview, ProjectStatus } from "./types";
-import { Banner, ChannelBadge, Command, CopyButton, Dot, Modal, errorText, toast } from "./ui";
+import { Banner, ChannelBadge, Command, CopyButton, Dot, Modal, SrOnly, errorText, toast } from "./ui";
 
 interface Props {
   project: ProjectStatus;
@@ -27,10 +27,10 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
           <h1>{p.name}</h1>
           <span className={`state state-${projectTone(p)}`}>
             <Dot tone={projectTone(p)} pulse={p.state === "starting"} />
-            {projectStateLabel[p.state]}
+            {projectLabel(p)}
           </span>
           <span className="grow" />
-          <button type="button" className="btn btn-danger-outline" onClick={() => setRemoving(true)}>
+          <button type="button" className="btn btn-ghost btn-danger-text" onClick={() => setRemoving(true)}>
             移除项目
           </button>
         </div>
@@ -44,12 +44,12 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
         </div>
       </header>
 
-      <StateNotice project={p} overview={overview} />
+      <StateNotice project={p} overview={overview} tab={tab} />
 
       <nav className="tabs" aria-label="项目内容">
         <a className={`tab${tab === "tasks" ? " active" : ""}`} href={href({ page: "project", project: p.id, tab: "tasks" })}>
           任务
-          {p.pending > 0 && <span className="pill pill-accent">{p.pending} 待处理</span>}
+          {p.pending > 0 && <span className="pill pill-accent">{p.pending} 进行中</span>}
           {p.screening > 0 && <span className="pill" title="刚收到、正在由 Jev 筛选的消息">{p.screening} 筛选中</span>}
         </a>
         <a className={`tab${tab === "channels" ? " active" : ""}`} href={href({ page: "project", project: p.id, tab: "channels" })}>
@@ -122,14 +122,16 @@ function ChannelHealth({ project: p }: { project: ProjectStatus }) {
       {p.channels.map((name) => {
         const stopped = p.stopped?.includes(name);
         const connected = p.connected?.includes(name);
-        const tone = stopped ? "bad" : connected ? "ok" : "off";
-        const why = stopped ? `已停止：${p.errors?.[name] ?? "出错"}` : connected ? "已连接" : "未连接";
+        // A failed project has no channel up: each one is down, not just idle.
+        const tone = stopped || p.state === "failed" ? "bad" : connected ? "ok" : "off";
+        const why = stopped ? `已停止：${p.errors?.[name] ?? "出错"}` : connected ? "已连接" : p.state === "failed" ? "没连上：项目出错" : "未连接";
 
         return (
           <span key={name} className={`chip chip-${tone}`} title={`${channel(name).label} ${why}`}>
             <ChannelBadge name={name} size="sm" />
             {channel(name).label}
             <Dot tone={tone} />
+            <SrOnly>：{why}</SrOnly>
           </span>
         );
       })}
@@ -138,8 +140,9 @@ function ChannelHealth({ project: p }: { project: ProjectStatus }) {
 }
 
 /** Why the project is not served as it should be, and what to do. */
-function StateNotice({ project: p, overview }: { project: ProjectStatus; overview: Overview }) {
+function StateNotice({ project: p, overview, tab }: { project: ProjectStatus; overview: Overview; tab: "tasks" | "channels" }) {
   const stopped = p.stopped ?? [];
+  const channels = href({ page: "project", project: p.id, tab: "channels" });
 
   switch (p.state) {
     case "busy":
@@ -158,27 +161,36 @@ function StateNotice({ project: p, overview }: { project: ProjectStatus; overvie
             <strong>没能连上这个项目：</strong>
             {p.error}
           </p>
-          <p className="muted">改好配置（比如在「渠道」里更新凭证）后，gateway 会自动重试。</p>
+          <p className="muted">
+            改好配置后 gateway 会自动重试：凭证在「<a href={channels}>渠道</a>」里改，TypeSafe key 在「<a href={href({ page: "settings" })}>共用设置</a>」里改。要改的是平台那边的设置（比如开发者后台），改好后重启 gateway：
+          </p>
+          <Command>claude-bot gateway restart</Command>
         </Banner>
       );
     case "idle":
       return (
         <Banner tone="info">
-          <p>这个项目还没有渠道。在「渠道」里添加，或者在项目里运行：</p>
+          <p>
+            这个项目还没有渠道。在「<a href={channels}>渠道</a>」里添加，或者在项目里运行：
+          </p>
           <Command>{`claude-bot -C ${p.dir} init`}</Command>
         </Banner>
       );
     case "stopped":
       return overview.running ? null : <Banner tone="bad">gateway 没在运行。</Banner>;
     default:
-      return stopped.length ? (
+      // On the channels tab each stopped card says why and how to recover.
+      return stopped.length && tab === "tasks" ? (
         <Banner tone="bad">
           {stopped.map((name) => (
             <p key={name}>
               <strong>{channel(name).label} 已停止：</strong>
-              {p.errors?.[name] ?? "出错"}。其他渠道照常工作；在「渠道」里更新凭证后会自动重连。
+              {p.errors?.[name] ?? "出错"}
             </p>
           ))}
+          <p className="muted">
+            其他渠道照常工作。<a href={channels}>去「渠道」处理</a>
+          </p>
         </Banner>
       ) : null;
   }

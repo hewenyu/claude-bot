@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "./api";
 import { ago, channel, fullTime, taskStateLabel } from "./format";
 import { useNow, usePoll } from "./hooks";
+import { BigIcon, Icon } from "./icons";
 import { Markdown } from "./markdown";
 import { go, href } from "./route";
 import type { Entry, ProjectStatus, TaskDetail, TaskState, TaskSummary } from "./types";
-import { Banner, ChannelBadge, CopyButton, Dot, Empty, errorText } from "./ui";
+import { Banner, ChannelBadge, CopyButton, Dot, Empty, SrOnly, errorText } from "./ui";
 
 /**
  * The page shows the open tasks; handled ones are archived on their own and
@@ -23,11 +24,22 @@ const views: { key: View; label: string; match: (s: TaskState) => boolean }[] = 
 const matches = (t: TaskSummary, q: string) =>
   !q || t.title.toLowerCase().includes(q) || t.senders.some((s) => s.toLowerCase().includes(q)) || t.id.includes(q);
 
+/** GitHub threads are public issues and PRs, not group chats. */
+const chatKind = (t: TaskSummary) => (t.channel === "github" ? "GitHub" : t.chat_type === "group" ? "群聊" : "私聊");
+
 const stateTone: Record<TaskState, "warn" | "info" | "ok" | "off"> = {
   pending: "warn",
   working: "info",
   replied: "ok",
   closed: "off",
+};
+
+/** Why nothing has come in, for a project whose messages cannot arrive yet; the banner above says how to fix it. */
+const noTasksYet: Partial<Record<ProjectStatus["state"], string>> = {
+  starting: "渠道正在连接，连上后新消息会出现在这里。",
+  failed: "这个项目没连上，消息进不来。处理好上面的问题后，新消息会出现在这里。",
+  idle: "这个项目还没有渠道，消息进不来。",
+  stopped: "gateway 没在运行，消息进不来。",
 };
 
 export function TasksPanel({ project, selected }: { project: ProjectStatus; selected?: string }) {
@@ -46,6 +58,14 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
     return { shown: found[view], counts: { open: byView.open.length, archived: byView.archived.length }, found };
   }, [tasks.data, view, query]);
 
+  // A link to an archived task opens the archive, so its row shows as picked.
+  // Once per link: switching views by hand afterwards sticks.
+  const loaded = !!tasks.data;
+  useEffect(() => {
+    const t = tasks.data?.find((x) => x.id === selected);
+    if (t) setView(archived(t.state) ? "archived" : "open");
+  }, [selected, loaded]); // not tasks.data: each poll would undo a switch by hand
+
   // With no task picked, the page shows the latest open conversation.
   const current = selected ?? (view === "open" && !query.trim() ? shown[0]?.id : undefined);
   const other: View = view === "open" ? "archived" : "open";
@@ -57,8 +77,8 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
   if (tasks.data && !tasks.data.length) {
     return (
       <div className="panel-empty">
-        <Empty title="还没有任务" icon={<span className="big-icon">✉</span>}>
-          <p>私聊 bot、在群里 @ 它，或者在接了 GitHub 渠道的仓库里开 issue，消息经 Jev 归成一件件事后会出现在这里。</p>
+        <Empty title="还没有任务" icon={<BigIcon name="inbox" />}>
+          <p>{noTasksYet[project.state] ?? "私聊 bot、在群里 @ 它，或者在接了 GitHub 渠道的仓库里开 issue，消息经 Jev 归成一件件事后会出现在这里。"}</p>
           {project.screening > 0 && (
             <p>
               <Dot tone="info" pulse /> 有 {project.screening} 条消息正在筛选。
@@ -70,12 +90,12 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
   }
 
   return (
-    <div className="tasks">
+    <div className={`tasks${!current && !shown.length ? " solo" : ""}`}>
       <section className="task-list" aria-label="任务列表">
         <div className="task-tools">
-          <div className="segmented" role="tablist">
+          <div className="segmented" role="group" aria-label="显示哪些任务">
             {views.map((v) => (
-              <button key={v.key} type="button" role="tab" aria-selected={view === v.key} className={view === v.key ? "on" : ""} onClick={() => setView(v.key)}>
+              <button key={v.key} type="button" aria-pressed={view === v.key} className={view === v.key ? "on" : ""} onClick={() => setView(v.key)}>
                 {v.label}
                 <span className="seg-count">{counts[v.key]}</span>
               </button>
@@ -96,9 +116,12 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
         </ul>
       </section>
 
-      <section className="conversation" aria-label="对话">
-        {current ? <Conversation project={project.id} id={current} /> : <Empty title="选一个任务，查看完整对话" icon={<span className="big-icon">☰</span>} />}
-      </section>
+      {/* Nothing to pick: the list says why, and an empty pane beside it would only repeat it. */}
+      {(current || shown.length > 0) && (
+        <section className="conversation" aria-label="对话">
+          {current ? <Conversation project={project.id} id={current} /> : <Empty title="选一个任务，查看完整对话" icon={<BigIcon name="chat" />} />}
+        </section>
+      )}
     </div>
   );
 }
@@ -132,7 +155,7 @@ function EmptyView({ view, query, elsewhere, archivedCount, onSwitch, onClear }:
 
   if (view === "open") {
     return (
-      <Empty title="没有进行中的任务" icon={<span className="big-icon">✓</span>}>
+      <Empty title="没有进行中的任务" icon={<BigIcon name="check" />}>
         <p>{archivedCount > 0 ? `处理完的 ${archivedCount} 件已自动归档。` : ""}有新消息或追问时，任务会出现在这里。</p>
         {archivedCount > 0 && (
           <button type="button" className="btn btn-ghost" onClick={onSwitch}>
@@ -163,10 +186,16 @@ function TaskRow({ task: t, project, active, now }: { task: TaskSummary; project
         </div>
         <div className="task-row-meta">
           <ChannelBadge name={t.channel} size="sm" />
-          <span>{t.chat_type === "group" ? "群聊" : t.channel === "github" ? "GitHub" : "私聊"}</span>
+          <span>{chatKind(t)}</span>
           {t.senders.length > 0 && <span className="ellipsis">· {t.senders.slice(0, 2).join("、")}{t.senders.length > 2 ? ` 等 ${t.senders.length} 人` : ""}</span>}
           <span className="grow" />
-          {t.replies > 0 && <span title={`bot 回复了 ${t.replies} 次`}>↩ {t.replies}</span>}
+          {t.replies > 0 && (
+            <span className="replies" title={`bot 回复了 ${t.replies} 次`}>
+              <Icon name="reply" />
+              {t.replies}
+              <SrOnly> 次回复</SrOnly>
+            </span>
+          )}
           <time dateTime={t.updated_at} title={fullTime(t.updated_at)}>
             {ago(t.updated_at, now)}
           </time>
@@ -244,7 +273,7 @@ function Conversation({ project, id }: { project: number; id: string }) {
         <div className="conv-meta">
           <ChannelBadge name={t.channel} size="sm" />
           <span>
-            {channel(t.channel).label} · {t.chat_type === "group" ? "群聊" : "私聊"}
+            {t.channel === "github" ? channel(t.channel).label : `${channel(t.channel).label} · ${chatKind(t)}`}
           </span>
           <span className="mono" title="会话 id">
             {t.chat_id}
