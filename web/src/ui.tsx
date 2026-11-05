@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { channel } from "./format";
 import { Icon } from "./icons";
 import { ChannelLogo, hasLogo } from "./logos";
@@ -36,6 +36,34 @@ export function Mark({ tone, live }: { tone: Tone; live?: boolean }) {
 /** The gateway's presence: calm when all is well, breathing while a bot works, red when something is broken. */
 export function Orb({ state = "calm", size = "md" }: { state?: "calm" | "working" | "bad" | "off"; size?: "sm" | "md" | "lg" }) {
   return <span className={`orb orb-${size} orb-${state}`} aria-hidden />;
+}
+
+/**
+ * The app icon (docs/logo.svg): an ink tile, the terminal prompt and the orb
+ * after it. Beside the name it is the brand, and its orb breathes while a bot works.
+ */
+export function AppIcon({ working = false, size = "md" }: { working?: boolean; size?: "sm" | "md" }) {
+  const id = useId();
+
+  return (
+    <svg className={`app-icon app-icon-${size}${working ? " app-icon-working" : ""}`} viewBox="0 0 64 64" aria-hidden>
+      <defs>
+        <linearGradient id={`${id}t`} x2="0" y2="1">
+          <stop className="app-icon-t0" offset="0" />
+          <stop className="app-icon-t1" offset="1" />
+        </linearGradient>
+        <radialGradient id={`${id}o`} cy=".45" r=".5">
+          <stop className="app-icon-o1" offset="0" />
+          <stop className="app-icon-o2" offset=".52" />
+          <stop className="app-icon-o3" offset="1" />
+        </radialGradient>
+      </defs>
+      <rect x="2" y="2" width="60" height="60" rx="15" fill={`url(#${id}t)`} />
+      <rect className="app-icon-edge" x="2.5" y="2.5" width="59" height="59" rx="14.5" fill="none" stroke="#fff" />
+      <path d="M14.4 21 25.4 32 14.4 43" fill="none" stroke="#fff" strokeWidth="6.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle className="app-icon-orb" cx="43.4" cy="32" r="9.5" fill={`url(#${id}o)`} />
+    </svg>
+  );
 }
 
 /** Text for screen readers only: what a mark or a tooltip says to the eye. */

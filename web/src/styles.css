@@ -294,6 +294,59 @@ kbd {
   }
 }
 
+/* The app icon beside the name: the same tile, prompt and orb as the
+   favicon; the tile lifts in dark mode and the orb breathes while a bot works. */
+.app-icon {
+  flex: none;
+  --t0: #2a2a32;
+  --t1: #0d0d0f;
+  --edge: 0.12;
+}
+
+.app-icon-md {
+  width: 28px;
+  height: 28px;
+}
+.app-icon-sm {
+  width: 22px;
+  height: 22px;
+}
+
+.app-icon-t0 {
+  stop-color: var(--t0);
+}
+.app-icon-t1 {
+  stop-color: var(--t1);
+}
+.app-icon-o1 {
+  stop-color: var(--orb-1);
+}
+.app-icon-o2 {
+  stop-color: var(--orb-2);
+}
+.app-icon-o3 {
+  stop-color: var(--orb-3);
+}
+.app-icon-edge {
+  stroke-opacity: var(--edge);
+}
+
+.app-icon-orb {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.app-icon-working .app-icon-orb {
+  animation: orb-breathe 2.8s ease-in-out infinite;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-icon {
+    --t0: #3c3c47;
+    --t1: #1d1d23;
+    --edge: 0.2;
+  }
+}
+
 /* A state mark: filled is up, a ring is waiting, struck through is down,
    hollow grey is off, a small orb is the bot at work. */
 .mark {

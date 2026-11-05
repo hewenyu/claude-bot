@@ -11,7 +11,7 @@ import { href, useRoute, type Route } from "./route";
 import { SettingsView } from "./SettingsView";
 import { bySeverity, presence, projectLabel, projectTone } from "./status";
 import type { Overview } from "./types";
-import { Banner, Command, Empty, Mark, Orb, SrOnly, Toasts } from "./ui";
+import { AppIcon, Banner, Command, Empty, Mark, Orb, SrOnly, Toasts } from "./ui";
 
 export function App() {
   const route = useRoute();
@@ -59,7 +59,7 @@ export function App() {
             <Icon name="menu" />
           </button>
           <a className="topbar-brand" href={href({ page: "home" })}>
-            <Orb state={presence(data, offline) === "working" ? "working" : "calm"} size="sm" />
+            <AppIcon working={presence(data, offline) === "working"} size="sm" />
             claude-bot
           </a>
           <button type="button" className="icon-btn" onClick={() => setPalette(true)} aria-label="跳转">
@@ -106,7 +106,7 @@ function Rail({ overview, route, offline, onSearch, onClose }: { overview: Overv
     <nav className="rail" aria-label="导航">
       <div className="rail-top">
         <a className="brand" href={href({ page: "home" })}>
-          <Orb state={presence(overview, offline) === "working" ? "working" : "calm"} />
+          <AppIcon working={presence(overview, offline) === "working"} />
           <span>claude-bot</span>
         </a>
         <button type="button" className="icon-btn rail-close" onClick={onClose} aria-label="关闭项目列表">
