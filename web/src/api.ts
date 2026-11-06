@@ -10,6 +10,7 @@ import type {
   Run,
   RunnerOverview,
   Settings,
+  ProjectStatus,
   TaskDetail,
   TaskSummary,
   TestResult,
@@ -71,6 +72,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 const p = (id: number) => `/api/projects/${id}`;
+const ch = (project: number, name: string) => `${p(project)}/channels/${encodeURIComponent(name)}`;
 
 export const api = {
   overview: () => call<Overview>("GET", "/api/overview"),
@@ -79,11 +81,11 @@ export const api = {
   task: (project: number, id: string) => call<TaskDetail>("GET", `${p(project)}/tasks/${encodeURIComponent(id)}`),
   channels: (project: number) => call<ChannelView[]>("GET", `${p(project)}/channels`),
   saveChannel: (project: number, name: string, fields: Record<string, string>) =>
-    call<ChannelView>("PUT", `${p(project)}/channels/${name}`, { fields }),
+    call<ChannelView>("PUT", ch(project, name), { fields }),
   // Without fields, the channel is tested as saved.
   testChannel: (project: number, name: string, fields?: Record<string, string>) =>
-    call<TestResult>("POST", `${p(project)}/channels/${name}/test`, fields ? { fields } : {}),
-  removeChannel: (project: number, name: string) => call<void>("DELETE", `${p(project)}/channels/${name}`),
+    call<TestResult>("POST", `${ch(project, name)}/test`, fields ? { fields } : {}),
+  removeChannel: (project: number, name: string) => call<void>("DELETE", ch(project, name)),
   removeProject: (project: number) => call<{ config: string }>("DELETE", p(project)),
   settings: () => call<Settings>("GET", "/api/settings"),
   saveSettings: (s: { typesafe_key?: string; github_token?: string }) => call<Settings>("PUT", "/api/settings", s),
@@ -109,4 +111,19 @@ export function openTerminal(agent: string): WebSocket {
   ws.binaryType = "arraybuffer";
 
   return ws;
+}
+
+/**
+ * Every task of the given projects, each with its project. A project whose
+ * tasks cannot be read is left out rather than failing the lot.
+ */
+export function tasksOf(projects: ProjectStatus[]): Promise<{ project: ProjectStatus; task: TaskSummary }[]> {
+  return Promise.all(
+    projects.map((project) =>
+      api.tasks(project.id).then(
+        (ts) => ts.map((task) => ({ project, task })),
+        () => [],
+      ),
+    ),
+  ).then((all) => all.flat());
 }

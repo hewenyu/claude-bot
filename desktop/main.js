@@ -20,6 +20,9 @@ const OPEN_TIMEOUT_MS = 10_000;
 // terminal. Everything else (camera, geolocation, …) is denied.
 const ALLOWED_PERMISSIONS = new Set(["notifications", "clipboard-sanitized-write"]);
 
+/** Login shells that run the POSIX script in run(). */
+const POSIX_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh"]);
+
 /**
  * The claude-bot binary: $CLAUDE_BOT_BIN, the one inside the app, the
  * repository's own build when run from it, else the one on the login
@@ -46,7 +49,9 @@ function claudeBot() {
  * @returns {Promise<string>} what it printed
  */
 function run(args, timeout) {
-  const sh = process.env.SHELL || "/bin/zsh";
+  // The script below is POSIX sh; a fish or nushell login shell would reject it.
+  const user = process.env.SHELL ?? "";
+  const sh = POSIX_SHELLS.has(path.basename(user)) ? user : "/bin/zsh";
   const script = `exec "$0" ${args.map((a) => `'${a}'`).join(" ")}`;
 
   return new Promise((resolve, reject) => {
@@ -157,6 +162,21 @@ async function open() {
   }
 }
 
+/** @type {Promise<void> | null} */
+let opening = null;
+
+/**
+ * open, unless it is already under way: clicking the Dock icon while the
+ * gateway starts (no window yet) must not start it, or ask, a second time.
+ */
+function openOnce() {
+  opening ??= open().finally(() => {
+    opening = null;
+  });
+
+  return opening;
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -172,10 +192,10 @@ if (!app.requestSingleInstanceLock()) {
     session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)));
     session.defaultSession.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
 
-    void open();
+    void openOnce();
 
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) void open();
+      if (BrowserWindow.getAllWindows().length === 0) void openOnce();
     });
   });
 

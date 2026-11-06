@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "./api";
 import { ago, channel, fullTime, taskStateLabel } from "./format";
-import { useNow, usePoll } from "./hooks";
+import { POLL_SLOW, useNow, usePoll } from "./hooks";
 import { Icon } from "./icons";
 import { Markdown } from "./markdown";
 import { go, href } from "./route";
+import { isOpenTask, taskTone, untitled } from "./status";
 import type { Entry, ProjectStatus, TaskDetail, TaskState, TaskSummary } from "./types";
 import { Banner, ChannelBadge, CopyButton, Empty, Mark, SrOnly, errorText } from "./ui";
 
@@ -14,7 +15,7 @@ import { Banner, ChannelBadge, CopyButton, Empty, Mark, SrOnly, errorText } from
  */
 type View = "open" | "archived";
 
-const archived = (s: TaskState) => s === "replied" || s === "closed";
+const archived = (s: TaskState) => !isOpenTask(s);
 
 const views: { key: View; label: string; match: (s: TaskState) => boolean }[] = [
   { key: "open", label: "进行中", match: (s) => !archived(s) },
@@ -27,12 +28,6 @@ const matches = (t: TaskSummary, q: string) =>
 /** GitHub threads are public issues and PRs, not group chats. */
 const chatKind = (t: TaskSummary) => (t.channel === "github" ? "GitHub" : t.chat_type === "group" ? "群聊" : "私聊");
 
-const stateTone: Record<TaskState, "warn" | "info" | "ok" | "off"> = {
-  pending: "warn",
-  working: "info",
-  replied: "ok",
-  closed: "off",
-};
 
 /** Why nothing has come in, for a project whose messages cannot arrive yet; the banner above says how to fix it. */
 const noTasksYet: Partial<Record<ProjectStatus["state"], string>> = {
@@ -44,7 +39,7 @@ const noTasksYet: Partial<Record<ProjectStatus["state"], string>> = {
 };
 
 export function TasksPanel({ project, selected }: { project: ProjectStatus; selected?: string }) {
-  const tasks = usePoll(() => api.tasks(project.id), 5000, `tasks-${project.id}`);
+  const tasks = usePoll(() => api.tasks(project.id), POLL_SLOW, `tasks-${project.id}`);
   const [view, setView] = useState<View>("open");
   const [query, setQuery] = useState("");
   const now = useNow();
@@ -175,14 +170,14 @@ function EmptyView({ view, query, elsewhere, archivedCount, onSwitch, onClear }:
 }
 
 function TaskRow({ task: t, project, active, now }: { task: TaskSummary; project: number; active: boolean; now: number }) {
-  const tone = stateTone[t.state];
+  const tone = taskTone[t.state];
 
   return (
     <li>
       <a className={`task-row${active ? " active" : ""}`} href={href({ page: "project", project, tab: "tasks", task: t.id })} aria-current={active ? "true" : undefined}>
         <span className="task-row-top">
           <Mark tone={tone} live={t.state === "working"} />
-          <span className="task-title">{t.title || "（没有文字）"}</span>
+          <span className="task-title">{t.title || untitled}</span>
           <time dateTime={t.updated_at} title={fullTime(t.updated_at)}>
             {ago(t.updated_at, now)}
           </time>
@@ -243,7 +238,7 @@ function turns(log: Entry[]): Turn[] {
 }
 
 function Conversation({ project, id }: { project: number; id: string }) {
-  const task = usePoll(() => api.task(project, id), 5000, `task-${project}-${id}`);
+  const task = usePoll(() => api.task(project, id), POLL_SLOW, `task-${project}-${id}`);
   const now = useNow();
 
   if (task.error && !task.data) {
@@ -269,7 +264,7 @@ function Conversation({ project, id }: { project: number; id: string }) {
     <div className="conv">
       <header className="conv-head">
         <div className="conv-title">
-          <h2>{t.title || "（没有文字）"}</h2>
+          <h2>{t.title || untitled}</h2>
           <span className="conv-actions">
             {t.link && (
               <a className="btn btn-ghost btn-sm" href={t.link} target="_blank" rel="noreferrer noopener">
@@ -290,8 +285,8 @@ function Conversation({ project, id }: { project: number; id: string }) {
           </div>
           <div>
             <dt>状态</dt>
-            <dd className={`tone-${stateTone[t.state]}`}>
-              <Mark tone={stateTone[t.state]} live={t.state === "working"} />
+            <dd className={`tone-${taskTone[t.state]}`}>
+              <Mark tone={taskTone[t.state]} live={t.state === "working"} />
               {taskStateLabel[t.state]}
             </dd>
           </div>

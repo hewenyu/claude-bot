@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { api } from "./api";
 import { shortPath } from "./format";
 import { usePoll } from "./hooks";
+import { activeRun } from "./status";
 import type { GitHubProject, GitHubToken, Overview, SecretView, Settings } from "./types";
 import { Icon } from "./icons";
 import { Banner, Mark, Modal, errorText, toast } from "./ui";
@@ -45,7 +46,7 @@ export function SettingsView({ overview }: { overview: Overview }) {
 
       <GitHubTokens settings={settings.data} onSaved={settings.reload} />
 
-      {overview.runner && <RunnerSetting saved={overview.runner.max_parallel} running={overview.runner.runs.filter((r) => ["running", "blocked", "waiting"].includes(r.state)).length} />}
+      {overview.runner && <RunnerSetting saved={overview.runner.max_parallel} running={overview.runner.runs.filter((r) => activeRun.has(r.state)).length} />}
     </div>
   );
 }
@@ -342,8 +343,8 @@ function TokenEditor({
             名字<span className="req"> *</span>
           </span>
           <input id="t-name" type="text" value={name} onChange={(e) => setName(e.target.value)} disabled={!!token} placeholder="比如 work、oss" autoComplete="off" spellCheck={false} />
-          {name && !nameOK && <span className="small state-bad">只能用字母、数字、_ . -，最多 40 个</span>}
-          {nameTaken && <span className="small state-bad">已经有叫这个名字的 token</span>}
+          {name && !nameOK && <span className="small tone-bad">只能用字母、数字、_ . -，最多 40 个</span>}
+          {nameTaken && <span className="small tone-bad">已经有叫这个名字的 token</span>}
         </label>
         <label className="form-row" htmlFor="t-token">
           <span className="form-label">

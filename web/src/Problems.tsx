@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Problem } from "./diagnose";
 import { Icon } from "./icons";
-import { ChannelBadge, Command, CopyButton } from "./ui";
+import { ChannelBadge, Command, CopyButton, useFlag } from "./ui";
 
 /** Something that needs the user: what happened, the main fix, and the steps behind it. */
 export function ProblemCard({ problem: p, open: initiallyOpen = false, showProject = true }: { problem: Problem; open?: boolean; showProject?: boolean }) {
@@ -64,7 +64,7 @@ export function ProblemCard({ problem: p, open: initiallyOpen = false, showProje
 }
 
 function Action({ problem: p }: { problem: Problem }) {
-  const [done, setDone] = useState(false);
+  const [done, flag] = useFlag();
   const a = p.action;
   if (!a) return null;
 
@@ -74,10 +74,7 @@ function Action({ problem: p }: { problem: Problem }) {
         type="button"
         className="btn btn-primary"
         onClick={() =>
-          navigator.clipboard.writeText(a.command).then(() => {
-            setDone(true);
-            window.setTimeout(() => setDone(false), 1500);
-          })
+          navigator.clipboard.writeText(a.command).then(flag)
         }
       >
         <Icon name={done ? "check" : "copy"} />

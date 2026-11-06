@@ -23,18 +23,36 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
     onChanged();
   };
 
-  if (channels.error && !channels.data) return <Banner tone="bad">读不到渠道配置：{errorText(channels.error)}</Banner>;
-  if (!channels.data || !types.data) return <div className="conv-loading" aria-busy="true" />;
+  const loadErr = (!channels.data && channels.error) || (!types.data && types.error);
+  if (loadErr)
+    return (
+      <Banner tone="bad">
+        读不到渠道配置：{errorText(loadErr)}{" "}
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => {
+            channels.reload();
+            types.reload();
+          }}
+        >
+          重试
+        </button>
+      </Banner>
+    );
+  const list = channels.data;
+  const kinds = types.data;
+  if (!list || !kinds) return <div className="conv-loading" aria-busy="true" />;
 
-  const typeOf = (name: string) => types.data!.find((t) => t.name === name);
-  const unused = types.data.filter((t) => !channels.data!.some((c) => c.name === t.name));
+  const typeOf = (name: string) => kinds.find((t) => t.name === name);
+  const unused = kinds.filter((t) => !list.some((c) => c.name === t.name));
 
   return (
     <div className="channels">
       <p className="lede">凭证只存在本机的 gateway 数据库里。保存后几秒内自动重连，不用重启。一个应用只能属于一个项目。</p>
 
       <div className="cards">
-        {channels.data.map((c) => (
+        {list.map((c) => (
           <ChannelCard
             key={c.name}
             view={c}
@@ -46,7 +64,7 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
         ))}
 
         {unused.length > 0 && <AddCard types={unused} onPick={(type) => setEditing({ type })} />}
-        {!channels.data.length && !unused.length && <Empty title="没有可用的渠道类型" />}
+        {!list.length && !unused.length && <Empty title="没有可用的渠道类型" />}
       </div>
 
       {editing && (

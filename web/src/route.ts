@@ -10,8 +10,17 @@ export type Route =
 
 export type Tab = "tasks" | "channels" | "agent";
 
+/** decodeURIComponent, but a malformed escape is kept as typed instead of throwing. */
+function decode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 export function parse(hash: string): Route {
-  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decode);
 
   if (parts[0] === "settings") return { page: "settings" };
 

@@ -2,7 +2,7 @@
 
 import { allProblems } from "./diagnose";
 import { channel, projectStateLabel } from "./format";
-import type { Overview, ProjectStatus, RunState } from "./types";
+import type { AgentStatus, Overview, ProjectStatus, RunState, TaskState } from "./types";
 import type { Tone } from "./ui";
 
 export function projectTone(p: ProjectStatus): Tone {
@@ -68,3 +68,25 @@ export function presence(o: Overview, offline: boolean): "calm" | "working" | "b
 
   return o.projects.some((p) => p.pending > 0) ? "working" : "calm";
 }
+
+export const taskTone: Record<TaskState, Tone> = {
+  pending: "warn",
+  working: "info",
+  replied: "ok",
+  closed: "off",
+};
+
+/** A task still waiting on, or in the hands of, the agent; the rest are archived. */
+export const isOpenTask = (s: TaskState): boolean => s === "pending" || s === "working";
+
+/** What a task with no text is called. */
+export const untitled = "（没有文字）";
+
+/** Agent statuses with a process behind them. */
+export const liveAgentStatus: ReadonlySet<AgentStatus> = new Set(["starting", "working", "blocked", "idle"]);
+
+/** Run states the 「再跑一轮」 button can start again from. */
+export const resumableRun: ReadonlySet<RunState> = new Set(["waiting", "failed", "resting"]);
+
+/** Run states that hold one of the runner's slots. */
+export const activeRun: ReadonlySet<RunState> = new Set(["running", "blocked", "waiting"]);

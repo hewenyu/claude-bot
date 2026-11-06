@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { api } from "./api";
-import { projectLabel, projectTone } from "./status";
+import { tasksOf } from "./api";
+import { isOpenTask, projectLabel, projectTone, taskTone, untitled } from "./status";
 import { taskStateLabel } from "./format";
 import { Icon, type IconName } from "./icons";
 import { go, type Route } from "./route";
@@ -19,8 +19,6 @@ interface Item {
   text: string; // what the query matches against
 }
 
-const taskTone = { pending: "warn", working: "info", replied: "ok", closed: "off" } as const;
-
 /** ⌘K: jump to a project, a task or a page by typing part of its name. */
 export function Palette({ overview, onClose }: { overview: Overview; onClose: () => void }) {
   const [query, setQuery] = useState("");
@@ -31,20 +29,21 @@ export function Palette({ overview, onClose }: { overview: Overview; onClose: ()
 
   useEffect(() => {
     input.current?.focus();
+  }, []);
+
+  // Keyed on the project ids, not the array: the overview poll hands over a
+  // new array every few seconds, and refetching every project's tasks each
+  // time would be wasted work while the palette is open.
+  const projects = overview.projects;
+  const ids = projects.map((p) => p.id).join(",");
+  useEffect(() => {
     let live = true;
-    Promise.all(
-      overview.projects.map((p) =>
-        api.tasks(p.id).then(
-          (ts) => ts.map((task) => ({ project: p.id, name: p.name, task })),
-          () => [],
-        ),
-      ),
-    ).then((all) => live && setTasks(all.flat()));
+    tasksOf(projects).then((all) => live && setTasks(all.map(({ project: p, task }) => ({ project: p.id, name: p.name, task }))));
 
     return () => {
       live = false;
     };
-  }, [overview.projects]);
+  }, [ids]);
 
   const items = useMemo(() => {
     const out: Item[] = [
@@ -57,13 +56,12 @@ export function Palette({ overview, onClose }: { overview: Overview; onClose: ()
       out.push({ key: `c${p.id}`, group: "项目", title: `${p.name} · 渠道`, sub: "凭证、测试连接、添加渠道", route: { page: "project", project: p.id, tab: "channels" }, icon: "plug", text: `${p.name} 渠道 channels` });
     }
 
-    const open = (s: string) => s === "pending" || s === "working";
-    const sorted = [...tasks].sort((a, b) => Number(open(b.task.state)) - Number(open(a.task.state)) || b.task.updated_at.localeCompare(a.task.updated_at));
+    const sorted = [...tasks].sort((a, b) => Number(isOpenTask(b.task.state)) - Number(isOpenTask(a.task.state)) || b.task.updated_at.localeCompare(a.task.updated_at));
     for (const { project, name, task: t } of sorted) {
       out.push({
         key: `t${project}-${t.id}`,
         group: "任务",
-        title: t.title || "（没有文字）",
+        title: t.title || untitled,
         sub: `${name} · ${taskStateLabel[t.state]}${t.senders.length ? ` · ${t.senders.join("、")}` : ""}`,
         route: { page: "project", project, tab: "tasks", task: t.id },
         mark: taskTone[t.state],

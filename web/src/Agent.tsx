@@ -4,19 +4,19 @@
 import { lazy, Suspense, useState } from "react";
 import { api, ApiError } from "./api";
 import { ago, fullTime } from "./format";
-import { useNow, usePoll } from "./hooks";
+import { POLL_FAST, useNow, usePoll } from "./hooks";
 import { Icon } from "./icons";
-import { runLabel, runTone } from "./status";
+import { liveAgentStatus, resumableRun, runLabel, runTone } from "./status";
 import type { ProjectStatus, Run } from "./types";
 import { Banner, Mark, errorText, toast } from "./ui";
 
 // xterm is most of the page's weight: it loads with the first terminal.
 const Terminal = lazy(() => import("./Terminal").then((m) => ({ default: m.Terminal })));
 
-const liveAgent = (r: Run) => !!r.agent && ["starting", "working", "blocked", "idle"].includes(r.agent.status);
+const liveAgent = (r: Run) => !!r.agent && liveAgentStatus.has(r.agent.status);
 
 export function AgentPanel({ project }: { project: ProjectStatus }) {
-  const run = usePoll(() => api.run(project.id), 3000, `run-${project.id}`);
+  const run = usePoll(() => api.run(project.id), POLL_FAST, `run-${project.id}`);
   const [busy, setBusy] = useState(false);
 
   if (run.error instanceof ApiError && run.error.status === 503) {
@@ -75,7 +75,7 @@ function RunState({ run: r, busy, act }: { run: Run; busy: boolean; act: (what: 
   const tone = runTone(r.state);
   const agent = r.agent_id;
   const live = liveAgent(r);
-  const canResume = ["waiting", "failed", "resting"].includes(r.state);
+  const canResume = resumableRun.has(r.state);
   const working = r.agent?.status === "working" || r.agent?.status === "blocked";
 
   return (
