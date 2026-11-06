@@ -88,22 +88,25 @@ func (a *app) settleIfClosed(ctx context.Context, t inbox.Task) bool {
 
 	done, settled := false, false
 
-	err = a.inbox.Locked(func() error {
-		t, pending, err := a.inbox.Task(t.ID) // as it is now, not as listed
-		if errors.Is(err, inbox.ErrNoTask) || err == nil && !pending {
+	err = a.inbox.UpdateTask(t.ID, func(t *inbox.Task, pending *bool) (bool, error) { // as it is now, not as listed
+		if !*pending {
 			done = true
 
-			return nil
+			return false, nil
 		}
 
-		if err != nil || !t.ClosedAt(at) {
-			return err
+		if !t.ClosedAt(at) {
+			return false, nil
 		}
 
-		done, settled = true, true
+		done, settled, *pending = true, true, false
 
-		return a.inbox.SaveTask(t, false)
+		return true, nil
 	})
+	if errors.Is(err, inbox.ErrNoTask) {
+		done, err = true, nil
+	}
+
 	if err != nil {
 		a.log.Warn("settle closed chat", "task", t.ID, "err", err)
 

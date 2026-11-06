@@ -64,7 +64,7 @@ func strayRound(t *testing.T, stay bool) {
 
 	m := NewManager(Config{Program: prog}, nil)
 
-	info, err := m.Spawn(SpawnOptions{Cwd: dir, Prompt: prompt})
+	info, err := m.Spawn(t.Context(), SpawnOptions{Cwd: dir, Prompt: prompt})
 	if err != nil {
 		t.Fatal(err)
 	}

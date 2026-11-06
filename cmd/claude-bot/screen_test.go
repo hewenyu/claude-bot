@@ -17,6 +17,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/jev"
+	"github.com/hewenyu/claude-bot/internal/screen"
 )
 
 // stuffing is a fake Jev: pieces mentioning credential stuffing are one
@@ -237,7 +238,7 @@ func TestScreenIncoming_oldTasksDoNotReopen(t *testing.T) {
 	t.Parallel()
 
 	a, _ := newScreenApp(t)
-	long := time.Now().Add(-reopenWindow - time.Hour)
+	long := time.Now().Add(-screen.ReopenWindow - time.Hour)
 
 	screenOne(t, a, channel.Message{ID: "fake:1", Channel: "fake", ChatID: "c", Text: "登录按钮没反应", CreatedAt: long})
 
@@ -367,7 +368,7 @@ func TestThreads_keepTheOpeningAsk(t *testing.T) {
 	}
 
 	tr := threads[0].Transcript
-	if !strings.HasPrefix(tr, "user: "+ask.Text+"\n") || !strings.HasSuffix(tr, "我就按这个开 PR。") || utf8.RuneCountInString(tr) > askRunes+transcriptRunes+10 {
+	if !strings.HasPrefix(tr, "user: "+ask.Text+"\n") || !strings.HasSuffix(tr, "我就按这个开 PR。") || utf8.RuneCountInString(tr) > utf8.RuneCountInString(reply)/2 {
 		t.Errorf("transcript = %q; want the opening ask, then the end of the reply", tr)
 	}
 }

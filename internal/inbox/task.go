@@ -14,6 +14,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/filelock"
 )
 
 // Task states, each a subdirectory of tasks/.
@@ -163,24 +164,76 @@ func (b *Inbox) taskPath(state, id string) string {
 	return filepath.Join(b.dir, tasksDir, state, channel.PathSafe(id)+".json")
 }
 
+// Tx is the inbox's tasks while its task lock is held: only it stores
+// tasks, so that read-modify-write of tasks never loses an update. Locked
+// hands it out; it is no use after Locked returns.
+type Tx struct {
+	b    *Inbox
+	done bool
+}
+
+// errTxDone reports a Tx used after its Locked returned.
+var errTxDone = errors.New("inbox: task lock already released")
+
 // Locked runs f holding the inbox's task lock, shared by the listener and
-// every command, so that read-modify-write of tasks never loses an update.
-func (b *Inbox) Locked(f func() error) error {
+// every command.
+func (b *Inbox) Locked(f func(tx *Tx) error) error {
 	if err := os.MkdirAll(b.dir, dirPerm); err != nil {
 		return fmt.Errorf("create inbox: %w", err)
 	}
 
-	unlock, err := lockPath(filepath.Join(b.dir, tasksLock))
+	unlock, err := filelock.Lock(filepath.Join(b.dir, tasksLock), messagePerm)
 	if err != nil {
 		return err
 	}
 	defer unlock()
 
-	return f()
+	tx := &Tx{b: b}
+	defer func() { tx.done = true }()
+
+	return f(tx)
 }
 
-// SaveTask stores t as pending or done. Call it inside Locked.
-func (b *Inbox) SaveTask(t Task, pending bool) error {
+// UpdateTask applies f to task id as it is now, under the task lock, and
+// stores it as f leaves it if f says to: pending or done, as f leaves
+// pending, which says where the task is. It fails with ErrNoTask if there
+// is no such task.
+func (b *Inbox) UpdateTask(id string, f func(t *Task, pending *bool) (save bool, err error)) error {
+	return b.Locked(func(tx *Tx) error {
+		t, pending, err := tx.Task(id)
+		if err != nil {
+			return err
+		}
+
+		save, err := f(&t, &pending)
+		if err != nil || !save {
+			return err
+		}
+
+		return tx.SaveTask(t, pending)
+	})
+}
+
+// Task returns a task by id and whether it is pending, as it is under the
+// lock.
+func (tx *Tx) Task(id string) (Task, bool, error) {
+	if tx.done {
+		return Task{}, false, errTxDone
+	}
+
+	return tx.b.Task(id)
+}
+
+// SaveTask stores t as pending or done.
+func (tx *Tx) SaveTask(t Task, pending bool) error {
+	if tx.done {
+		return errTxDone
+	}
+
+	return tx.b.saveTask(t, pending)
+}
+
+func (b *Inbox) saveTask(t Task, pending bool) error {
 	state, other := taskDone, taskPending
 	if pending {
 		state, other = taskPending, taskDone
@@ -254,7 +307,15 @@ func (b *Inbox) RecentTasks(ch, chatID, threadID string, since time.Time) ([]Tas
 	var out []Task
 
 	for _, state := range []string{taskPending, taskDone} {
-		tasks, err := b.tasks(state)
+		// done/ only grows: a file last written before since holds a task
+		// last updated before since too, give or take clock skew between
+		// the platforms and this machine.
+		modSince := time.Time{}
+		if state == taskDone && !since.IsZero() {
+			modSince = since.Add(-mtimeSlack)
+		}
+
+		tasks, err := readAll[Task](filepath.Join(b.dir, tasksDir, state), "task", modSince)
 		if err != nil {
 			return nil, err
 		}
@@ -291,6 +352,10 @@ func (b *Inbox) WaitTasks(ctx context.Context, every time.Duration) ([]Task, err
 	}
 }
 
+// mtimeSlack is how much later than its file's time a task may say it was
+// updated: entries carry the platforms' clocks, the file this machine's.
+const mtimeSlack = time.Hour
+
 func (b *Inbox) tasks(state string) ([]Task, error) {
-	return readAll[Task](filepath.Join(b.dir, tasksDir, state), "task")
+	return readAll[Task](filepath.Join(b.dir, tasksDir, state), "task", time.Time{})
 }

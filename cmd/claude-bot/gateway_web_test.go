@@ -410,7 +410,7 @@ func seedTasks(t *testing.T, box *inbox.Inbox) {
 	bob := &channel.User{ID: "ou_2"}
 
 	save := func(tk inbox.Task, pending bool) {
-		if err := box.Locked(func() error { return box.SaveTask(tk, pending) }); err != nil {
+		if err := box.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(tk, pending) }); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -95,29 +95,23 @@ func (a *app) pendingTasks(ctx context.Context, wait time.Duration) ([]inbox.Tas
 func (a *app) show(tasks []inbox.Task) ([]taskLine, error) {
 	lines := make([]taskLine, 0, len(tasks))
 
-	err := a.inbox.Locked(func() error {
-		for _, t := range tasks {
-			t, pending, err := a.inbox.Task(t.ID)
-			if errors.Is(err, inbox.ErrNoTask) || err == nil && !pending {
-				continue // closed since it was listed
-			}
-
-			if err != nil {
-				return err
+	for _, t := range tasks {
+		err := a.inbox.UpdateTask(t.ID, func(t *inbox.Task, pending *bool) (bool, error) {
+			if !*pending {
+				return false, nil // closed since it was listed
 			}
 
 			t.Shown = len(t.Entries)
-			if err := a.inbox.SaveTask(t, true); err != nil {
-				return err
-			}
+			lines = append(lines, lineOf(*t))
 
-			lines = append(lines, lineOf(t))
+			return true, nil
+		})
+		if err != nil && !errors.Is(err, inbox.ErrNoTask) {
+			return nil, err
 		}
+	}
 
-		return nil
-	})
-
-	return lines, err
+	return lines, nil
 }
 
 // replyArgs is a parsed `reply [--keep] <id> [text|-]`.
@@ -247,12 +241,7 @@ func (a *app) taskOf(id string) (string, error) {
 func (a *app) closeTask(id string, bot *inbox.Entry, finish bool) error {
 	var state string
 
-	err := a.inbox.Locked(func() error {
-		t, pending, err := a.inbox.Task(id)
-		if err != nil {
-			return err
-		}
-
+	err := a.inbox.UpdateTask(id, func(t *inbox.Task, pending *bool) (bool, error) {
 		if bot != nil {
 			t.Entries = append(t.Entries, *bot)
 		}
@@ -261,12 +250,12 @@ func (a *app) closeTask(id string, bot *inbox.Entry, finish bool) error {
 		case !finish:
 			state = "still pending"
 		case t.Close():
-			pending, state = false, "done"
+			*pending, state = false, "done"
 		default:
-			pending, state = true, "still pending: people wrote more while you worked on it; run `claude-bot inbox`"
+			*pending, state = true, "still pending: people wrote more while you worked on it; run `claude-bot inbox`"
 		}
 
-		return a.inbox.SaveTask(t, pending)
+		return true, nil
 	})
 	if err != nil {
 		return err

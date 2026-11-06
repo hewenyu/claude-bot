@@ -35,7 +35,7 @@ func TestSettleClosed(t *testing.T) {
 		tk := inbox.Task{ID: id, Channel: ch, ChatID: chat, CreatedAt: at}
 		tk.Append(id+"/m", []inbox.Entry{{Kind: inbox.EntryUser, Message: id + "/m", At: at, Text: "?"}})
 
-		if err := a.inbox.Locked(func() error { return a.inbox.SaveTask(tk, true) }); err != nil {
+		if err := a.inbox.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(tk, true) }); err != nil {
 			t.Fatal(err)
 		}
 	}

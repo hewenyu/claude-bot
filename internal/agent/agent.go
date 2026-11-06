@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -103,6 +104,8 @@ type Agent struct {
 	viewers  map[chan []byte]struct{}
 	onChange func(id string)
 	done     chan struct{}
+	// sending is held through a Send, so that two do not interleave.
+	sending chan struct{}
 }
 
 func newAgent(info Info, ringSize int, onChange func(id string)) *Agent {
@@ -112,6 +115,7 @@ func newAgent(info Info, ringSize int, onChange func(id string)) *Agent {
 		ring:     term.NewRing(ringSize),
 		viewers:  map[chan []byte]struct{}{},
 		onChange: onChange,
+		sending:  make(chan struct{}, 1),
 	}
 }
 
@@ -295,13 +299,14 @@ func (a *Agent) output(f *os.File, p []byte) {
 }
 
 // sync copies the state into the info and tells the owner, who reads the
-// latest info itself. Call it with the lock held.
+// latest info itself. Call it with the lock held: onChange must not block
+// or take it (the manager's notes the change and tells its owner later).
 func (a *Agent) sync() {
 	a.info.Activity = a.st.Activity
 	a.info.UpdatedAt = time.Now()
 
 	if a.onChange != nil {
-		go a.onChange(a.info.ID)
+		a.onChange(a.info.ID)
 	}
 }
 
@@ -410,8 +415,22 @@ func (a *Agent) Resize(rows, cols int) error {
 
 // Send pastes text and submits it, as a person would. It refuses unless
 // the agent is idle, or force is set: text typed into a running turn or a
-// permission prompt would be read as an answer.
-func (a *Agent) Send(text string, force bool) error {
+// permission prompt would be read as an answer. Sends take turns: one
+// waits, until ctx ends, for the one before to submit. Once pasted, text is
+// submitted whatever ctx does: half a send would sit in the prompt.
+func (a *Agent) Send(ctx context.Context, text string, force bool) error {
+	select {
+	case a.sending <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	defer func() { <-a.sending }()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	f, st := a.pty, a.st.Status
 	a.mu.Unlock()

@@ -4,7 +4,6 @@ package agent
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -295,7 +294,7 @@ func (s *state) output(p []byte) {
 // phrase matches however the program drew it: Claude Code moves the cursor
 // instead of printing spaces.
 func squash(p []byte) string {
-	text := ansi.ReplaceAllString(string(p), "")
+	text := term.StripANSI(string(p))
 
 	return strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
@@ -344,8 +343,6 @@ type shown struct {
 func (s *state) shown() shown {
 	return shown{s.Status, s.Detail, s.Title, s.Ended, s.Turns, s.Subagents, s.SessionID}
 }
-
-var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]`)
 
 // splitGlyph splits the status glyph Claude Code puts before its title.
 func splitGlyph(t string) (rune, string) {

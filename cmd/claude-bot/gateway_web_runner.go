@@ -211,7 +211,7 @@ func (w *web) agentAction(r *http.Request) (any, error) {
 	case "keys":
 		err = a.Write([]byte(in.Text))
 	case "send":
-		err = a.Send(in.Text, false)
+		err = a.Send(r.Context(), in.Text, false)
 	default:
 		return nil, notFound(errors.New("no such action"))
 	}

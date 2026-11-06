@@ -214,7 +214,7 @@ func TestDone_continuesPastUnknownID(t *testing.T) {
 	b := inbox.New(filepath.Join(root, ".claude-bot", "inbox"))
 	tk := inbox.Task{ID: "task:b", Channel: "lark", Entries: []inbox.Entry{{Kind: inbox.EntryUser, Message: "lark:om_b", At: time.Now()}}}
 
-	if err := b.Locked(func() error { return b.SaveTask(tk, true) }); err != nil {
+	if err := b.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(tk, true) }); err != nil {
 		t.Fatal(err)
 	}
 

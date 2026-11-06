@@ -152,9 +152,11 @@ type Pending struct {
 
 // Agents runs the agents.
 type Agents interface {
-	Spawn(o agent.SpawnOptions) (agent.Info, error)
+	// Spawn starts an agent, unless ctx ended; the agent outlives ctx.
+	Spawn(ctx context.Context, o agent.SpawnOptions) (agent.Info, error)
 	AgentInfo(id string) (agent.Info, error)
-	WaitAgent(id string, timeout time.Duration)
+	// WaitAgent waits until an agent's program ends, or ctx does.
+	WaitAgent(ctx context.Context, id string)
 	KillAgent(id string) error
 	// Remove forgets an agent whose program ended.
 	Remove(id string) error
@@ -167,7 +169,9 @@ type Options struct {
 	Pending func(dir string) ([]Pending, error)
 	// Check reports why /bot cannot run in a project, if it cannot.
 	Check func(dir string) error
-	// OnChange is called after any run changes.
+	// OnChange is called after any run changes, never with the runner's
+	// lock held. Changes made from a caller holding it, e.g. Finish, are
+	// told by Run, once for a burst of them.
 	OnChange func()
 	// Poll is how often the inboxes are read.
 	Poll time.Duration
@@ -200,6 +204,9 @@ type Run struct {
 	// Recoveries is how often a round started again after the gateway
 	// went away under it, since a round last ended.
 	Recoveries int `json:"recoveries,omitempty"`
+	// InboxError is set while Error is that its inbox could not be read,
+	// which the next good read clears.
+	InboxError bool `json:"inbox_error,omitempty"`
 	// Round is what waited as the round began, RoundSig with how long
 	// each was, RoundAt when: one of them answered is progress, and each
 	// must be answered since RoundAt for the agent to finish.
@@ -219,8 +226,15 @@ type Run struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Log       []LogLine `json:"log,omitempty"`
 
-	// starting is set while start hands the run to an agent.
-	starting bool
+	// starting is set while start hands the run to an agent; unseen from
+	// then until its agent is first seen at work, or idle.
+	starting, unseen bool
+}
+
+// setError shows msg as the run's error; inbox says it is that its inbox
+// could not be read.
+func (run *Run) setError(msg string, inbox bool) {
+	run.Error, run.InboxError = msg, inbox && msg != ""
 }
 
 // Saved is what the runner keeps across restarts of the gateway.
@@ -233,14 +247,26 @@ type Runner struct {
 	o    Options
 	kick chan struct{}
 
-	// starts are the runs being given to agents, which Run waits for: the
-	// owner ends every agent once it returns, a half-started one too.
-	starts sync.WaitGroup
+	// starts are the runs being given to agents, and kills the agents
+	// being ended, which Run waits for: the owner ends every agent once it
+	// returns, a half-started one too.
+	starts, kills sync.WaitGroup
+	// changes holds a change made with the lock held, for Run to tell.
+	changes chan struct{}
 
 	mu          sync.Mutex
 	runs        map[int64]*Run
 	pending     map[int64][]Pending
 	maxParallel int
+	// ending are the agents to end, by Step: stopAgent and forgetAgent
+	// run with the lock held, and ending one takes seconds.
+	ending []ending
+}
+
+// ending is an agent to end, and to forget too if forget is set.
+type ending struct {
+	id     string
+	forget bool
 }
 
 // New returns a runner that picks up where saved left off.
@@ -254,7 +280,7 @@ func New(o Options, saved Saved) *Runner {
 	}
 
 	r := &Runner{
-		o: o, kick: make(chan struct{}, 1), runs: map[int64]*Run{}, pending: map[int64][]Pending{},
+		o: o, kick: make(chan struct{}, 1), changes: make(chan struct{}, 1), runs: map[int64]*Run{}, pending: map[int64][]Pending{},
 		maxParallel: DefaultMaxParallel,
 	}
 
@@ -267,6 +293,11 @@ func New(o Options, saved Saved) *Runner {
 		case run.State.Live() && run.AgentID == "":
 			// The gateway stopped while it was starting: nothing runs it.
 			run.State, run.Detail = Queued, detailResuming
+		}
+
+		if strings.HasPrefix(run.Error, detailInboxError) {
+			// Saved before InboxError was: the next good read clears it.
+			run.InboxError = true
 		}
 
 		r.runs[run.Project] = &run
@@ -381,7 +412,8 @@ func (r *Runner) setProject(p Project) bool {
 
 		return true
 	case p.On && run.State == Off:
-		run.LeftSig, run.Error = "", ""
+		run.LeftSig = ""
+		run.setError("", false)
 		r.set(run, Resting, detailTurnedOn)
 
 		return true
@@ -426,9 +458,19 @@ func (r *Runner) Kick() {
 	}
 }
 
-// Run runs the projects until ctx ends, and the starts it began are done.
+// Run runs the projects until ctx ends, and the starts and kills it began
+// are done.
 func (r *Runner) Run(ctx context.Context) {
-	defer r.starts.Wait()
+	var notes sync.WaitGroup
+
+	notes.Go(func() { r.tell(ctx) })
+
+	defer func() {
+		r.starts.Wait()
+		r.endQueued(ctx) // what the last starts left to end
+		r.kills.Wait()
+		notes.Wait()
+	}()
 
 	tick := time.NewTicker(r.o.Poll)
 	defer tick.Stop()
@@ -442,7 +484,7 @@ func (r *Runner) Run(ctx context.Context) {
 			lastPoll = time.Now()
 		}
 
-		r.Step()
+		r.Step(ctx)
 
 		select {
 		case <-ctx.Done():
@@ -493,7 +535,7 @@ func (r *Runner) readPending(run *Run) error {
 func (r *Runner) setPending(run *Run, pending []Pending, err error) error {
 	if err != nil {
 		if msg := detailInboxError + err.Error(); run.Error != msg {
-			run.Error = msg
+			run.setError(msg, true)
 			r.logf(run, "%s", msg)
 			r.changedLater()
 		}
@@ -501,8 +543,8 @@ func (r *Runner) setPending(run *Run, pending []Pending, err error) error {
 		return err
 	}
 
-	if strings.HasPrefix(run.Error, detailInboxError) {
-		run.Error = ""
+	if run.InboxError {
+		run.setError("", false)
 
 		r.changedLater()
 	}
@@ -627,7 +669,8 @@ func (r *Runner) roundOf(agentID string) *Run {
 
 // queue marks a run as wanting an agent. Call it with the lock held.
 func (r *Runner) queue(run *Run, why string) {
-	run.NextTry, run.Error = time.Time{}, ""
+	run.NextTry = time.Time{}
+	run.setError("", false)
 	r.set(run, Queued, why)
 }
 
@@ -645,6 +688,7 @@ func (r *Runner) set(run *Run, st State, detail string) bool {
 	}
 
 	run.State, run.Detail, run.UpdatedAt = st, detail, time.Now()
+	run.unseen = false
 
 	return true
 }
@@ -662,9 +706,23 @@ func (r *Runner) changed() {
 	}
 }
 
+// changedLater has Run tell of a change, for callers with the lock held.
 func (r *Runner) changedLater() {
-	if r.o.OnChange != nil {
-		go r.o.OnChange()
+	select {
+	case r.changes <- struct{}{}:
+	default: // one is to be told already
+	}
+}
+
+// tell tells of the changes made with the lock held, until ctx ends.
+func (r *Runner) tell(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.changes:
+			r.changed()
+		}
 	}
 }
 

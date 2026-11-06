@@ -68,3 +68,29 @@ func TestIsResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestStripANSI(t *testing.T) {
+	t.Parallel()
+
+	in := "\x1b[38;2;1;2;3mDo\x1b[39m\x1b[2Cyou\x1b]0;✳ x\x07 trust\x1bM"
+	if got := StripANSI(in); got != "Doyou trust" {
+		t.Fatalf("stripped = %q", got)
+	}
+}
+
+func TestClip(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct{ s, left, right string }{
+		{"你好世界", "你好…", "…世界"},
+		{"ab", "ab", "ab"},
+	} {
+		if got := Clip(c.s, 2); got != c.left {
+			t.Errorf("Clip(%q) = %q, want %q", c.s, got, c.left)
+		}
+
+		if got := ClipLeft(c.s, 2); got != c.right {
+			t.Errorf("ClipLeft(%q) = %q, want %q", c.s, got, c.right)
+		}
+	}
+}
