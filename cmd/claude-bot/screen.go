@@ -13,7 +13,6 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/screen"
-	"github.com/hewenyu/claude-bot/internal/term"
 	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
@@ -26,7 +25,7 @@ const refusedLog = "refused.jsonl"
 // errNoJev tells Claude what to ask of the user: every message goes through
 // Jev, so nothing works without it.
 var errNoJev = errors.New("jev is not set up: run `claude-bot init --typesafe-key <key>` " +
-	"(key from https://console.typesafe.ai/keys), then `claude-bot restart`")
+	"(key from " + jevGuide + "), then `claude-bot restart`")
 
 // The listener screens a burst of messages together, so that messages sent
 // one after another are grouped: it waits until the conversation pauses for
@@ -91,18 +90,6 @@ func settle(ctx context.Context, wake <-chan struct{}) {
 	}
 }
 
-// Threads a new message may continue: the conversation's pending tasks and
-// those handled in the last reopenWindow, at most maxThreads, latest first.
-// Jev reads the first askRunes of what opened each, what it is about, and
-// the last transcriptRunes of the rest: bot replies run to 2000 runes, and
-// the end of one alone does not say what the task is.
-const (
-	reopenWindow    = 24 * time.Hour
-	maxThreads      = 10
-	askRunes        = 400
-	transcriptRunes = 800
-)
-
 // screenIncoming has Jev screen the incoming messages: their pieces go into
 // tasks, new ones or ones they continue (reopening those already handled),
 // and whatever Jev refuses goes nowhere. The messages are archived, cropped
@@ -159,70 +146,26 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 	return nil
 }
 
-// replyWithin replies to m, giving up after ackTimeout.
+// refusalTimeout bounds sending one refusal.
+const refusalTimeout = 10 * time.Second
+
+// replyWithin replies to m, giving up after refusalTimeout.
 func replyWithin(ctx context.Context, ch channel.Channel, m channel.Message, text string) error {
-	ctx, cancel := context.WithTimeout(ctx, ackTimeout)
+	ctx, cancel := context.WithTimeout(ctx, refusalTimeout)
 	defer cancel()
 
 	return ch.Reply(ctx, m, text)
 }
 
-// threads returns the tasks m's conversation may continue.
+// threads returns the tasks m's conversation may continue: its pending
+// tasks and those handled lately, latest first.
 func (a *app) threads(m channel.Message) ([]screen.Thread, error) {
-	tasks, err := a.inbox.RecentTasks(m.Channel, m.ChatID, m.ThreadID, time.Now().Add(-reopenWindow))
+	tasks, err := a.inbox.RecentTasks(m.Channel, m.ChatID, m.ThreadID, time.Now().Add(-screen.ReopenWindow))
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]screen.Thread, 0, min(len(tasks), maxThreads))
-	for _, t := range tasks[:min(len(tasks), maxThreads)] {
-		var opening, rest, asked []string
-
-		for _, e := range t.Entries {
-			if e.Kind == inbox.EntryBot {
-				rest = append(rest, "bot: "+e.Text)
-
-				continue
-			}
-
-			who := "user"
-			if e.Sender != nil && e.Sender.Name != "" {
-				who = e.Sender.Name
-			}
-
-			// What people said before the first reply opened the task.
-			if len(rest) == 0 {
-				opening = append(opening, who+": "+e.Text)
-			} else {
-				rest = append(rest, who+": "+e.Text)
-			}
-
-			asked = append(asked, e.Text)
-		}
-
-		transcript := term.Clip(strings.Join(opening, "\n"), askRunes) // what opened it
-		if len(rest) > 0 {
-			transcript += "\n" + lastRunes(strings.Join(rest, "\n"), transcriptRunes)
-		}
-
-		out = append(out, screen.Thread{
-			ID:         t.ID,
-			Transcript: transcript,
-			Asked:      lastRunes(strings.Join(asked, "\n"), transcriptRunes),
-		})
-	}
-
-	return out, nil
-}
-
-// lastRunes keeps the end of s, the latest of a conversation.
-func lastRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-
-	return "…" + string(r[len(r)-n:])
+	return screen.Threads(tasks), nil
 }
 
 // commit stores what screening found, inside the inbox lock: each legal
