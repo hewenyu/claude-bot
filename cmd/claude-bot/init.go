@@ -151,7 +151,7 @@ func finishInit(ctx context.Context, dir string, cfg config.Config, s setup, o i
 		fmt.Println("  1. gateway 已在运行，会自动用上新配置；`claude-bot gateway status` 可以看它接上没有")
 	}
 
-	fmt.Println("  2. 在这个仓库里打开 Claude Code，运行  /loop /bot")
+	fmt.Println("  2. 在 gateway 的网页（claude-bot gateway open）上打开这个项目的「自动处理」；或者自己在这个仓库里的 Claude Code 运行  /bot")
 	warnOwnListener(dir)
 	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
 	fmt.Printf("要再接入其他渠道，运行  claude-bot init --channel <%s>\n", channelNames("|"))
@@ -445,7 +445,7 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 
 	select {
 	case m := <-got:
-		if err := ch.Reply(vctx, m, "✅ 连接成功！在仓库里运行 `/loop /bot` 后，我就会处理发给我的消息。"); err != nil {
+		if err := ch.Reply(vctx, m, "✅ 连接成功！在 gateway 的网页上打开这个项目的「自动处理」后，我就会处理发给我的消息。"); err != nil {
 			return fmt.Errorf("received your message but replying failed: %w", err)
 		}
 

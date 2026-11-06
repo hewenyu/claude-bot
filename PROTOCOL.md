@@ -1,11 +1,11 @@
 # claude-bot 协议 v1
 
-claude-bot 只做一件事：给常驻在项目仓库里的 Claude Code（`/loop /bot`）提供一个**能收能发的聊天通道**。理解问题、排查、修复、怎么回复，全部由 Claude 自己判断。
+claude-bot 只做一件事：给在项目仓库里跑 `/bot` 的 Claude Code 提供一个**能收能发的聊天通道**。理解问题、排查、修复、怎么回复，全部由 Claude 自己判断。
 
 ```
  飞书群 / 私聊 ──长连接──▶ claude-bot gateway ──Jev 筛选、归组──▶ 各项目的 .claude-bot/inbox/tasks/pending/*.json
                                                               │
- Claude Code (/loop /bot) ◀── claude-bot inbox --wait ────────┘
+ Claude Code (/bot)      ◀── claude-bot inbox ───────────────┘
           │
           └── claude-bot reply <task:id> ──▶ 飞书 API（原消息下回复，群里 @ 发送者）
 ```

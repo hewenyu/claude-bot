@@ -24,7 +24,7 @@ export function runTone(s: RunState): Tone {
     case "running":
     case "queued":
       return "info";
-    case "idle":
+    case "resting":
       return "ok";
     case "blocked":
     case "waiting":
@@ -41,7 +41,6 @@ export const runLabel: Record<RunState, string> = {
   running: "处理中",
   blocked: "等你确认",
   waiting: "需要你看看",
-  idle: "值守中",
   resting: "休息中",
   failed: "启动不了",
   off: "已关闭",

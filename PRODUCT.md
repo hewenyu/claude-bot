@@ -12,7 +12,7 @@ Solo developers running a bot for their own repositories, on their own macOS or 
 
 ## Product Purpose
 
-claude-bot connects chat (Feishu / Lark, Discord, Telegram, Slack, DingTalk) and GitHub issues and PRs to a Claude Code session that stays resident in the repository (`/loop /bot`). Someone messages or @-mentions the bot. Claude Code investigates, changes the code, runs the tests, opens a PR and replies under the original message.
+claude-bot connects chat (Feishu / Lark, Discord, Telegram, Slack, DingTalk) and GitHub issues and PRs to Claude Code sessions the gateway starts in the repository (`/bot`), one per batch. Someone messages or @-mentions the bot. Claude Code investigates, changes the code, runs the tests, opens a PR and replies under the original message.
 
 claude-bot itself only carries messages: it puts incoming messages in each project's local inbox and provides a reply command. Claude decides what a message means and what to do about it. Success: a message sent from the phone turns into a verified PR and a reply, without the developer opening a laptop.
 
@@ -37,16 +37,16 @@ The bot is deliberately minimal: channels only, with Claude doing all the judgin
 ## Operating Context
 
 - Install with `go install`. One Go binary embeds the web page (built from `web/` and committed to `internal/webui/static`), so installing needs no Node.
-- `claude-bot init` registers a project. `claude-bot gateway start|stop|restart|open` runs the gateway. Claude Code runs `/bot` in each repo and processes the inbox through `claude-bot inbox --wait` and `claude-bot reply`. Either the gateway runs it (a project's 自动处理 is on), or a person keeps `/loop /bot` open in a terminal. Never both in one project.
+- `claude-bot init` registers a project. `claude-bot gateway start|stop|restart|open` runs the gateway. Claude Code runs `/bot` in each repo and processes the inbox through `claude-bot inbox` and `claude-bot reply`, then says it is done with `claude-bot finish`. Either the gateway runs it (a project's 自动处理 is on), or a person runs `/bot` in a terminal. Never both in one project.
 - The page opens only on the local machine, with an access token in the URL fragment (`#token=…`). It polls the gateway every few seconds. It has to handle the gateway going offline, the TypeSafe key missing, and projects that have been removed.
 - Development uses a demo gateway with fake data (every project state, no real platforms): `CLAUDE_BOT_PAGE_DEMO=127.0.0.1:7601 go test -run TestPageDemo -timeout 0 ./cmd/claude-bot`, then `http://127.0.0.1:7601/#token=de30de30`.
 
 ## Capabilities and Constraints
 
 - **Gateway page stack:** React 19, TypeScript and Vite, with no UI library or other runtime dependencies. The one exception is `@xterm/xterm` (with its fit addon) for the agent terminal: a terminal emulator that renders Claude Code correctly is not something to hand-roll. It loads lazily with the first terminal, so the rest of the page stays light. Run `make web` to rebuild into `internal/webui/static`, and commit the result. `make web-check` enforces that the committed build matches `web/`.
-- **Runner (自动处理):** the gateway starts Claude Code with `/bot` in a project whose runner is on, when its inbox has tasks. There is one agent per project, and at most `runner_max_parallel` across all projects (default 3). An idle agent yields its place and resumes its session on news. The runner decides when; `/bot` (the project's `bot.md`) decides what. The runner has no task list of its own. Its agents run in bypass-permissions mode as the user, so they can read `~/.claude-bot`; the page and docs say so.
+- **Runner (自动处理):** the gateway starts Claude Code with `/bot` in a project whose runner is on, when its inbox has tasks. There is one agent per project, and at most `runner_max_parallel` across all projects (default 3). One agent does one batch: its Stop hook keeps it from ending its turn before `claude-bot finish`, which refuses while a task of the batch has no reply; then the gateway ends it and everything it started (its process family is tracked while it runs), and starts a new agent for what waits. The runner decides when; `/bot` (the project's `bot.md`) decides what. The runner has no task list of its own. Its agents run in bypass-permissions mode as the user, so they can read `~/.claude-bot`; the page and docs say so.
 - **Desktop app:** `desktop/` is an Electron window around the page, not a second UI. It starts the gateway in a login shell and opens the tokenized URL. Anything the app shows belongs in the page. It ships as an unsigned (ad hoc signed, not notarized) DMG for Apple Silicon Macs, with the claude-bot binary inside. Releases also carry the bare binary for darwin/arm64, linux/arm64 and linux/amd64; other platforms use `go install`.
-- **Project states:** running, starting, busy, failed, stopped. Run states: queued, running, blocked (等你确认), waiting (需要你看看), idle (值守中), resting, failed, off. Channel states: connected, connecting, not connected, error, stopped.
+- **Project states:** running, starting, busy, failed, stopped. Run states: queued, running, blocked (等你确认), waiting (需要你看看), resting, failed, off. Channel states: connected, connecting, not connected, error, stopped.
 - **Credentials only go in.** The page never shows a stored secret, only its last few characters. After an edit, the gateway reconnects within seconds.
 - **Handled tasks archive themselves** and come back to the list when someone follows up.
 - **Terms in use:** 项目 (project), 渠道 (channel), 事 / task, 收件箱 (inbox), 筛选 (screening by Jev), 归档 (archive), 自动处理 (the runner), agent / Claude, 名额 (a place among the parallel agents), gateway, TypeSafe API key.

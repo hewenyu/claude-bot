@@ -138,6 +138,9 @@ func (m *Manager) Restore(infos []Info) {
 			info.Status, info.Detail, info.PID = Lost, "", 0
 		}
 
+		// What it left the owner ends with ReapAll, before.
+		info.Procs = nil
+
 		a := newAgent(info, m.cfg.RingSize, m.changed)
 		a.note("gateway restarted; earlier output is gone")
 		m.agents[info.ID] = a

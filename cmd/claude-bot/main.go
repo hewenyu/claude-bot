@@ -98,6 +98,8 @@ For Claude (inside /loop):
   claude-bot get <id>                 fetch any message, e.g. the one in "reply_to"
   claude-bot download <id>            save a message's images/files, print paths
   claude-bot send <chat-id> [text|-]  post to a chat, e.g. lark:oc_xxx, discord:123, telegram:-100123, dingtalk:cid…, github:o/r/42
+  claude-bot finish                   in an agent the gateway runs: this round's batch is done (refused while a task
+                                      of it has no reply); the gateway ends the session once the turn ends
   claude-bot github close <id> [--not-planned]                 close the issue or PR of a github: id
   claude-bot github merge <id> [--method squash|merge|rebase]  merge the PR
   claude-bot github review <id> approve|request-changes|comment [text|-]   review the PR
@@ -147,6 +149,7 @@ func run(ctx context.Context, args []string) int {
 		"github":   cmdGitHub,
 		"status":   cmdStatus,
 		"gateway":  cmdGateway,
+		"finish":   cmdFinish,
 		// hook is for the agents the gateway runs; it is not listed.
 		"hook": cmdHook,
 		"version": func(context.Context, string, []string) error {

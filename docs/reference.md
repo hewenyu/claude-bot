@@ -26,7 +26,8 @@ claude-bot [-C <repo>] <command> [args]
 | `start` / `stop` / `restart` | 还没迁进 gateway 的项目：在后台启动、停止、重启它自己的监听进程。已登记的项目里，`stop` 只停它以前自己的监听进程（迁移时用），不会停 gateway |
 | `serve` | 在前台运行还没迁进 gateway 的项目自己的监听进程 |
 | `status` | 查看 bot 身份、监听进程状态、是否由 gateway 服务（`gateway`）、待处理的事（`pending`）、是否接入了 Jev（`jev`）和等待 Jev 筛选的消息数（`screening`） |
-| `hook` | 给 gateway 启动的 Claude 用：Claude Code 每个 hook 事件都运行它，它把事件（stdin）报给 gateway。不在 gateway 启动的 Claude 里运行时什么也不做；gateway 不在时也不报错，不耽误 Claude。不用自己运行 |
+| `finish` | 给 gateway 启动的 Claude 用：这一批处理完了。这一批里还有没回复、没 `done`、也没用 `reply --keep` 说明进度的事时拒绝，并列出来；之后 Claude 一结束回答，gateway 就关掉它。不在 gateway 启动的 Claude 里运行时什么也不做 |
+| `hook` | 给 gateway 启动的 Claude 用：Claude Code 每个 hook 事件都运行它，它把事件（stdin）报给 gateway；还没 `finish` 就要停下时，gateway 让它输出拦下的决定。不在 gateway 启动的 Claude 里运行时什么也不做；gateway 不在时也不报错，不拦，不耽误 Claude。不用自己运行 |
 | `version` | 查看版本 |
 
 文本参数可以写在命令行上，也可以用 `-` 或省略，改为从 stdin 读取，适合多行内容配合 heredoc 使用。退出码：`0` 成功，`1` 失败，`2` 用法错误。
@@ -64,7 +65,7 @@ claude-bot [-C <repo>] <command> [args]
 3. `$CLAUDE_PROJECT_DIR`（Claude Code 会话的根目录）
 4. 当前目录
 
-在包含多个仓库的父目录里运行时，用 `-C` 指定仓库，比如 `claude-bot -C api status`；对应的 loop 写成 `/loop /bot api`。
+在包含多个仓库的父目录里运行时，用 `-C` 指定仓库，比如 `claude-bot -C api status`。
 
 ### 文件
 
@@ -98,7 +99,7 @@ gateway 启动时在 `127.0.0.1:7600` 上提供一个网页，`claude-bot gatewa
 - **项目**：左边列出所有登记过的项目和状态（运行中、连接中、被占用、出错、没有渠道），有待处理的事时显示数量；每个渠道连没连上、停掉的原因。
 - **任务**：这个项目经 Jev 归好的每一件事。默认只列「进行中」的（待处理、处理中：Claude 正在做），最新的在最上面，没点开别的任务时右边直接显示最新那件的对话；已回复、已关闭的自动归档到「已归档」，有人追问时回到「进行中」。可以搜索；点开看整段对话、附件存在哪、bot 的每次回复，还没处理的部分单独标出来。GitHub 的事可以直接跳到 issue / PR。
 - **渠道**：添加、修改、移除这个项目的渠道，「测试连接」只向平台核对凭证（问「我是谁」），不建立长连接，不会和正在运行的连接抢消息；保存后 gateway 几秒内用新配置重连。一个应用已经属于别的项目时拒绝保存。也可以在这里把项目从 gateway 移除（配置写回它的 `config.json`）。
-- **自动处理**：打开后，有待办时 gateway 在这个项目里启动 Claude Code 跑 `/bot`，见[工作原理 · 自动处理](how-it-works.md#自动处理)。这里显示它在做什么（排队、处理中、等你确认、需要你看看、值守中、休息中、启动不了）、上一轮最后说了什么、它的终端（可以直接打字）和记录；可以让它再跑一轮、中断这一轮、结束它。
+- **自动处理**：打开后，有待办时 gateway 在这个项目里启动 Claude Code 跑 `/bot`，见[工作原理 · 自动处理](how-it-works.md#自动处理)。这里显示它在做什么（排队、处理中、等你确认、需要你看看、休息中、启动不了）、上一轮最后说了什么、它的终端（可以直接打字）和记录；可以让它再跑一轮、中断这一轮、结束它。
 - **共用设置**：TypeSafe API key 和 GitHub token，保存前先验证；最多同时运行几个 Claude（默认 3）。默认 GitHub token 给所有接了 GitHub 的项目用；有项目属于另一个账号时，在这里加一个有名字的 token，勾选它服务哪些项目（每个项目也可以在 GitHub 渠道的表单里选用哪个）。token 要能访问它服务的每个仓库才保存；还在服务项目的 token 不能删。
 
 安全上：网页只监听本机回环地址，只接受 `127.0.0.1`、`localhost`、`[::1]` 的 Host（防 DNS rebinding）；每个接口都要带访问令牌（存在 `gateway.db` 里，`gateway open` 打开的地址带着它，浏览器记下后不用再带）；终端的 WebSocket 把令牌放在子协议里（浏览器不能给 WebSocket 加请求头），也只接受同源页面。gateway 启动的 Claude 报告 hook 用的是另一个令牌（每次 gateway 启动时生成，只在它们的环境变量里），只能报告 hook，调不了网页的接口。凭证只能写进去，读出来只有「已设置」和末几位。

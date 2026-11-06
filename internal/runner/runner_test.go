@@ -38,18 +38,6 @@ func (f *fakeAgents) Spawn(o agent.SpawnOptions) (agent.Info, error) {
 	return *f.agents[id], nil
 }
 
-func (f *fakeAgents) Resume(id, prompt string) (agent.Info, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	a := f.agents[id]
-	a.Status = agent.Starting
-
-	f.calls = append(f.calls, "resume "+id+": "+prompt)
-
-	return *a, nil
-}
-
 func (f *fakeAgents) AgentInfo(id string) (agent.Info, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -72,15 +60,20 @@ func (f *fakeAgents) WaitAgent(id string, _ time.Duration) {
 	}
 }
 
-func (f *fakeAgents) SendText(id, text string) error {
+func (f *fakeAgents) Remove(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.agents[id].Status != agent.Idle {
-		return agent.ErrBusy
+	a, ok := f.agents[id]
+	switch {
+	case !ok:
+		return agent.ErrNotFound
+	case a.Status.Live():
+		return agent.ErrLive
 	}
 
-	f.calls = append(f.calls, "send "+id+": "+text)
+	delete(f.agents, id)
+	f.calls = append(f.calls, "remove "+id)
 
 	return nil
 }
@@ -118,6 +111,28 @@ func (f *fakeAgents) endTurn(id string, turns int, ended string) {
 	defer f.mu.Unlock()
 
 	f.agents[id].Ended = ended
+}
+
+func (f *fakeAgents) setSubagents(id string, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.agents[id].Subagents = n
+}
+
+// waitRemoved waits for the runner to forget an agent in the background.
+func (f *fakeAgents) waitRemoved(t *testing.T, id string) {
+	t.Helper()
+
+	for range 200 {
+		if _, err := f.AgentInfo(id); err != nil {
+			return
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("agent %s was not removed", id)
 }
 
 // count is how many calls start with prefix.
@@ -234,7 +249,20 @@ func TestOffProjectsHaveNoRun(t *testing.T) {
 	}
 }
 
-func TestRoundAndNews(t *testing.T) {
+func replied(id string, entries int) Pending {
+	return Pending{ID: id, Entries: entries, Replied: time.Now()}
+}
+
+// finish has the agent finish its round, and fails the test if it may not.
+func (f *fixture) finish(t *testing.T, id string) {
+	t.Helper()
+
+	if err := f.r.Finish(id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestARoundEndsItsAgentAndTheNextIsNew(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, nil, on(1))
@@ -251,28 +279,148 @@ func TestRoundAndNews(t *testing.T) {
 
 	f.a.set("a1", agent.Working, 0)
 	f.tick()
-	f.inbox.set("/repo/1")
+
+	// Not before it answered what it was given.
+	if err := f.r.Finish("a1"); err == nil || !strings.Contains(err.Error(), "t1") {
+		t.Fatalf("finish = %v", err)
+	}
+
+	// t1 answered; t2 came meanwhile.
+	f.inbox.set("/repo/1", task("t2", 1))
+	f.finish(t, "a1")
 	f.a.endTurn("a1", 1, agent.EndStop)
 	f.tick()
+	f.a.waitKilled(t, "a1")
 
-	run = f.expect(t, 1, Idle)
-	if run.Detail != detailWatching || run.Summary != "turn 1" {
+	// What waits starts the next round at once, with a new agent.
+	f.tick()
+
+	run = f.expect(t, 1, Running)
+	if run.AgentID != "a2" || run.Summary != "turn 1" || run.Finished || run.Starts != 2 {
 		t.Fatalf("run %+v", run)
 	}
 
-	// News: /bot wakes for it by itself.
-	f.inbox.set("/repo/1", task("t2", 1))
-	f.tick()
-	f.a.set("a1", agent.Working, 1)
-	f.tick()
-	f.expect(t, 1, Running)
-
-	if f.a.count("send") != 0 || f.a.count("spawn") != 1 {
+	if f.a.count("remove a1") != 1 || f.a.count("spawn a2 /repo/1: /bot") != 1 {
 		t.Fatalf("calls %v", f.a.calls)
+	}
+
+	// Nothing left: it rests.
+	f.inbox.set("/repo/1")
+	f.finish(t, "a2")
+	f.a.endTurn("a2", 1, agent.EndStop)
+	f.tick()
+	f.a.waitKilled(t, "a2")
+	f.tick()
+
+	if run := f.expect(t, 1, Resting); run.Detail != detailDone {
+		t.Fatalf("detail %q", run.Detail)
 	}
 }
 
-func TestNoProgressStaysIdle(t *testing.T) {
+func TestFinishTakesAReplyThatKeepsItOpen(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, nil, on(1))
+	f.inbox.set("/repo/1", task("t1", 1), task("t2", 1))
+	f.tick()
+
+	f.inbox.set("/repo/1", replied("t1", 1), task("t2", 1))
+
+	if err := f.r.Finish("a1"); err == nil || strings.Contains(err.Error(), "t1") || !strings.Contains(err.Error(), "t2") {
+		t.Fatalf("finish = %v", err)
+	}
+
+	f.inbox.set("/repo/1", replied("t1", 1))
+	f.finish(t, "a1")
+
+	if err := f.r.Finish("nobody"); !errors.Is(err, ErrNotARound) {
+		t.Fatalf("finish of no round = %v", err)
+	}
+}
+
+func TestStopHook(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, nil, on(1))
+	f.inbox.set("/repo/1", task("t1", 1))
+	f.tick()
+
+	if block, _ := f.r.StopHook("someone", 0); block {
+		t.Fatal("an agent of no round was kept going")
+	}
+
+	// A subagent runs: its turn goes on when it reports.
+	if block, _ := f.r.StopHook("a1", 1); block {
+		t.Fatal("kept going while a subagent runs")
+	}
+
+	for i := range maxBlocks {
+		block, reason := f.r.StopHook("a1", 0)
+		if !block || !strings.Contains(reason, "claude-bot finish") {
+			t.Fatalf("stop %d: block %v, reason %q", i, block, reason)
+		}
+	}
+
+	if block, _ := f.r.StopHook("a1", 0); block {
+		t.Fatalf("kept going more than %d times", maxBlocks)
+	}
+
+	// It stopped without finishing: the round is over all the same.
+	f.a.endTurn("a1", 1, agent.EndStop)
+	f.inbox.set("/repo/1")
+	f.tick()
+	f.a.waitKilled(t, "a1")
+
+	if run := f.expect(t, 1, Resting); run.Detail != detailNoFinish {
+		t.Fatalf("detail %q", run.Detail)
+	}
+
+	// A new round starts afresh.
+	f.inbox.set("/repo/1", task("t2", 1))
+	f.tick()
+	f.tick()
+	f.expect(t, 1, Running)
+
+	if run := f.run(t, 1); run.Blocks != 0 || run.Finished {
+		t.Fatalf("run %+v", run)
+	}
+
+	f.inbox.set("/repo/1")
+	f.finish(t, "a2")
+
+	if block, _ := f.r.StopHook("a2", 0); block {
+		t.Fatal("kept a finished agent going")
+	}
+}
+
+func TestASubagentKeepsTheRound(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, nil, on(1))
+	f.inbox.set("/repo/1", task("t1", 1))
+	f.tick()
+
+	f.a.setSubagents("a1", 1)
+	f.a.endTurn("a1", 1, agent.EndStop)
+	f.tick()
+
+	if run := f.expect(t, 1, Running); run.Detail != detailSubagents || f.a.count("kill") != 0 {
+		t.Fatalf("run %+v, calls %v", run, f.a.calls)
+	}
+
+	// It reported: the agent goes on, and finishes.
+	f.a.setSubagents("a1", 0)
+	f.a.set("a1", agent.Working, 1)
+	f.tick()
+	f.inbox.set("/repo/1")
+	f.finish(t, "a1")
+	f.a.endTurn("a1", 2, agent.EndStop)
+	f.tick()
+	f.a.waitKilled(t, "a1")
+	f.expect(t, 1, Resting)
+}
+
+func TestNoProgressWaitsForNews(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, nil, on(1))
@@ -280,13 +428,41 @@ func TestNoProgressStaysIdle(t *testing.T) {
 	f.tick()
 	f.a.endTurn("a1", 1, agent.EndStop)
 	f.tick()
+	f.a.waitKilled(t, "a1")
+	f.tick()
 
-	if run := f.expect(t, 1, Idle); run.Detail != detailNoProgress {
+	if run := f.expect(t, 1, Resting); run.Detail != detailNoProgress {
 		t.Fatalf("detail = %q", run.Detail)
+	}
+
+	// Someone wrote more.
+	f.inbox.set("/repo/1", task("t1", 2))
+	f.tick()
+	f.tick()
+	f.expect(t, 1, Running)
+}
+
+func TestAFinishedRoundThatLeftAllWaiting(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, nil, on(1))
+	f.inbox.set("/repo/1", task("t1", 1))
+	f.tick()
+
+	// It said it waits for CI, and finished.
+	f.inbox.set("/repo/1", replied("t1", 1))
+	f.finish(t, "a1")
+	f.a.endTurn("a1", 1, agent.EndStop)
+	f.tick()
+	f.a.waitKilled(t, "a1")
+	f.tick()
+
+	if run := f.expect(t, 1, Resting); run.Detail != detailDone || f.a.count("spawn") != 1 {
+		t.Fatalf("run %+v, calls %v", run, f.a.calls)
 	}
 }
 
-func TestEndedRoundsWait(t *testing.T) {
+func TestAPersonStoppedIt(t *testing.T) {
 	t.Parallel()
 
 	for _, ended := range []string{agent.EndInterrupt, agent.EndDeclined} {
@@ -300,53 +476,53 @@ func TestEndedRoundsWait(t *testing.T) {
 			f.tick()
 			f.expect(t, 1, Waiting)
 
-			// A person typed to it.
+			// They talk to it: it is theirs.
 			f.a.set("a1", agent.Working, 1)
 			f.tick()
+			f.expect(t, 1, Waiting)
 
-			if run := f.expect(t, 1, Running); run.TurnBase != 1 {
-				t.Fatalf("turn base = %d", run.TurnBase)
+			if block, _ := f.r.StopHook("a1", 0); block {
+				t.Fatal("kept a person's agent going")
+			}
+
+			f.a.endTurn("a1", 2, agent.EndStop)
+			f.tick()
+			f.expect(t, 1, Waiting)
+
+			// They let the runner go on: a new agent does the round.
+			if err := f.r.Resume(1); err != nil {
+				t.Fatal(err)
+			}
+
+			f.tick()
+			f.expect(t, 1, Running)
+
+			if f.a.count("kill a1") != 1 || f.a.count("remove a1") != 1 || f.a.count("spawn a2") != 1 {
+				t.Fatalf("calls %v", f.a.calls)
 			}
 		})
 	}
 }
 
-func TestIdleYieldsItsPlace(t *testing.T) {
+func TestAPersonFinishesItsRound(t *testing.T) {
 	t.Parallel()
 
-	f := newFixture(t, nil, on(1), on(2))
-	if err := f.r.SetMaxParallel(1); err != nil {
-		t.Fatal(err)
-	}
-
+	f := newFixture(t, nil, on(1))
 	f.inbox.set("/repo/1", task("t1", 1))
 	f.tick()
-	f.a.endTurn("a1", 1, agent.EndStop)
-	f.inbox.set("/repo/1")
+	f.a.endTurn("a1", 1, agent.EndInterrupt)
 	f.tick()
-	f.expect(t, 1, Idle)
+	f.expect(t, 1, Waiting)
 
-	f.inbox.set("/repo/2", task("t2", 1))
+	// Told to go on, it finishes.
+	f.a.set("a1", agent.Working, 1)
+	f.tick()
+	f.inbox.set("/repo/1")
+	f.finish(t, "a1")
+	f.a.endTurn("a1", 2, agent.EndStop)
 	f.tick()
 	f.a.waitKilled(t, "a1")
-
 	f.expect(t, 1, Resting)
-	f.expect(t, 2, Running)
-
-	// Back with news, it waits for a place; the busy one keeps it.
-	f.inbox.set("/repo/1", task("t3", 1))
-	f.tick()
-	f.expect(t, 1, Queued)
-
-	f.a.endTurn("a2", 1, agent.EndStop)
-	f.tick()
-	f.a.waitKilled(t, "a2")
-	f.tick()
-	f.expect(t, 1, Running)
-
-	if f.a.count("resume a1: /bot") != 1 {
-		t.Fatalf("calls %v", f.a.calls)
-	}
 }
 
 func TestRestWaitsForNews(t *testing.T) {
@@ -370,7 +546,7 @@ func TestRestWaitsForNews(t *testing.T) {
 	f.tick()
 	f.expect(t, 1, Running)
 
-	if f.a.count("resume a1") != 1 {
+	if f.a.count("remove a1") != 1 || f.a.count("spawn a2") != 1 {
 		t.Fatalf("calls %v", f.a.calls)
 	}
 }
@@ -396,33 +572,7 @@ func TestLeftoverAfterAWhile(t *testing.T) {
 	}
 }
 
-func TestNudgeAnIdleAgent(t *testing.T) {
-	t.Parallel()
-
-	f := newFixture(t, nil, on(1))
-	f.inbox.set("/repo/1", task("t1", 1))
-	f.tick()
-	f.inbox.set("/repo/1")
-	f.a.endTurn("a1", 1, agent.EndStop)
-	f.tick()
-
-	f.inbox.set("/repo/1", task("t2", 1))
-	f.tick()
-	f.expect(t, 1, Idle)
-
-	f.r.mu.Lock()
-	f.r.runs[1].newsAt = time.Now().Add(-nudgeAfter)
-	f.r.mu.Unlock()
-
-	f.tick()
-	f.expect(t, 1, Running)
-
-	if f.a.count("send a1: /bot") != 1 {
-		t.Fatalf("calls %v", f.a.calls)
-	}
-}
-
-func TestLostAgentResumes(t *testing.T) {
+func TestLostAgentStartsTheRoundAgain(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, nil, on(1))
@@ -430,19 +580,21 @@ func TestLostAgentResumes(t *testing.T) {
 	f.tick()
 
 	for i := range maxRecoveries {
-		f.a.set("a1", agent.Lost, 0)
+		id := fmt.Sprintf("a%d", i+1)
+		f.a.set(id, agent.Lost, 0)
 		f.tick()
 
-		if run := f.expect(t, 1, Running); run.Recoveries != i+1 {
-			t.Fatalf("recoveries = %d", run.Recoveries)
+		run := f.expect(t, 1, Running)
+		if run.Recoveries != i+1 || run.AgentID != fmt.Sprintf("a%d", i+2) {
+			t.Fatalf("run %+v", run)
 		}
 	}
 
-	f.a.set("a1", agent.Lost, 0)
+	f.a.set(fmt.Sprintf("a%d", maxRecoveries+1), agent.Lost, 0)
 	f.tick()
 	f.expect(t, 1, Failed)
 
-	if f.a.count("resume a1") != maxRecoveries {
+	if n := f.a.count("spawn"); n != maxRecoveries+1 || f.a.count("remove") != maxRecoveries {
 		t.Fatalf("calls %v", f.a.calls)
 	}
 
@@ -522,7 +674,7 @@ func TestTurnOffAndRemove(t *testing.T) {
 	f.expect(t, 1, Running)
 
 	f.r.SetProjects(nil)
-	f.a.waitKilled(t, "a1")
+	f.a.waitRemoved(t, "a2")
 
 	if runs := f.r.Saved().Runs; len(runs) != 0 {
 		t.Fatalf("runs = %v", runs)
@@ -536,12 +688,18 @@ func TestSavedRunsCarryOn(t *testing.T) {
 	inbox := &fakeInbox{tasks: map[string][]Pending{}}
 	saved := Saved{Runs: []Run{
 		{Project: 1, Dir: "/repo/1", State: Running},
-		{Project: 2, Dir: "/repo/2", State: Idle, AgentID: "gone"},
+		{Project: 2, Dir: "/repo/2", State: Waiting, AgentID: "gone"},
+		// An agent of an older gateway waited for news.
+		{Project: 3, Dir: "/repo/3", State: stateIdle, AgentID: "old", LeftSig: "t:1"},
 	}}
 
 	r := New(Options{Agents: a, Pending: inbox.pending}, saved)
-	r.SetProjects([]Project{on(1), on(2)})
+	r.SetProjects([]Project{on(1), on(2), on(3)})
 	r.Step()
+
+	if runs := r.Saved().Runs; runs[2].State != Resting || runs[2].LeftSig != "" {
+		t.Fatalf("run 3 %+v", runs[2])
+	}
 
 	runs := r.Saved().Runs
 	if runs[0].State != Running || a.count("spawn a1 /repo/1") != 1 {
@@ -575,6 +733,18 @@ func TestMaxParallel(t *testing.T) {
 
 	if n := f.a.count("spawn"); n != 2 || f.r.MaxParallel() != 2 {
 		t.Fatalf("spawned %d", n)
+	}
+
+	// A round that ends gives its place.
+	a1, _ := f.a.AgentInfo("a1")
+	f.inbox.set(a1.Cwd)
+	f.finish(t, "a1")
+	f.a.endTurn("a1", 1, agent.EndStop)
+	f.tick()
+	f.tick()
+
+	if n := f.a.count("spawn"); n != 3 {
+		t.Fatalf("spawned %d, calls %v", n, f.a.calls)
 	}
 }
 

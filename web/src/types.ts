@@ -32,7 +32,7 @@ export interface Overview {
 
 // The runner (internal/runner): Claude Code with /bot in each project that has it on.
 
-export type RunState = "queued" | "running" | "blocked" | "waiting" | "idle" | "resting" | "failed" | "off";
+export type RunState = "queued" | "running" | "blocked" | "waiting" | "resting" | "failed" | "off";
 
 export type AgentStatus = "starting" | "working" | "blocked" | "idle" | "exited" | "lost";
 
@@ -46,6 +46,7 @@ export interface AgentInfo {
   turns: number;
   ended?: string;
   last_message?: string;
+  subagents?: number;
   created_at: string;
   updated_at: string;
 }
@@ -61,6 +62,10 @@ export interface Run {
   pending: number;
   summary?: string;
   starts: number;
+  /** The round's agent said it is done (`claude-bot finish`). */
+  finished?: boolean;
+  /** How often its Stop hook kept it from stopping before it finished. */
+  blocks?: number;
   updated_at: string;
   log?: { at: string; text: string }[];
   agent?: AgentInfo;

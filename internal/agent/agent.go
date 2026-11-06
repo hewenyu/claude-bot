@@ -29,6 +29,9 @@ const (
 	pasteGap = 150 * time.Millisecond
 	// killGrace is how long a program gets to end after each signal.
 	killGrace = 3 * time.Second
+	// drainWait is how long an ended program's last output gets to be
+	// read once what it left is ended.
+	drainWait = time.Second
 	// defaultRows and defaultCols size a terminal no viewer has sized yet.
 	defaultRows, defaultCols = 40, 120
 	// maxSize bounds the rows and columns a viewer may ask for.
@@ -62,14 +65,19 @@ type Info struct {
 	Turns      int    `json:"turns"`
 	// Ended is how the latest turn ended: EndStop, EndInterrupt or
 	// EndDeclined.
-	Ended       string    `json:"ended,omitempty"`
-	LastMessage string    `json:"last_message,omitempty"`
-	PID         int       `json:"pid,omitempty"`
-	ExitCode    *int      `json:"exit_code,omitempty"`
-	Cols        int       `json:"cols"`
-	Rows        int       `json:"rows"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Ended       string `json:"ended,omitempty"`
+	LastMessage string `json:"last_message,omitempty"`
+	// Subagents is how many subagents it started that have not ended.
+	Subagents int `json:"subagents,omitempty"`
+	// Procs is its program and what that started, while it runs: what
+	// to end after a crash of the owner.
+	Procs     []Proc    `json:"procs,omitempty"`
+	PID       int       `json:"pid,omitempty"`
+	ExitCode  *int      `json:"exit_code,omitempty"`
+	Cols      int       `json:"cols"`
+	Rows      int       `json:"rows"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Resumable reports whether the agent's session can be resumed: Claude
@@ -141,28 +149,61 @@ func (a *Agent) start(cmd *exec.Cmd) error {
 	a.sync()
 	a.mu.Unlock()
 
-	go a.pump(cmd, f)
+	go a.pump(newFamily(a.info.ID, cmd.Process.Pid), cmd, f)
 
 	return nil
 }
 
-// pump copies the terminal's output to the ring and the viewers until the
-// program ends.
-func (a *Agent) pump(cmd *exec.Cmd, f *os.File) {
-	buf := make([]byte, readSize)
+// pump copies the terminal's output to the ring and the viewers, and ends
+// the agent when its program ends. The terminal does not tell: it stays
+// open while anything the program started holds it, e.g. a shell left in
+// the background. So the program's exit does, and what it left is ended
+// with it, which closes the terminal.
+func (a *Agent) pump(fam *family, cmd *exec.Cmd, f *os.File) {
+	read := make(chan struct{})
 
-	for {
-		n, err := f.Read(buf)
-		if n > 0 {
-			a.output(buf[:n])
-		}
+	go func() {
+		defer close(read)
 
-		if err != nil {
-			break
+		buf := make([]byte, readSize)
+
+		for {
+			n, err := f.Read(buf)
+			if n > 0 {
+				a.output(buf[:n])
+			}
+
+			if err != nil {
+				return
+			}
 		}
-	}
+	}()
+
+	exited, tracked := make(chan struct{}), make(chan struct{})
+
+	go func() {
+		defer close(tracked)
+
+		a.track(fam, exited)
+	}()
 
 	err := cmd.Wait()
+
+	close(exited)
+	<-tracked
+
+	if n := fam.reap(); n > 0 {
+		a.mu.Lock()
+		a.note(fmt.Sprintf("ended %d process(es) the agent left running", n))
+		a.mu.Unlock()
+	}
+
+	// The rest of its output; a process that hid from reap holds the
+	// terminal and its reader, but not the agent.
+	select {
+	case <-read:
+	case <-time.After(drainWait):
+	}
 
 	code := 0
 	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
@@ -176,6 +217,7 @@ func (a *Agent) pump(cmd *exec.Cmd, f *os.File) {
 	a.mu.Lock()
 	a.info.ExitCode = &code
 	a.info.PID = 0
+	a.info.Procs = nil
 	a.st.Status, a.st.Detail = Exited, ""
 	a.pty = nil
 	close(a.done)
@@ -187,6 +229,27 @@ func (a *Agent) pump(cmd *exec.Cmd, f *os.File) {
 
 	a.sync()
 	a.mu.Unlock()
+}
+
+// track follows the program's family until it exits.
+func (a *Agent) track(fam *family, exited <-chan struct{}) {
+	tick := time.NewTicker(familyPoll)
+	defer tick.Stop()
+
+	for {
+		if fam.scan() {
+			a.mu.Lock()
+			a.info.Procs = fam.procs()
+			a.sync()
+			a.mu.Unlock()
+		}
+
+		select {
+		case <-exited:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func (a *Agent) output(p []byte) {
@@ -235,6 +298,7 @@ func (a *Agent) sync() {
 	a.info.Turns = a.st.Turns
 	a.info.Ended = a.st.Ended
 	a.info.LastMessage = a.st.LastMessage
+	a.info.Subagents = a.st.Subagents
 	a.info.SessionID = a.st.SessionID
 	a.info.Transcript = a.st.Transcript
 	a.info.UpdatedAt = time.Now()
@@ -395,8 +459,8 @@ func (a *Agent) Interrupt() error {
 	return err
 }
 
-// Kill ends the program: a hangup first, then a kill if it lingers. It
-// gives up if even that does not end it, e.g. a child holding the terminal.
+// Kill ends the program: a hangup first, then a kill if it lingers. What
+// it started ends with it (see pump).
 func (a *Agent) Kill() error {
 	a.mu.Lock()
 	cmd, done := a.cmd, a.done
@@ -421,7 +485,7 @@ func (a *Agent) Kill() error {
 	select {
 	case <-done:
 		return nil
-	case <-time.After(killGrace):
+	case <-time.After(killGrace + reapGrace + drainWait):
 		return fmt.Errorf("agent %s did not exit", a.Info().ID)
 	}
 }

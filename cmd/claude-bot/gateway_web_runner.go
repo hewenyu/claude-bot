@@ -348,20 +348,40 @@ func termInput(cancel func(), c *websocket.Conn, a *agent.Agent) {
 	}
 }
 
-// agentHook takes a hook event from an agent's `claude-bot hook`, with the
-// agents' token, not the page's.
-func (w *web) agentHook(rw http.ResponseWriter, r *http.Request) {
+// agentBots is the runner and its agents, for a request of an agent with
+// the agents' token, not the page's; nil after it answered.
+func (w *web) agentBots(rw http.ResponseWriter, r *http.Request) *bots {
 	b := w.g.bots
 	if b == nil {
 		apiError(rw, http.StatusNotFound, errNoRunner.Error())
 
-		return
+		return nil
 	}
 
 	want := []byte("Bearer " + b.token)
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
 		apiError(rw, http.StatusUnauthorized, "wrong agent token")
 
+		return nil
+	}
+
+	return b
+}
+
+// hookAnswer is what the gateway answers a hook: for a Stop, whether the
+// agent may end its turn, as Claude Code reads it from the hook's output.
+type hookAnswer struct {
+	OK       bool   `json:"ok"`
+	Decision string `json:"decision,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// agentHook takes a hook event from an agent's `claude-bot hook`. A Stop
+// the runner does not allow yet does not end the agent's turn: Claude
+// Code goes on with the reason.
+func (w *web) agentHook(rw http.ResponseWriter, r *http.Request) {
+	b := w.agentBots(rw, r)
+	if b == nil {
 		return
 	}
 
@@ -378,13 +398,41 @@ func (w *web) agentHook(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := b.agents.Hook(r.Header.Get(headerAgent), h); err != nil {
+	id := r.Header.Get(headerAgent)
+
+	if h.Event == agent.EventStop && h.SubagentID == "" {
+		if info, err := b.agents.AgentInfo(id); err == nil {
+			if block, reason := b.runner.StopHook(id, info.Subagents); block {
+				writeAPI(rw, http.StatusOK, hookAnswer{OK: true, Decision: "block", Reason: reason})
+
+				return
+			}
+		}
+	}
+
+	if err := b.agents.Hook(id, h); err != nil {
 		apiError(rw, http.StatusNotFound, err.Error())
 
 		return
 	}
 
-	writeAPI(rw, http.StatusOK, map[string]bool{"ok": true})
+	writeAPI(rw, http.StatusOK, hookAnswer{OK: true})
+}
+
+// agentFinish takes an agent's `claude-bot finish`: its round is done.
+func (w *web) agentFinish(rw http.ResponseWriter, r *http.Request) {
+	b := w.agentBots(rw, r)
+	if b == nil {
+		return
+	}
+
+	if err := b.runner.Finish(r.Header.Get(headerAgent)); err != nil {
+		apiError(rw, http.StatusConflict, err.Error())
+
+		return
+	}
+
+	writeAPI(rw, http.StatusOK, hookAnswer{OK: true})
 }
 
 // wsToken is the page token a WebSocket offers as a subprotocol, as an

@@ -52,7 +52,7 @@ export function AgentPanel({ project }: { project: ProjectStatus }) {
           </label>
         </header>
 
-        {on ? <RunState run={r} busy={busy} act={act} /> : <p className="muted small">打开后，这个项目不用再开着终端跑 <code>/loop /bot</code>；同时打开时别再手动跑，不然两个 Claude 会抢同一批任务。</p>}
+        {on ? <RunState run={r} busy={busy} act={act} /> : <p className="muted small">打开后，有待办时 gateway 在这个项目里启动 Claude Code 跑 <code>/bot</code>，一批处理完就关掉；打开时别再手动跑，不然两个 Claude 会抢同一批任务。</p>}
       </section>
 
       {r.agent_id ? (
@@ -75,7 +75,7 @@ function RunState({ run: r, busy, act }: { run: Run; busy: boolean; act: (what: 
   const tone = runTone(r.state);
   const agent = r.agent_id;
   const live = liveAgent(r);
-  const canResume = ["waiting", "failed", "resting", "idle"].includes(r.state);
+  const canResume = ["waiting", "failed", "resting"].includes(r.state);
   const working = r.agent?.status === "working" || r.agent?.status === "blocked";
 
   return (

@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -187,14 +189,14 @@ func TestRunner_hooksAndAgents(t *testing.T) {
 	event := `{"hook_event_name":"UserPromptSubmit"}`
 
 	// Wrong tokens and other agents are turned away; Claude goes on.
-	forwardHook(t.Context(), url, "nope", a.ID, strings.NewReader(event))
-	forwardHook(t.Context(), url, p.bots.token, "a-other", strings.NewReader(event))
+	forwardHook(t.Context(), url, "nope", a.ID, strings.NewReader(event), io.Discard)
+	forwardHook(t.Context(), url, p.bots.token, "a-other", strings.NewReader(event), io.Discard)
 
 	if info, _ := p.bots.agents.AgentInfo(a.ID); info.Status == agent.Working {
 		t.Fatal("a hook with a wrong token or agent was taken")
 	}
 
-	forwardHook(t.Context(), url, p.bots.token, a.ID, strings.NewReader(event))
+	forwardHook(t.Context(), url, p.bots.token, a.ID, strings.NewReader(event), io.Discard)
 
 	if info, _ := p.bots.agents.AgentInfo(a.ID); info.Status != agent.Working {
 		t.Fatalf("status after the hook = %s", info.Status)
@@ -210,6 +212,139 @@ func TestRunner_hooksAndAgents(t *testing.T) {
 
 	if code, raw := p.call(http.MethodPost, "/api/agents/"+a.ID+"/kill", nil); code != http.StatusOK {
 		t.Fatalf("kill: %d %s", code, raw)
+	}
+}
+
+// TestRunner_aRound follows one round through the gateway: the agent may
+// not stop before it finished, may not finish before it answered its
+// batch, and ends once it did both.
+func TestRunner_aRound(t *testing.T) {
+	t.Parallel()
+
+	p, box, task := newRound(t)
+	run := waitRun(t, p.bots, func(r runner.Run) bool { return r.State == runner.Running && r.AgentID != "" && len(r.Round) == 1 })
+	id := run.AgentID
+	finish := p.srv.URL + finishPath
+	stop := func() string { return stopHook(t, p, id) }
+
+	if out := stop(); !strings.Contains(out, `"decision":"block"`) || !strings.Contains(out, "claude-bot finish") {
+		t.Fatalf("stop before finishing: %q", out)
+	}
+
+	if err := agentPost(t.Context(), finish, p.bots.token, id, nil, nil); err == nil || !strings.Contains(err.Error(), "t1") {
+		t.Fatalf("finish before answering: %v", err)
+	}
+
+	if err := agentPost(t.Context(), finish, "nope", id, nil, nil); err == nil {
+		t.Fatal("finish with a wrong token")
+	}
+
+	task.Entries = append(task.Entries, inbox.Entry{Kind: inbox.EntryBot, At: time.Now(), Text: "done"})
+	if err := box.SaveTask(task, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := agentPost(t.Context(), finish, p.bots.token, id, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if out := stop(); out != "" {
+		t.Fatalf("stop after finishing: %q", out)
+	}
+
+	waitRun(t, p.bots, func(r runner.Run) bool { return r.State == runner.Resting })
+	waitEnded(t, p.bots, id)
+}
+
+// waitEnded waits for an agent's program to end.
+func waitEnded(t *testing.T, b *bots, id string) {
+	t.Helper()
+
+	a, err := b.agents.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-a.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the agent of a round that ended still runs")
+	}
+}
+
+// stopHook reports a Stop of the agent, and returns what the hook printed.
+func stopHook(t *testing.T, p *runnerPage, id string) string {
+	t.Helper()
+
+	var out bytes.Buffer
+
+	forwardHook(t.Context(), p.srv.URL+hookPath, p.bots.token, id, strings.NewReader(`{"hook_event_name":"Stop"}`), &out)
+
+	return out.String()
+}
+
+// newRound is a runner page with a project that has /bot and a task, and
+// its runner on.
+func newRound(t *testing.T) (*runnerPage, *inbox.Inbox, inbox.Task) {
+	t.Helper()
+
+	p := newRunnerPage(t, writeScript(t, echoAgent))
+	proj := p.f.register("alpha", "cli_a")
+
+	commands := filepath.Join(proj.Dir, ".claude", "commands")
+	if err := os.MkdirAll(commands, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(commands, "bot.md"), []byte("bot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	box := projectInbox(proj)
+	task := inbox.Task{ID: "t1", Entries: []inbox.Entry{{Kind: inbox.EntryUser, At: time.Now(), Text: "hi"}}}
+
+	if err := box.SaveTask(task, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, raw := p.call(http.MethodPut, "/api/projects/"+strconv.FormatInt(proj.ID, 10)+"/runner", map[string]bool{"on": true}); code != http.StatusOK {
+		t.Fatalf("on: %d %s", code, raw)
+	}
+
+	return p, box, task
+}
+
+// waitRun waits for the only run to be as ok says.
+func waitRun(t *testing.T, b *bots, ok func(runner.Run) bool) runner.Run {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+
+	for {
+		b.runner.Kick()
+
+		runs := b.runner.Saved().Runs
+		if len(runs) == 1 && ok(runs[0]) {
+			return runs[0]
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("runs %+v", runs)
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestFinishOutsideTheGateway(t *testing.T) {
+	t.Setenv(envAgentURL, "")
+
+	if err := cmdFinish(t.Context(), "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmdFinish(t.Context(), "", []string{"x"}); !errors.Is(err, errUsage) {
+		t.Fatalf("finish x = %v", err)
 	}
 }
 
@@ -282,13 +417,15 @@ func TestPendingCountsPeople(t *testing.T) {
 	dir := t.TempDir()
 	b := projectInbox(store.Project{Dir: dir})
 
-	task := inbox.Task{ID: "t1", Entries: []inbox.Entry{{Kind: inbox.EntryUser, Text: "hi"}, {Kind: inbox.EntryBot, Text: "on it"}}}
+	replied := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
+
+	task := inbox.Task{ID: "t1", Entries: []inbox.Entry{{Kind: inbox.EntryUser, Text: "hi"}, {Kind: inbox.EntryBot, At: replied, Text: "on it"}}}
 	if err := b.SaveTask(task, true); err != nil {
 		t.Fatal(err)
 	}
 
 	got, err := pendingIn(dir)
-	if err != nil || len(got) != 1 || got[0] != (runner.Pending{ID: "t1", Entries: 1}) {
+	if err != nil || len(got) != 1 || got[0] != (runner.Pending{ID: "t1", Entries: 1, Replied: replied}) {
 		t.Fatalf("pending = %v, %v", got, err)
 	}
 }
@@ -316,5 +453,18 @@ func TestCheckBotCommand(t *testing.T) {
 
 	if err := checkBotCommand(dir); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLatestAgents(t *testing.T) {
+	t.Parallel()
+
+	saved := runnerState{
+		Runs:   []runner.Run{{Project: 1, AgentID: "a2"}, {Project: 2}},
+		Agents: []agent.Info{{ID: "a1"}, {ID: "a2"}, {ID: "a3"}},
+	}
+
+	if got := latestAgents(saved); len(got) != 1 || got[0].ID != "a2" {
+		t.Fatalf("latest = %+v", got)
 	}
 }

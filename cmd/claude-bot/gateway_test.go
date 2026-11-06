@@ -516,7 +516,7 @@ func TestStop_handsOverFromTheProjectsOwnListener(t *testing.T) { //nolint:paral
 	}
 }
 
-// Each project runs its own Claude Code with /loop /bot: the commands it
+// Each project runs its own Claude Code with /bot: the commands it
 // runs in the project read that project's inbox and answer with that
 // project's apps, from the gateway's database.
 func TestCommands_eachProjectUsesItsOwn(t *testing.T) {

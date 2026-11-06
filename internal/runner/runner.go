@@ -1,13 +1,16 @@
 // Package runner runs Claude Code with claude-bot's /bot in the gateway's
-// projects, so nobody has to keep `/loop /bot` open in each repo.
+// projects, so nobody has to keep a terminal open in each repo.
 //
 // A project whose runner is on gets one agent at a time, in its own
 // folder; all projects together get at most MaxParallel. When its inbox has
-// tasks, the runner starts Claude Code there and gives it /bot: what to take,
-// in what order and how to answer is the project's .claude/commands/bot.md,
-// not the runner's. After a round, /bot waits for news itself; the runner
-// only lets an idle agent go when another project needs its place, and
-// starts it again, in the same session, when news comes.
+// tasks, the runner starts a new Claude Code there and gives it /bot: what
+// to take, in what order and how to answer is the project's
+// .claude/commands/bot.md, not the runner's.
+//
+// One agent does one round: the batch its inbox held. It says it is done
+// with `claude-bot finish` (Finish), and its Stop hook does not let it end
+// its turn before (StopHook). Then the runner ends it, and all it started,
+// and starts a new one for what waits, if anything does.
 package runner
 
 import (
@@ -40,11 +43,10 @@ const (
 	Running State = "running"
 	// Blocked has its agent stopped at a dialog a person answers.
 	Blocked State = "blocked"
-	// Waiting ended a round a person should look at: interrupted, or
-	// nothing answered.
+	// Waiting has its agent stopped by a person: interrupted, or a
+	// permission declined. It is theirs until it finishes or they let the
+	// runner go on.
 	Waiting State = "waiting"
-	// Idle ended a round; /bot waits for news by itself.
-	Idle State = "idle"
 	// Resting has no agent: news starts one.
 	Resting State = "resting"
 	// Failed cannot start until a person fixes it and resumes it.
@@ -53,9 +55,13 @@ const (
 	Off State = "off"
 )
 
+// stateIdle is a state of runners before one agent did one round: an
+// agent waiting for news. Saved runs in it rest.
+const stateIdle = "idle"
+
 // Live reports whether an agent holds a place for the run.
 func (s State) Live() bool {
-	return s == Running || s == Blocked || s == Waiting || s == Idle
+	return s == Running || s == Blocked || s == Waiting
 }
 
 // Bounds of how many agents run at once, in all projects.
@@ -74,12 +80,13 @@ const (
 	retryAfter = 30 * time.Second
 	// stopWait is how long a start waits for an agent being ended.
 	stopWait = 10 * time.Second
-	// leftoverAfter is how long what an agent left in its inbox waits
-	// before it gets another round; news starts one at once.
+	// leftoverAfter is how long what an agent left in its inbox, after a
+	// round that answered none of it, waits before another round; news
+	// starts one at once.
 	leftoverAfter = 30 * time.Minute
-	// nudgeAfter is how long news waits for an idle agent to wake for it
-	// before the runner gives it /bot again.
-	nudgeAfter = 2 * time.Minute
+	// maxBlocks is how often a round's Stop hook keeps the agent from
+	// ending its turn before it finished: then it lets it.
+	maxBlocks = 3
 	// maxLog is how many log lines a run keeps.
 	maxLog = 100
 	// summaryMax bounds the last thing the agent said, kept as the summary.
@@ -90,15 +97,16 @@ const (
 const (
 	detailStarting    = "启动中"
 	detailNews        = "有新消息"
+	detailMore        = "还有待办，开新的一轮"
 	detailLeftover    = "还有没处理完的，再跑一轮"
-	detailWatching    = "这一轮处理完，等新消息"
-	detailNudge       = "有新消息但它没醒，再给它 /bot"
-	detailNoProgress  = "这一轮一件都没处理掉"
+	detailDone        = "这一轮处理完了"
+	detailNoProgress  = "这一轮一件都没处理掉，有新消息再启动"
+	detailNoFinish    = "没发完成信号就停了"
+	detailSubagents   = "等子 Agent 回来"
 	detailInterrupted = "这一轮被中断了"
 	detailDeclined    = "拒绝授权后停下了"
-	detailYield       = "让出名额，有新消息再启动"
 	detailRest        = "agent 退出了，有新消息再启动"
-	detailResuming    = "gateway 重启，恢复会话"
+	detailResuming    = "gateway 重启，重新开一轮"
 	detailStartRetry  = "启动失败，稍后重试"
 	detailResumed     = "手动继续"
 	detailLostOften   = "agent 反复中断，不再自动恢复"
@@ -113,6 +121,17 @@ var ErrNoBotCommand = errors.New("没有 /bot 命令：在项目里运行 `claud
 // ErrNoRun reports a project the runner does not run.
 var ErrNoRun = errors.New("这个项目没有打开自动处理")
 
+// ErrNotARound reports an agent that does no round of the runner's, e.g.
+// one a person started.
+var ErrNotARound = errors.New("这个会话不是 gateway 的自动处理启动的，不用 finish")
+
+// stopReason is what an agent's Stop hook tells it when it would end its
+// turn before it finished its round.
+const stopReason = "这一轮还没结束：你还没有运行 `claude-bot finish`。" +
+	"把这一批的每件事都处理完（回复、`claude-bot done`，或者用 `claude-bot reply --keep` 说明进度），" +
+	"然后运行 `claude-bot finish`，再结束回答。" +
+	"如果你在等后台的命令，就在前台等它结束；如果在等子 Agent，等它们回来再结束。"
+
 // Project is a gateway project, and whether its runner is on.
 type Project struct {
 	ID   int64
@@ -121,21 +140,23 @@ type Project struct {
 	On   bool
 }
 
-// Pending is a task waiting in an inbox: its id and how long its
-// conversation is, which grows with news.
+// Pending is a task waiting in an inbox: its id, how long its
+// conversation is, which grows with news, and when the bot last replied
+// to it.
 type Pending struct {
 	ID      string
 	Entries int
+	Replied time.Time
 }
 
 // Agents runs the agents.
 type Agents interface {
 	Spawn(o agent.SpawnOptions) (agent.Info, error)
-	Resume(id, prompt string) (agent.Info, error)
 	AgentInfo(id string) (agent.Info, error)
 	WaitAgent(id string, timeout time.Duration)
-	SendText(id, text string) error
 	KillAgent(id string) error
+	// Remove forgets an agent whose program ended.
+	Remove(id string) error
 }
 
 // Options configure a runner.
@@ -170,34 +191,38 @@ type Run struct {
 	Pending int `json:"pending"`
 	// Summary is the last thing the agent said at the end of a round.
 	Summary string `json:"summary,omitempty"`
-	// TurnBase is the agent's turn count when its round began; a turn
-	// after it ends the round.
+	// TurnBase is the agent's turn count when its round began, or a turn
+	// of it last ended; a turn after it ends the round or goes on.
 	TurnBase int `json:"turn_base"`
 	// Starts is how often the run was given to an agent.
 	Starts int `json:"starts"`
-	// Recoveries is how often its agent was resumed after the gateway
+	// Recoveries is how often a round started again after the gateway
 	// went away under it, since a round last ended.
 	Recoveries int `json:"recoveries,omitempty"`
-	// Round is what waited as the round began: one of them answered is
-	// progress.
-	Round []string `json:"round,omitempty"`
-	// LeftSig is what waited as its agent last ended a round or its
-	// program, LeftAt when. What it left does not start it again; news
-	// does, and so does the same after a while.
+	// Round is what waited as the round began, RoundSig with how long
+	// each was, RoundAt when: one of them answered is progress, and each
+	// must be answered since RoundAt for the agent to finish.
+	Round    []string  `json:"round,omitempty"`
+	RoundSig string    `json:"round_sig,omitempty"`
+	RoundAt  time.Time `json:"round_at,omitzero"`
+	// Finished is set once the round's agent said it is done; Blocks is
+	// how often its Stop hook kept it from ending its turn before.
+	Finished bool `json:"finished,omitempty"`
+	Blocks   int  `json:"blocks,omitempty"`
+	// LeftSig is what an agent left that does not start another round
+	// at once, LeftAt when: news does, and so does the same after a
+	// while. Empty, anything waiting starts one.
 	LeftSig string    `json:"left_sig,omitempty"`
 	LeftAt  time.Time `json:"left_at,omitzero"`
 	NextTry time.Time `json:"next_try,omitzero"`
 	// Stopping is set while the runner ends the agent: a start waits for
-	// it before resuming.
+	// it before it starts another.
 	Stopping  bool      `json:"stopping,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Log       []LogLine `json:"log,omitempty"`
 
 	// starting is set while start hands the run to an agent.
 	starting bool
-	// newsAt is when news first waited for an idle agent that has not
-	// woken for it.
-	newsAt time.Time
 }
 
 // Saved is what the runner keeps across restarts of the gateway.
@@ -232,7 +257,12 @@ func New(o Options, saved Saved) *Runner {
 	}
 
 	for _, run := range saved.Runs {
-		if run.State.Live() && run.AgentID == "" {
+		switch {
+		case run.State == stateIdle:
+			// Its agent waited for news, as agents once did: what waits
+			// starts a new one.
+			run.State, run.LeftSig = Resting, ""
+		case run.State.Live() && run.AgentID == "":
 			// The gateway stopped while it was starting: nothing runs it.
 			run.State, run.Detail = Queued, detailResuming
 		}
@@ -309,7 +339,7 @@ func (r *Runner) SetProjects(projects []Project) {
 
 	for id, run := range r.runs {
 		if !seen[id] {
-			r.stopAgent(run)
+			r.forgetAgent(run)
 			delete(r.runs, id)
 			delete(r.pending, id)
 
@@ -359,7 +389,7 @@ func (r *Runner) setProject(p Project) bool {
 }
 
 // Resume queues a run a person wants going again: one waiting, failed or
-// resting. An idle agent gets /bot again for another round.
+// resting. A new agent does the round; one a person stopped ends.
 func (r *Runner) Resume(project int64) error {
 	r.mu.Lock()
 
@@ -470,20 +500,18 @@ func (r *Runner) setPending(run *Run, pending []Pending) {
 	}
 }
 
-// watch queues a resting run when news waits for it, or what it left has
-// waited a while. Call it with the lock held.
+// watch queues a resting run when anything waits that its last agent did
+// not leave behind, or what it left has waited a while. Call it with the
+// lock held.
 func (r *Runner) watch(run *Run) {
 	pending := r.pending[run.Project]
-	news := hasNews(pending, run.LeftSig)
 
 	switch {
-	case run.State == Idle:
-		r.nudge(run, news)
-
-		return
 	case run.State != Resting || len(pending) == 0:
 		return
-	case news:
+	case run.LeftSig == "":
+		r.queue(run, detailMore)
+	case hasNews(pending, run.LeftSig):
 		r.queue(run, detailNews)
 	case time.Since(run.LeftAt) >= leftoverAfter:
 		r.queue(run, detailLeftover)
@@ -495,22 +523,85 @@ func (r *Runner) watch(run *Run) {
 	r.Kick()
 }
 
-// nudge gives an idle agent /bot again when news waited a while and it
-// did not wake for it: its wait in the background ended or never began.
-// Call it with the lock held.
-func (r *Runner) nudge(run *Run, news bool) {
-	switch {
-	case !news:
-		run.newsAt = time.Time{}
-	case run.newsAt.IsZero():
-		run.newsAt = time.Now()
-	case time.Since(run.newsAt) >= nudgeAfter:
-		run.newsAt = time.Time{}
-		r.queue(run, detailNudge)
+// Finish records that the agent says its round is done. It refuses while
+// a task of the round has had no word from the bot since the round began:
+// a reply, a reply that keeps it open, or done.
+func (r *Runner) Finish(agentID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-		r.changedLater()
-		r.Kick()
+	run := r.roundOf(agentID)
+	if run == nil {
+		return ErrNotARound
 	}
+
+	r.readPending(run)
+
+	var left []string
+
+	for _, p := range r.pending[run.Project] {
+		if slices.Contains(run.Round, p.ID) && p.Replied.Before(run.RoundAt) {
+			left = append(left, p.ID)
+		}
+	}
+
+	if len(left) > 0 {
+		slices.Sort(left)
+
+		return fmt.Errorf("这一批还有 %d 件没处理：%s。每件都回复、`claude-bot done`，或者用 `claude-bot reply --keep` 说明进度，再运行 `claude-bot finish`",
+			len(left), strings.Join(left, " "))
+	}
+
+	if !run.Finished {
+		run.Finished = true
+		r.logf(run, "agent 说这一轮处理完了")
+		r.changedLater()
+	}
+
+	return nil
+}
+
+// StopHook decides whether the agent may end its turn, from its Stop hook,
+// and if not, what to tell it. It may once it finished its round, while a
+// subagent of it runs (its turn goes on when it reports), when a person
+// stopped it, or when it was told maxBlocks times. Agents the runner does
+// not run always may.
+func (r *Runner) StopHook(agentID string, subagents int) (block bool, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run := r.roundOf(agentID)
+	if run == nil || run.Finished || subagents > 0 || run.State == Waiting {
+		return false, ""
+	}
+
+	if run.Blocks >= maxBlocks {
+		r.logf(run, "拦了 %d 次还是没发完成信号，让它停下", run.Blocks)
+
+		return false, ""
+	}
+
+	run.Blocks++
+	r.logf(run, "它要停下但还没发完成信号，拦下（第 %d 次）", run.Blocks)
+	r.changedLater()
+
+	return true, stopReason
+}
+
+// roundOf is the run whose round the agent does. Call it with the lock
+// held.
+func (r *Runner) roundOf(agentID string) *Run {
+	if agentID == "" {
+		return nil
+	}
+
+	for _, run := range r.runs {
+		if run.AgentID == agentID && run.State.Live() {
+			return run
+		}
+	}
+
+	return nil
 }
 
 // queue marks a run as wanting an agent. Call it with the lock held.
@@ -567,8 +658,6 @@ func label(s State) string {
 		return "等你确认"
 	case Waiting:
 		return "需要你看看"
-	case Idle:
-		return "值守中"
 	case Resting:
 		return "休息"
 	case Failed:

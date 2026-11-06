@@ -45,7 +45,7 @@ export function SettingsView({ overview }: { overview: Overview }) {
 
       <GitHubTokens settings={settings.data} onSaved={settings.reload} />
 
-      {overview.runner && <RunnerSetting saved={overview.runner.max_parallel} running={overview.runner.runs.filter((r) => ["running", "blocked", "waiting", "idle"].includes(r.state)).length} />}
+      {overview.runner && <RunnerSetting saved={overview.runner.max_parallel} running={overview.runner.runs.filter((r) => ["running", "blocked", "waiting"].includes(r.state)).length} />}
     </div>
   );
 }
