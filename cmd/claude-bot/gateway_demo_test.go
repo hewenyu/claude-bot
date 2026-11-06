@@ -122,7 +122,7 @@ func TestPageDemo(t *testing.T) { //nolint:paralleltest // serves until killed
 	}
 	g.ask = func(string) screen.Asker { return stuffing{} }
 
-	if g.ui, err = g.serveWeb(ctx, addr, demoToken); err != nil {
+	if g.ui, _, err = g.serveWeb(ctx, addr, demoToken); err != nil {
 		t.Fatal(err)
 	}
 

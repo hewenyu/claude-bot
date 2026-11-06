@@ -101,12 +101,17 @@ func (t Task) Refused() bool {
 // tasks, joining a group to one of the conversation's threads when it
 // continues it, and scores every task for legality, in the context of the
 // thread it continues. Tasks come out in the order of their first piece.
-func Screen(ctx context.Context, ask Asker, items []Item, threads func(channel.Message) []Thread) ([]Task, error) {
+// An error from threads ends screening before Jev is asked any more.
+func Screen(ctx context.Context, ask Asker, items []Item, threads func(channel.Message) ([]Thread, error)) ([]Task, error) {
 	var tasks []Task
 
 	for _, conv := range conversations(items) {
 		pieces := cutConversation(conv)
-		open := threads(conv[0].Msg)
+
+		open, err := threads(conv[0].Msg)
+		if err != nil {
+			return nil, err
+		}
 
 		groups, err := group(ctx, ask, pieces, open)
 		if err != nil {

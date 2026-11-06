@@ -161,7 +161,7 @@ func identity[C channel.Channel, I any](ctx context.Context, a *app, name string
 		return id, "", false
 	}
 
-	id, err := who(ch, ctx)
+	id, err := withTimeout(ctx, func(ctx context.Context) (I, error) { return who(ch, ctx) })
 	if err != nil {
 		errText = err.Error()
 	}

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/config"
-	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/store"
 )
 
@@ -78,8 +77,8 @@ func gatewayOpen(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("gateway open", flag.ContinueOnError)
 	printOnly := fs.Bool("print", false, "only print the address")
 
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w: %w", errUsage, err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	hb, alive := readGatewayHeartbeat()
@@ -189,7 +188,7 @@ type projectStatus struct {
 	ID        int64             `json:"id"`
 	Name      string            `json:"name"`
 	Dir       string            `json:"dir"`
-	State     string            `json:"state"`
+	State     projectState      `json:"state"`
 	Error     string            `json:"error,omitempty"`
 	Channels  []string          `json:"channels"`            // configured
 	Connected []string          `json:"connected,omitempty"` // listening now
@@ -290,12 +289,12 @@ func projectStatusOf(ctx context.Context, s *store.Store, p store.Project, gw ga
 		}
 	}
 
-	dir := filepath.Join(p.Dir, config.DirName)
+	dir := botDir(p)
 	if hb, alive := readHeartbeat(dir); alive && (hb.PID == gw.PID || !gwAlive) {
 		ps.Connected, ps.Stopped, ps.Errors = hb.Channels, hb.Stopped, hb.Errors
 	}
 
-	box := inbox.New(filepath.Join(dir, inboxDir))
+	box := projectInbox(p)
 
 	pending, err := box.PendingTasks()
 	if err != nil {
@@ -449,8 +448,8 @@ func unregister(ctx context.Context, s *store.Store, p store.Project) (string, e
 	}
 
 	cfg.Gateway = nil
-	dir := filepath.Join(p.Dir, config.DirName)
-	path := filepath.Join(dir, "config.json")
+	dir := botDir(p)
+	path := config.FilePath(dir)
 
 	if _, err := os.Stat(p.Dir); err != nil {
 		path = "" // the project is gone; nothing to write back
@@ -459,11 +458,6 @@ func unregister(ctx context.Context, s *store.Store, p store.Project) (string, e
 	}
 
 	if err := s.RemoveProject(ctx, p.ID); err != nil {
-		return "", err
-	}
-
-	// A project registered later under its id starts with its runner off.
-	if err := s.SetSetting(ctx, runnerKey(p.ID), ""); err != nil {
 		return "", err
 	}
 

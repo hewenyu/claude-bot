@@ -271,6 +271,11 @@ func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 // turns a project's runner on.
 const SettingRunnerPrefix = "runner:"
 
+// RunnerKey is the setting that turns project's runner on.
+func RunnerKey(project int64) string {
+	return SettingRunnerPrefix + strconv.FormatInt(project, 10)
+}
+
 // SettingGitHubTokenPrefix starts the key of each named GitHub token, for
 // projects that use another account than the default token's.
 const SettingGitHubTokenPrefix = "github_token:" //nolint:gosec // a settings key, not a credential
@@ -470,19 +475,26 @@ func addProject(ctx context.Context, tx *sql.Tx, dir string) (Project, error) {
 	}
 }
 
-// RemoveProject unregisters a project and forgets its channels. Its files
-// are left alone.
+// RemoveProject unregisters a project and forgets its channels and its
+// runner setting, so that a project registered later under its id (SQLite
+// reuses the highest one) starts afresh. Its files are left alone.
 func (s *Store) RemoveProject(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("remove project: %w", err)
-	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("remove project: %w", err)
+		}
 
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("%w: %d", ErrNotFound, id)
-	}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("%w: %d", ErrNotFound, id)
+		}
 
-	return nil
+		if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, RunnerKey(id)); err != nil {
+			return fmt.Errorf("remove project: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // Channels returns a project's channels by name.

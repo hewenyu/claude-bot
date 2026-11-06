@@ -118,20 +118,7 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 		items[i] = screen.Item{Msg: m, Files: a.fetchAttachments(ctx, m)}
 	}
 
-	var threadErr error
-
-	tasks, err := screen.Screen(ctx, ask, items, func(m channel.Message) []screen.Thread {
-		th, err := a.threads(m)
-		if err != nil {
-			threadErr = err
-		}
-
-		return th
-	})
-	if err == nil {
-		err = threadErr
-	}
-
+	tasks, err := screen.Screen(ctx, ask, items, a.threads)
 	if err != nil {
 		return err
 	}
@@ -147,6 +134,10 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 		return err
 	}
 
+	// The refusals are owed now that the pieces are gone: shutting down
+	// must not cut them off.
+	sendCtx := context.WithoutCancel(ctx)
+
 	for _, t := range tasks {
 		if !t.Refused() {
 			continue
@@ -157,7 +148,7 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 		last := byID[t.Messages[len(t.Messages)-1]]
 		if ch, ok := a.channels[last.Channel]; !ok {
 			a.log.Warn("send refusal", "id", last.ID, "err", "channel not configured")
-		} else if err := ch.Reply(ctx, last, refusal); err != nil {
+		} else if err := replyWithin(sendCtx, ch, last, refusal); err != nil {
 			a.log.Warn("send refusal", "id", last.ID, "err", err)
 		}
 
@@ -165,6 +156,14 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 	}
 
 	return nil
+}
+
+// replyWithin replies to m, giving up after ackTimeout.
+func replyWithin(ctx context.Context, ch channel.Channel, m channel.Message, text string) error {
+	ctx, cancel := context.WithTimeout(ctx, ackTimeout)
+	defer cancel()
+
+	return ch.Reply(ctx, m, text)
 }
 
 // threads returns the tasks m's conversation may continue.
@@ -444,7 +443,7 @@ type refusalRecord struct {
 
 // logRefusal appends a refused task to refused.jsonl, best effort.
 func (a *app) logRefusal(t screen.Task, byID map[string]channel.Message) {
-	rec := refusalRecord{At: time.Now(), Pieces: t.Pieces, Scores: t.Scores}
+	rec := refusalRecord{At: time.Now().UTC(), Pieces: t.Pieces, Scores: t.Scores}
 	for _, id := range t.Messages {
 		rec.Messages = append(rec.Messages, refOf(byID[id]))
 	}
