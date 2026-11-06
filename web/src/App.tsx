@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, AuthError, hasToken, OfflineError } from "./api";
 import { allProblems } from "./diagnose";
-import { uptime } from "./format";
+import { paletteKey, uptime } from "./format";
 import { Home } from "./Home";
-import { useNow, usePoll } from "./hooks";
+import { POLL_FAST, useNow, usePoll } from "./hooks";
 import { Icon } from "./icons";
 import { Palette } from "./Palette";
 import { ProjectView } from "./ProjectView";
@@ -15,7 +15,7 @@ import { AppIcon, Banner, Command, Empty, Mark, Orb, SrOnly, Toasts } from "./ui
 
 export function App() {
   const route = useRoute();
-  const overview = usePoll(api.overview, 3000, "overview");
+  const overview = usePoll(api.overview, POLL_FAST, "overview");
   const data = overview.data;
   const offline = overview.error instanceof OfflineError;
   const [palette, setPalette] = useState(false);
@@ -100,7 +100,6 @@ function Rail({ overview, route, offline, onSearch, onClose }: { overview: Overv
   const now = useNow();
   const problems = allProblems(overview).length;
   const active = route.page === "project" ? route.project : route.page;
-  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
 
   return (
     <nav className="rail" aria-label="导航">
@@ -117,7 +116,7 @@ function Rail({ overview, route, offline, onSearch, onClose }: { overview: Overv
       <button type="button" className="rail-search" onClick={onSearch}>
         <Icon name="search" />
         <span>跳转</span>
-        <kbd>{mac ? "⌘K" : "Ctrl K"}</kbd>
+        <kbd>{paletteKey}</kbd>
       </button>
 
       <a className={`rail-item${active === "home" ? " active" : ""}`} href={href({ page: "home" })} aria-current={active === "home" ? "page" : undefined}>

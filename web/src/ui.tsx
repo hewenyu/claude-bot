@@ -71,7 +71,8 @@ export function SrOnly({ children }: { children: ReactNode }) {
   return <span className="sr-only">{children}</span>;
 }
 
-function useFlag(ms = 1500): [boolean, () => void] {
+/** A flag that turns itself off again after ms, for "已复制"-style feedback. */
+export function useFlag(ms = 1500): [boolean, () => void] {
   const [on, setOn] = useState(false);
 
   useEffect(() => {
@@ -136,13 +137,22 @@ export function Banner({ tone, children }: { tone: "warn" | "bad" | "info"; chil
 
 const focusable = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-/** Keeps Tab inside ref while mounted, closes on Escape, and gives focus back on close. */
-function useTrap(ref: RefObject<HTMLElement | null>, onClose: () => void, first = "input, select, button") {
+/**
+ * Keeps Tab inside ref while mounted, closes on Escape, and gives focus back on
+ * close. It runs once per mount: callers pass inline onClose arrows and the
+ * page re-renders on every poll, so depending on onClose would pull focus back
+ * to the first field every few seconds.
+ */
+function useTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
+  const close = useRef(onClose);
+  close.current = onClose;
+
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>(first)?.focus();
+    const box = ref.current;
+    (box?.querySelector<HTMLElement>(".modal-body :is(input, select, textarea)") ?? box?.querySelector<HTMLElement>(focusable))?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") return onClose();
+      if (e.key === "Escape") return close.current();
       if (e.key !== "Tab" || !ref.current) return;
 
       const items = [...ref.current.querySelectorAll<HTMLElement>(focusable)];
@@ -166,7 +176,7 @@ function useTrap(ref: RefObject<HTMLElement | null>, onClose: () => void, first 
       document.removeEventListener("keydown", onKey);
       prev?.focus();
     };
-  }, [onClose]);
+  }, [ref]);
 }
 
 /** A dialog; Escape or the backdrop closes it, and Tab stays inside it. */

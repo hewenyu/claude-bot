@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+/** How often the page polls: the overview drives the orb and the badges, task lists can lag a little. */
+export const POLL_FAST = 3000;
+export const POLL_SLOW = 5000;
+
 export interface Loaded<T> {
   data: T | undefined;
   error: unknown;

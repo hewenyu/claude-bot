@@ -78,3 +78,6 @@ export function channel(name: string): { label: string } {
 export function shortPath(dir: string): string {
   return dir.replace(/^\/(?:Users|home)\/[^/]+/, "~");
 }
+
+/** The palette's shortcut as this keyboard writes it. */
+export const paletteKey = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘K" : "Ctrl K";

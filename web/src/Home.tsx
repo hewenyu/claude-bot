@@ -1,29 +1,36 @@
-import { api } from "./api";
+import { useEffect, useRef } from "react";
+import { tasksOf } from "./api";
 import { allProblems } from "./diagnose";
-import { ago, channel, fullTime, taskStateLabel } from "./format";
-import { useNow, usePoll } from "./hooks";
+import { ago, channel, fullTime, paletteKey, taskStateLabel } from "./format";
+import { POLL_SLOW, useNow, usePoll } from "./hooks";
 import { Icon } from "./icons";
 import { ProblemCard } from "./Problems";
 import { href } from "./route";
-import { bySeverity, presence, projectLabel, projectTone } from "./status";
-import type { Overview, ProjectStatus, TaskSummary } from "./types";
+import { bySeverity, isOpenTask, presence, projectLabel, projectTone, taskTone, untitled } from "./status";
+import type { Overview, ProjectStatus } from "./types";
 import { ChannelBadge, Command, Mark, Orb, SrOnly } from "./ui";
-
-const isOpen = (t: TaskSummary) => t.state === "pending" || t.state === "working";
 
 /** Open tasks across the projects that have any, newest first. */
 function useOpenTasks(projects: ProjectStatus[]) {
   const busy = projects.filter((p) => p.pending > 0);
-  const key = busy.map((p) => `${p.id}:${p.pending}`).join(",");
+  const counts = busy.map((p) => `${p.id}:${p.pending}`).join(",");
 
-  return usePoll(
-    () =>
-      Promise.all(busy.map((p) => api.tasks(p.id).then((ts) => ts.filter(isOpen).map((t) => ({ project: p, task: t }))))).then((all) =>
-        all.flat().sort((a, b) => b.task.updated_at.localeCompare(a.task.updated_at)),
-      ),
-    5000,
-    `open-${key}`,
+  // One fixed key, so a changed count refetches without dropping the list
+  // shown meanwhile (a new key would start over from "loading").
+  const open = usePoll(
+    () => tasksOf(busy).then((all) => all.filter((x) => isOpenTask(x.task.state)).sort((a, b) => b.task.updated_at.localeCompare(a.task.updated_at))),
+    POLL_SLOW,
+    "open-tasks",
   );
+  const { reload } = open;
+  const seen = useRef(counts);
+  useEffect(() => {
+    if (seen.current === counts) return;
+    seen.current = counts;
+    reload();
+  }, [counts, reload]);
+
+  return open;
 }
 
 export function Home({ overview, onSearch }: { overview: Overview; onSearch: () => void }) {
@@ -34,7 +41,6 @@ export function Home({ overview, onSearch }: { overview: Overview; onSearch: () 
   const healthy = bySeverity(overview.projects).filter((p) => !troubled.has(p.id));
   const working = open.data?.filter((x) => x.task.state === "working").length ?? 0;
   const waiting = open.data?.filter((x) => x.task.state === "pending").length ?? 0;
-  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
 
   if (!overview.projects.length) return <Welcome overview={overview} />;
 
@@ -74,13 +80,13 @@ export function Home({ overview, onSearch }: { overview: Overview; onSearch: () 
                 <a className="row" href={href({ page: "project", project: project.id, tab: "tasks", task: t.id })}>
                   <ChannelBadge name={t.channel} size="sm" />
                   <span className="row-main">
-                    <span className="row-title">{t.title || "（没有文字）"}</span>
+                    <span className="row-title">{t.title || untitled}</span>
                     <span className="row-sub">
                       {project.name} · {t.senders.slice(0, 2).join("、") || channel(t.channel).label}
                     </span>
                   </span>
-                  <span className={`state-text tone-${t.state === "working" ? "info" : "warn"}`}>
-                    <Mark tone={t.state === "working" ? "info" : "warn"} live={t.state === "working"} />
+                  <span className={`state-text tone-${taskTone[t.state]}`}>
+                    <Mark tone={taskTone[t.state]} live={t.state === "working"} />
                     {taskStateLabel[t.state]}
                   </span>
                   <time className="row-time" dateTime={t.updated_at} title={fullTime(t.updated_at)}>
@@ -112,7 +118,7 @@ export function Home({ overview, onSearch }: { overview: Overview; onSearch: () 
         <button type="button" className="dock" onClick={onSearch}>
           <Icon name="search" />
           <span>跳到项目、任务或设置…</span>
-          <kbd>{mac ? "⌘K" : "Ctrl K"}</kbd>
+          <kbd>{paletteKey}</kbd>
         </button>
       </div>
     </div>
