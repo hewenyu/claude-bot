@@ -11,9 +11,9 @@
 
 把飞书 / Lark、Discord、Telegram、Slack 或钉钉机器人接到项目仓库里常驻的 Claude Code 会话上，GitHub 的 issue 和 PR 也可以作为一个渠道接进来。
 
-项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。Claude Code 以 `/loop /bot` 的方式运行在仓库里，收到消息后排查、修改、跑测试，然后在原消息下回复。它也盯着仓库的 issue 和 PR。代码改动一律走 PR，实际验证过才合并、发版。
+项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。gateway 在仓库里启动 Claude Code 跑 `/bot`，它排查、修改、跑测试，然后在原消息下回复。它也盯着仓库的 issue 和 PR。代码改动一律走 PR，实际验证过才合并、发版。
 
-claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地收件箱，并提供回复命令。理解需求、决定怎么做、怎么回复，都由 Claude 自己判断。没把 GitHub 接成渠道时，Claude 用 `gh` 自己扫 issue 和 PR。
+claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地收件箱，并提供回复命令。理解需求、决定怎么做、怎么回复，都由 Claude 自己判断。issue 和 PR 要把 GitHub 接成渠道才会进收件箱。
 
 ## 特性
 
@@ -21,7 +21,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，不用配域名、HTTPS 和回调地址。
 - **一个 gateway 管所有项目**：本机只跑一个 `claude-bot gateway` 进程，服务所有登记过的项目。每个项目有自己的 bot（一个应用只属于一个项目），可以同时接多个渠道。配置统一存在本地 SQLite（`~/.claude-bot/gateway.db`），TypeSafe key 和 GitHub token 只配一次；消息仍进各项目自己的 `.claude-bot/inbox/`，多个项目同时值守、互不影响。
 - **本地网页看全局**：gateway 自带一个只在本机打开的网页（`claude-bot gateway open`）：每个项目和它的渠道连没连上、出了什么错；每个项目正在处理哪些事，点开看整段对话和 bot 的回复（处理完的自动归档，有人追问时回到列表里）；在页面上添加、修改渠道凭证并测试连接，改完 gateway 几秒内自动重连。凭证只进不出，页面上只显示末几位。
-- **不用一直开着终端**：在网页上给项目打开「自动处理」，gateway 有待办时就在项目里启动 Claude Code 跑 `/bot`，不用每个仓库都开一个终端挂 `/loop /bot`。每个项目最多一个 Claude，所有项目一共最多几个（默认 3 个，可改）；名额满时，空闲最久的让出名额，有新消息再接着原来的会话启动。Claude 的终端就在网页上，能看、能打字、能中断。也有一个桌面 App（`desktop/`），就是这个网页的独立窗口。
+- **不用一直开着终端**：在网页上给项目打开「自动处理」，gateway 有待办时就在项目里启动 Claude Code 跑 `/bot`，不用每个仓库都开一个终端。一个 Claude Code 只处理一批，处理完 `claude-bot finish`，gateway 就关掉它和它启动的所有进程，还有待办再开一个新的。每个项目最多一个 Claude，所有项目一共最多几个（默认 3 个，可改）。Claude 的终端就在网页上，能看、能打字、能中断。也有一个桌面 App（`desktop/`），就是这个网页的独立窗口。
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就建好应用；其他渠道粘贴 token 即可。
 - **改代码一律走 PR**：Claude 自己开的 PR 验证后合并、打 tag 发版；别人的 PR 先判断值不值得要，再在本地实际跑过才合并。
 - **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理。
@@ -31,7 +31,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 ```
  私聊 / 群里 @bot、GitHub 动态 ──▶ claude-bot gateway ──▶ 各项目的 .claude-bot/inbox/
                                                                      │
- Claude Code (/loop /bot) ◀──── claude-bot inbox --wait ─────────────┘
+ Claude Code (/bot)      ◀──── claude-bot inbox ────────────────────┘
           └── claude-bot reply <id> ──▶ 原消息下回复
 ```
 
@@ -93,7 +93,7 @@ claude-bot gateway open   # 在浏览器里打开 gateway 的网页，看各项�
 然后让 Claude 值守，二选一：
 
 - **gateway 来跑（推荐）**：在网页上打开项目的「自动处理」标签，打开开关。有待办时 gateway 在项目里启动 Claude Code 跑 `/bot`，终端也在这个标签里。
-- **自己开终端**：在项目里启动 Claude Code，挂上 `/loop /bot`。
+- **自己开终端**：在项目里启动 Claude Code，运行 `/bot`，处理完这一批就停。
 
 两种别同时用在一个项目上，不然两个 Claude 会抢同一批任务。
 

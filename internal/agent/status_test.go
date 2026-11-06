@@ -50,6 +50,38 @@ func TestSubagentHooksKeepTheParentsSession(t *testing.T) {
 	}
 }
 
+func TestSubagentsAreCounted(t *testing.T) {
+	t.Parallel()
+
+	s := state{Status: Working}
+	steps := []struct {
+		h    Hook
+		want int
+	}{
+		{Hook{Event: EventPreToolUse, ToolName: "Agent"}, 1},
+		// In the background: the call returns while it runs.
+		{Hook{Event: EventPostToolUse, ToolName: "Agent"}, 1},
+		{Hook{Event: EventPreToolUse, ToolName: "Task"}, 2},
+		// Its own tool calls are not the agent's.
+		{Hook{Event: EventPreToolUse, ToolName: "Agent", SubagentID: "x"}, 2},
+		{Hook{Event: EventSubagentStop, SubagentID: "x"}, 1},
+		{Hook{Event: EventStop}, 1},
+		{Hook{Event: EventPreToolUse, ToolName: "Agent"}, 2},
+		// It never started.
+		{Hook{Event: EventPostToolUseFailure, ToolName: "Agent"}, 1},
+		{Hook{Event: EventSubagentStop, SubagentID: "y"}, 0},
+		{Hook{Event: EventSubagentStop, SubagentID: "z"}, 0},
+	}
+
+	for i, st := range steps {
+		s.hook(st.h, at(float64(i)))
+
+		if s.Subagents != st.want {
+			t.Fatalf("step %d (%s %s): subagents %d, want %d", i, st.h.Event, st.h.ToolName, s.Subagents, st.want)
+		}
+	}
+}
+
 func TestTitleWithoutHooks(t *testing.T) {
 	t.Parallel()
 

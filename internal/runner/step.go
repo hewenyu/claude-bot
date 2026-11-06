@@ -54,7 +54,7 @@ func (r *Runner) follow(run *Run) bool {
 		return r.working(run, info)
 	case agent.Idle:
 		if info.Turns > run.TurnBase {
-			return r.roundEnded(run, info)
+			return r.turnEnded(run, info)
 		}
 
 		if run.State == Running && run.Detail == detailStarting {
@@ -68,68 +68,92 @@ func (r *Runner) follow(run *Run) bool {
 	return false
 }
 
-// working follows an agent at work. Call it with the lock held.
+// working follows an agent at work. One a person stopped is theirs while
+// they talk to it. Call it with the lock held.
 func (r *Runner) working(run *Run, info agent.Info) bool {
-	woke := false
-
-	if run.State == Idle || run.State == Waiting {
-		// It began a round itself: news woke its /bot, or a person typed
-		// to it.
-		r.beginRound(run, info.Turns)
-		r.logf(run, "开始新一轮")
-
-		woke = true
+	switch {
+	case run.State == Waiting:
+		return false
+	case info.Status == agent.Blocked:
+		return r.set(run, Blocked, info.Detail)
 	}
 
-	if info.Status == agent.Blocked {
-		return r.set(run, Blocked, info.Detail) || woke
-	}
-
-	return r.set(run, Running, "") || woke
+	return r.set(run, Running, "")
 }
 
 // beginRound notes what waits as a round begins. Call it with the lock
 // held.
 func (r *Runner) beginRound(run *Run, turns int) {
 	r.readPending(run)
-	run.TurnBase, run.Round, run.newsAt = turns, ids(r.pending[run.Project]), time.Time{}
-}
-
-// roundEnded follows an agent that went through its inbox: /bot waits for
-// news in the background. Call it with the lock held.
-func (r *Runner) roundEnded(run *Run, info agent.Info) bool {
-	run.TurnBase, run.Recoveries = info.Turns, 0
-	run.Summary = clip(info.LastMessage, summaryMax)
-	r.readPending(run)
-	r.left(run)
 
 	pending := r.pending[run.Project]
-	r.logf(run, "这一轮结束，inbox 里还有 %d 件", len(pending))
+	run.TurnBase, run.Round, run.RoundSig, run.RoundAt = turns, ids(pending), signature(pending), time.Now()
+	run.Finished, run.Blocks = false, 0
+}
+
+// turnEnded follows an agent that ended a turn: its round is over unless
+// a person stopped it, or a subagent of it still runs. Call it with the
+// lock held.
+func (r *Runner) turnEnded(run *Run, info agent.Info) bool {
+	run.TurnBase = info.Turns
+	run.Summary = clip(info.LastMessage, summaryMax)
 
 	switch {
 	case info.Ended == agent.EndInterrupt:
-		r.set(run, Waiting, detailInterrupted)
+		return r.set(run, Waiting, detailInterrupted)
 	case info.Ended == agent.EndDeclined:
-		r.set(run, Waiting, detailDeclined)
-	case !progressed(run.Round, pending):
-		r.set(run, Idle, detailNoProgress)
-	default:
-		r.set(run, Idle, detailWatching)
+		return r.set(run, Waiting, detailDeclined)
+	case run.Finished:
+	case run.State == Waiting:
+		// A person talks to it.
+		return false
+	case info.Subagents > 0:
+		// It goes on when they report.
+		return r.set(run, Running, detailSubagents)
 	}
 
-	run.Round = nil
+	r.endRound(run)
 
 	return true
 }
 
-// left notes what an agent leaves in its inbox as it ends a round or its
-// program. Call it with the lock held.
-func (r *Runner) left(run *Run) {
-	run.LeftSig, run.LeftAt = signature(r.pending[run.Project]), time.Now()
+// endRound ends a round's agent, and all it started, and leaves the run to
+// rest: what waits starts the next round at once if this one answered any
+// of its tasks; else only news does, or the same after a while. Call it
+// with the lock held.
+func (r *Runner) endRound(run *Run) {
+	r.readPending(run)
+
+	pending := r.pending[run.Project]
+	progress := progressed(run.Round, pending)
+
+	// Nothing of what it was given answered, e.g. all of it waits for CI:
+	// what it was given, as it was, starts no round; a reply to it does.
+	run.LeftSig = ""
+	if !progress {
+		run.LeftSig = run.RoundSig
+	}
+
+	detail := detailDone
+
+	switch {
+	case run.Finished:
+	case progress:
+		detail = detailNoFinish
+	default:
+		detail = detailNoProgress
+	}
+
+	r.logf(run, "这一轮结束（%s），inbox 里还有 %d 件", detail, len(pending))
+
+	run.LeftAt, run.Recoveries, run.Round = time.Now(), 0, nil
+	r.stopAgent(run)
+	r.set(run, Resting, detail)
+	r.watch(run)
 }
 
-// agentEnded follows a run whose agent's program ended. Call it with the
-// lock held.
+// agentEnded follows a run whose agent's program ended under it. Call it
+// with the lock held.
 func (r *Runner) agentEnded(run *Run, info agent.Info) bool {
 	working := run.State == Running || run.State == Blocked
 	if info.Status == agent.Lost && working {
@@ -139,24 +163,25 @@ func (r *Runner) agentEnded(run *Run, info agent.Info) bool {
 			return r.set(run, Failed, detailLostOften)
 		}
 
-		// The gateway restarted under it: resume where it was.
+		// The gateway restarted under it: a new agent does the round.
 		run.Recoveries++
 		run.NextTry = time.Time{}
-		r.logf(run, "agent 随 gateway 中断，重新排队恢复")
+		r.logf(run, "agent 随 gateway 中断，重新开一轮")
 
 		return r.set(run, Queued, detailResuming)
 	}
 
-	// Its program ended, by a person, after a round, or right away: news
-	// starts it again, not what waits now, or a program that cannot start
-	// would start again on every poll.
+	// Its program ended, by a person or right away: news starts it
+	// again, not what waits now, or a program that cannot start would
+	// start again on every poll.
 	r.readPending(run)
-	r.left(run)
+	run.LeftSig, run.LeftAt = signature(r.pending[run.Project]), time.Now()
 
 	return r.set(run, Resting, detailRest)
 }
 
-// stopAgent ends a run's agent. Call it with the lock held.
+// stopAgent ends a run's agent and what it started. Call it with the lock
+// held.
 func (r *Runner) stopAgent(run *Run) {
 	if run.AgentID == "" {
 		return
@@ -168,10 +193,25 @@ func (r *Runner) stopAgent(run *Run) {
 	go func() { _ = r.o.Agents.KillAgent(id) }()
 }
 
+// forgetAgent ends a run's agent, if it runs, and forgets it. Call it with
+// the lock held.
+func (r *Runner) forgetAgent(run *Run) {
+	if run.AgentID == "" {
+		return
+	}
+
+	id := run.AgentID
+
+	go func() {
+		_ = r.o.Agents.KillAgent(id)
+		r.o.Agents.WaitAgent(id, stopWait)
+		_ = r.o.Agents.Remove(id)
+	}()
+}
+
 // startable picks the queued runs that can start, the longest waiting
 // first, and marks them running. All projects together run maxParallel
-// agents; an idle one gives its place to a run that needs it. Call it with
-// the lock held.
+// agents. Call it with the lock held.
 func (r *Runner) startable() []*Run {
 	active := 0
 
@@ -186,16 +226,8 @@ func (r *Runner) startable() []*Run {
 	now := time.Now()
 
 	for _, run := range r.sorted() {
-		if run.State != Queued || now.Before(run.NextTry) {
+		if run.State != Queued || now.Before(run.NextTry) || active >= r.maxParallel {
 			continue
-		}
-
-		if active >= r.maxParallel {
-			if !r.yield(r.idlest()) {
-				continue
-			}
-
-			active--
 		}
 
 		active++
@@ -207,35 +239,7 @@ func (r *Runner) startable() []*Run {
 	return starts
 }
 
-// idlest is the run whose agent is idle the longest. Call it with the
-// lock held.
-func (r *Runner) idlest() *Run {
-	var idle *Run
-
-	for _, run := range r.runs {
-		if run.State == Idle && (idle == nil || run.UpdatedAt.Before(idle.UpdatedAt)) {
-			idle = run
-		}
-	}
-
-	return idle
-}
-
-// yield ends an idle agent so another run gets its place, and reports
-// whether it did. Call it with the lock held.
-func (r *Runner) yield(run *Run) bool {
-	if run == nil || run.State != Idle {
-		return false
-	}
-
-	r.stopAgent(run)
-	r.set(run, Resting, detailYield)
-
-	return true
-}
-
-// start gives a run to an agent: the one it had, given /bot again or
-// resumed with its conversation, or a new one.
+// start gives a run to a new agent.
 func (r *Runner) start(run *Run) {
 	r.mu.Lock()
 	c := *run
@@ -253,7 +257,7 @@ func (r *Runner) start(run *Run) {
 		// do.
 		if err == nil {
 			run.AgentID = info.ID
-			r.stopAgent(run)
+			r.forgetAgent(run)
 		}
 
 		return
@@ -287,32 +291,42 @@ func (r *Runner) startFailed(run *Run, err error) {
 	r.set(run, Queued, detailStartRetry)
 }
 
-// launch starts a run's agent: live and idle, it gets /bot as a message;
-// ended with a saved conversation, it resumes; else a new one starts.
+// launch starts a new agent for a run, once the one before it, if any,
+// ended (a person's, one they stopped, is ended now) and is forgotten.
 func (r *Runner) launch(c Run) (agent.Info, error) {
 	if err := r.o.Check(c.Dir); err != nil {
 		return agent.Info{}, err
 	}
 
-	if c.AgentID != "" {
-		if c.Stopping {
-			r.o.Agents.WaitAgent(c.AgentID, stopWait)
-		}
-
-		info, err := r.o.Agents.AgentInfo(c.AgentID)
-
-		switch {
-		case err != nil:
-		case info.Status == agent.Idle && !c.Stopping:
-			return info, r.o.Agents.SendText(c.AgentID, BotCommand)
-		case info.Status.Live():
-			return agent.Info{}, fmt.Errorf("agent %s 还在运行（%s）", c.AgentID, info.Status)
-		case info.Resumable():
-			return r.o.Agents.Resume(c.AgentID, BotCommand)
-		}
+	if err := r.endBefore(c.AgentID); err != nil {
+		return agent.Info{}, err
 	}
 
 	return r.o.Agents.Spawn(agent.SpawnOptions{Name: c.Name, Cwd: c.Dir, Project: c.Project, Prompt: BotCommand})
+}
+
+// endBefore ends the agent a run had, if it still runs, and forgets it.
+func (r *Runner) endBefore(id string) error {
+	if id == "" {
+		return nil
+	}
+
+	info, err := r.o.Agents.AgentInfo(id)
+	if err != nil {
+		return nil //nolint:nilerr // gone already
+	}
+
+	if info.Status.Live() {
+		_ = r.o.Agents.KillAgent(id)
+	}
+
+	r.o.Agents.WaitAgent(id, stopWait)
+
+	if err := r.o.Agents.Remove(id); err != nil {
+		return fmt.Errorf("agent %s 还没退出: %w", id, err)
+	}
+
+	return nil
 }
 
 // sorted is the runs, the one changed longest ago first. Call it with the

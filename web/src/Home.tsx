@@ -154,9 +154,9 @@ function Welcome({ overview }: { overview: Overview }) {
         <li>
           <span className="step-n">{overview.jev ? 2 : 3}</span>
           <div>
-            <p className="step-title">在仓库里让 Claude Code 值守</p>
-            <p className="step-detail">它会一直等收件箱里的新消息，处理完回复到原消息下面。</p>
-            <Command>/loop /bot</Command>
+            <p className="step-title">打开项目的「自动处理」</p>
+            <p className="step-detail">有待办时 gateway 在仓库里启动 Claude Code 跑 /bot，处理完一批回复到原消息下面就关掉；也可以自己在仓库里的 Claude Code 运行一次：</p>
+            <Command>/bot</Command>
           </div>
         </li>
       </ol>

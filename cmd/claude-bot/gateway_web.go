@@ -241,6 +241,7 @@ func (w *web) routes() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/api/", w.authorize(api))
 	root.HandleFunc("POST "+hookPath, w.agentHook)
+	root.HandleFunc("POST "+finishPath, w.agentFinish)
 	root.Handle("/", webui.Handler())
 
 	return w.guard(root)

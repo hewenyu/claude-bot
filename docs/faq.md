@@ -26,7 +26,7 @@
 
 1. 运行 `claude-bot gateway restart`，换成新版本的 gateway（还没迁进 gateway 的项目运行 `claude-bot restart`）。
 2. 运行 `claude-bot init --bot-md`，用新版本的值守流程覆盖 `.claude/commands/bot.md`（不动任何配置）。如果你改过 bot.md，先备份，或者用 git 看一下差异。
-3. 重启 `/loop /bot`。
+3. 打开了「自动处理」的项目不用管，下一个会话就用新的 bot.md；自己开终端跑的，重新运行 `/bot`。
 
 **inbox 报 listener not running**
 
@@ -41,7 +41,7 @@ claude-bot gateway import   # 配置迁进 ~/.claude-bot/gateway.db，config.jso
 claude-bot stop             # 停掉这个项目自己的监听进程
 ```
 
-然后运行一次 `claude-bot gateway start`。顺序无所谓：gateway 不会去连一个自己的监听进程还在跑的项目（那样同一个应用会有两个连接，消息会被随机分走），而是标成 `busy`，等它停掉，几秒内自动接手。`/loop /bot` 不用重启。
+然后运行一次 `claude-bot gateway start`。顺序无所谓：gateway 不会去连一个自己的监听进程还在跑的项目（那样同一个应用会有两个连接，消息会被随机分走），而是标成 `busy`，等它停掉，几秒内自动接手。在跑的 `/bot` 不用重启。
 
 一个应用只属于一个项目：两个项目填了同一个飞书应用（或同一个钉钉应用、Telegram bot、GitHub 仓库……），后登记的那个会报错，说明被哪个项目占着。
 

@@ -102,6 +102,10 @@ type state struct {
 	LastMessage string
 	SessionID   string
 	Transcript  string
+	// Subagents is how many subagents the agent started that have not
+	// ended: a turn that ends while one runs in the background goes on
+	// when it reports.
+	Subagents int
 
 	hooked   bool
 	lastHook time.Time
@@ -125,6 +129,7 @@ func (s *state) hook(h Hook, now time.Time) bool {
 	s.lastHook = now
 
 	s.session(h)
+	s.countSubagents(h)
 
 	switch h.Event {
 	case EventSessionStart:
@@ -154,6 +159,27 @@ func (s *state) hook(h Hook, now time.Time) bool {
 	}
 
 	return s.shown() != before
+}
+
+// countSubagents follows the subagents the agent starts and that end.
+func (s *state) countSubagents(h Hook) {
+	switch {
+	case h.Event == EventPreToolUse && startsSubagent(h):
+		s.Subagents++
+	case h.Event == EventPostToolUseFailure && startsSubagent(h),
+		// It never ran: no SubagentStop comes.
+		h.Event == EventSubagentStop:
+		s.Subagents = max(0, s.Subagents-1)
+	}
+}
+
+// subagentTools are the tools that start a subagent: Agent, once Task.
+var subagentTools = map[string]bool{"Agent": true, "Task": true}
+
+// startsSubagent reports a call of the agent's own that starts a subagent,
+// in the foreground or the background: either way a SubagentStop ends it.
+func startsSubagent(h Hook) bool {
+	return h.SubagentID == "" && subagentTools[h.ToolName]
 }
 
 // session notes the session a hook comes from. A subagent's hooks carry
@@ -299,12 +325,12 @@ func (s *state) settle(now time.Time) bool {
 type shown struct {
 	status               Status
 	detail, title, ended string
-	turns                int
+	turns, subagents     int
 	session              string
 }
 
 func (s *state) shown() shown {
-	return shown{s.Status, s.Detail, s.Title, s.Ended, s.Turns, s.SessionID}
+	return shown{s.Status, s.Detail, s.Title, s.Ended, s.Turns, s.Subagents, s.SessionID}
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]`)
