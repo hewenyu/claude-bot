@@ -2,6 +2,7 @@ package runner
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -11,10 +12,11 @@ import (
 	"github.com/hewenyu/claude-bot/internal/term"
 )
 
-// Step brings every run up to date with its agent and begins to start what
-// can start. The starts go on after it returns: one may wait long for the
-// agent before it to end, and the other runs must not wait with it.
-func (r *Runner) Step() {
+// Step brings every run up to date with its agent, and begins to end the
+// agents it no longer wants and to start what can start. Those go on after
+// it returns: one may wait long for an agent to end, and the other runs
+// must not wait with it. When ctx ends, they wait no more.
+func (r *Runner) Step(ctx context.Context) {
 	r.mu.Lock()
 
 	changed := false
@@ -28,9 +30,11 @@ func (r *Runner) Step() {
 	starts := r.startable()
 	r.mu.Unlock()
 
+	r.endQueued(ctx)
+
 	for _, run := range starts {
 		r.starts.Go(func() {
-			r.start(run)
+			r.start(ctx, run)
 			r.changed()
 		})
 	}
@@ -48,7 +52,8 @@ func (r *Runner) follow(run *Run) bool {
 
 	info, err := r.o.Agents.AgentInfo(run.AgentID)
 	if err != nil {
-		run.AgentID, run.Error = "", err.Error()
+		run.AgentID = ""
+		run.setError(err.Error(), false)
 
 		return r.set(run, Failed, detailAgentGone+err.Error())
 	}
@@ -61,7 +66,7 @@ func (r *Runner) follow(run *Run) bool {
 			return r.turnEnded(run, info)
 		}
 
-		if run.State == Running && run.Detail == detailStarting {
+		if run.State == Running && run.unseen {
 			// Started, not yet on its message.
 			return r.set(run, Running, "")
 		}
@@ -162,7 +167,7 @@ func (r *Runner) agentEnded(run *Run, info agent.Info) bool {
 	working := run.State == Running || run.State == Blocked
 	if info.Status == agent.Lost && working {
 		if run.Recoveries >= maxRecoveries {
-			run.Error = detailLostOften
+			run.setError(detailLostOften, false)
 
 			return r.set(run, Failed, detailLostOften)
 		}
@@ -184,32 +189,55 @@ func (r *Runner) agentEnded(run *Run, info agent.Info) bool {
 	return r.set(run, Resting, detailRest)
 }
 
-// stopAgent ends a run's agent and what it started. Call it with the lock
-// held.
+// stopAgent has Step end a run's agent and what it started. Call it with
+// the lock held.
 func (r *Runner) stopAgent(run *Run) {
-	if run.AgentID == "" {
-		return
-	}
-
-	id := run.AgentID
-
-	go func() { _ = r.o.Agents.KillAgent(id) }()
+	r.endLater(run.AgentID, false)
 }
 
-// forgetAgent ends a run's agent, if it runs, and forgets it. Call it with
-// the lock held.
+// forgetAgent has Step end a run's agent, if it runs, and forget it. Call
+// it with the lock held.
 func (r *Runner) forgetAgent(run *Run) {
-	if run.AgentID == "" {
+	r.endLater(run.AgentID, true)
+}
+
+// endLater queues an agent for Step to end. Call it with the lock held.
+func (r *Runner) endLater(id string, forget bool) {
+	if id == "" {
 		return
 	}
 
-	id := run.AgentID
+	r.ending = append(r.ending, ending{id: id, forget: forget})
+	r.Kick()
+}
 
-	go func() {
-		_ = r.o.Agents.KillAgent(id)
-		r.o.Agents.WaitAgent(id, stopWait)
-		_ = r.o.Agents.Remove(id)
-	}()
+// endQueued begins to end the agents queued to end, and to forget those
+// to forget. Run waits for them.
+func (r *Runner) endQueued(ctx context.Context) {
+	r.mu.Lock()
+	ends := r.ending
+	r.ending = nil
+	r.mu.Unlock()
+
+	for _, e := range ends {
+		r.kills.Go(func() {
+			_ = r.o.Agents.KillAgent(e.id)
+
+			if e.forget {
+				r.waitAgent(ctx, e.id)
+				_ = r.o.Agents.Remove(e.id)
+			}
+		})
+	}
+}
+
+// waitAgent waits up to stopWait for an agent's program to end, or until
+// ctx ends.
+func (r *Runner) waitAgent(ctx context.Context, id string) {
+	ctx, cancel := context.WithTimeout(ctx, stopWait)
+	defer cancel()
+
+	r.o.Agents.WaitAgent(ctx, id)
 }
 
 // startable picks the queued runs that can start, the longest waiting
@@ -235,21 +263,23 @@ func (r *Runner) startable() []*Run {
 		}
 
 		active++
-		run.starting = true
+
 		r.set(run, Running, detailStarting)
+		run.starting, run.unseen = true, true
 		starts = append(starts, run)
 	}
 
 	return starts
 }
 
-// start gives a run to a new agent.
-func (r *Runner) start(run *Run) {
+// start gives a run to a new agent. One that ctx ended before it started
+// waits for the next gateway, as one that was starting then.
+func (r *Runner) start(ctx context.Context, run *Run) {
 	r.mu.Lock()
 	c := *run
 	r.mu.Unlock()
 
-	info, err := r.launch(c)
+	info, err := r.launch(ctx, c)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -267,13 +297,19 @@ func (r *Runner) start(run *Run) {
 		return
 	}
 
-	if err != nil {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		r.set(run, Queued, detailResuming)
+
+		return
+	case err != nil:
 		r.startFailed(run, err)
 
 		return
 	}
 
-	run.AgentID, run.Error = info.ID, ""
+	run.AgentID = info.ID
+	run.setError("", false)
 	run.Starts++
 	r.beginRound(run, info.Turns)
 	r.logf(run, "交给 agent %s", info.ID)
@@ -281,7 +317,7 @@ func (r *Runner) start(run *Run) {
 
 // startFailed follows a start that failed. Call it with the lock held.
 func (r *Runner) startFailed(run *Run, err error) {
-	run.Error = err.Error()
+	run.setError(err.Error(), false)
 
 	if errors.Is(err, ErrNoBotCommand) {
 		// Waiting will not make the command appear.
@@ -297,20 +333,20 @@ func (r *Runner) startFailed(run *Run, err error) {
 
 // launch starts a new agent for a run, once the one before it, if any,
 // ended (a person's, one they stopped, is ended now) and is forgotten.
-func (r *Runner) launch(c Run) (agent.Info, error) {
+func (r *Runner) launch(ctx context.Context, c Run) (agent.Info, error) {
 	if err := r.o.Check(c.Dir); err != nil {
 		return agent.Info{}, err
 	}
 
-	if err := r.endBefore(c.AgentID); err != nil {
+	if err := r.endBefore(ctx, c.AgentID); err != nil {
 		return agent.Info{}, err
 	}
 
-	return r.o.Agents.Spawn(agent.SpawnOptions{Name: c.Name, Cwd: c.Dir, Project: c.Project, Prompt: BotCommand})
+	return r.o.Agents.Spawn(ctx, agent.SpawnOptions{Name: c.Name, Cwd: c.Dir, Project: c.Project, Prompt: BotCommand})
 }
 
 // endBefore ends the agent a run had, if it still runs, and forgets it.
-func (r *Runner) endBefore(id string) error {
+func (r *Runner) endBefore(ctx context.Context, id string) error {
 	if id == "" {
 		return nil
 	}
@@ -324,7 +360,7 @@ func (r *Runner) endBefore(id string) error {
 		_ = r.o.Agents.KillAgent(id)
 	}
 
-	r.o.Agents.WaitAgent(id, stopWait)
+	r.waitAgent(ctx, id)
 
 	if err := r.o.Agents.Remove(id); err != nil {
 		return fmt.Errorf("agent %s 还没退出: %w", id, err)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,7 +39,7 @@ func TestAgentInATerminal(t *testing.T) {
 	m := NewManager(Config{Program: prog, HookCommand: "claude-bot hook", Allow: []string{"Bash(claude-bot reply:*)"}, Env: map[string]string{"PATH": "/opt/claude-bot", "CLAUDE_BOT_AGENT_URL": "x"}},
 		func() { changes <- struct{}{} })
 
-	info, err := m.Spawn(SpawnOptions{Cwd: dir, Prompt: "-first task"})
+	info, err := m.Spawn(t.Context(), SpawnOptions{Cwd: dir, Prompt: "-first task"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,11 +64,24 @@ func TestAgentInATerminal(t *testing.T) {
 		t.Errorf("replay = %q", replay)
 	}
 
-	if err := a.Send("hello", false); err != nil {
+	if err := a.Send(t.Context(), "hello", false); err != nil {
 		t.Fatal(err)
 	}
 
 	waitOutput(t, out, "got: \x1b[200~hello\x1b[201~")
+
+	// Two sends at once take turns: each line is one paste, submitted.
+	var wg sync.WaitGroup
+	for _, text := range []string{"x", "y"} {
+		wg.Go(func() {
+			if err := a.Send(t.Context(), text, true); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+
+	wg.Wait()
+	waitOutput(t, out, "got: \x1b[200~x\x1b[201~\r", "got: \x1b[200~y\x1b[201~\r")
 
 	killAndRemove(t, m, a)
 
@@ -106,7 +120,7 @@ func killAndRemove(t *testing.T, m *Manager, a *Agent) {
 		t.Fatalf("after kill: %+v", got)
 	}
 
-	if err := a.Send("again", true); err == nil {
+	if err := a.Send(t.Context(), "again", true); err == nil {
 		t.Fatal("send to an ended agent worked")
 	}
 
@@ -142,7 +156,7 @@ func waitStatus(t *testing.T, a *Agent, want Status) {
 	t.Fatalf("status %s, want %s", a.Info().Status, want)
 }
 
-func waitOutput(t *testing.T, out <-chan []byte, want string) {
+func waitOutput(t *testing.T, out <-chan []byte, wants ...string) {
 	t.Helper()
 
 	var seen []byte
@@ -153,17 +167,27 @@ func waitOutput(t *testing.T, out <-chan []byte, want string) {
 		select {
 		case p, ok := <-out:
 			if !ok {
-				t.Fatalf("output ended before %q; saw %q", want, seen)
+				t.Fatalf("output ended before %q; saw %q", wants, seen)
 			}
 
 			seen = append(seen, p...)
-			if bytes.Contains(seen, []byte(want)) {
+			if containsAll(seen, wants) {
 				return
 			}
 		case <-timeout:
-			t.Fatalf("no %q in %q", want, seen)
+			t.Fatalf("no %q in %q", wants, seen)
 		}
 	}
+}
+
+func containsAll(b []byte, wants []string) bool {
+	for _, w := range wants {
+		if !bytes.Contains(b, []byte(w)) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func TestDialogBeforeTheSessionShows(t *testing.T) {
@@ -179,7 +203,7 @@ func TestDialogBeforeTheSessionShows(t *testing.T) {
 
 	m := NewManager(Config{Program: prog}, nil)
 
-	info, err := m.Spawn(SpawnOptions{Cwd: dir})
+	info, err := m.Spawn(t.Context(), SpawnOptions{Cwd: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +252,7 @@ func TestSpawnInAMissingFolderFails(t *testing.T) {
 
 	m := NewManager(Config{Program: "true"}, nil)
 
-	if _, err := m.Spawn(SpawnOptions{Cwd: filepath.Join(t.TempDir(), "gone")}); err == nil {
+	if _, err := m.Spawn(t.Context(), SpawnOptions{Cwd: filepath.Join(t.TempDir(), "gone")}); err == nil {
 		t.Fatal("spawned in a missing folder")
 	}
 
@@ -242,7 +266,7 @@ func TestSpawnOfAMissingProgramKeepsNoAgent(t *testing.T) {
 
 	m := NewManager(Config{Program: "claude-bot-no-such-program"}, nil)
 
-	if _, err := m.Spawn(SpawnOptions{Cwd: t.TempDir()}); err == nil {
+	if _, err := m.Spawn(t.Context(), SpawnOptions{Cwd: t.TempDir()}); err == nil {
 		t.Fatal("spawned a missing program")
 	}
 

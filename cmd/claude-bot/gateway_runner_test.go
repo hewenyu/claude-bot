@@ -181,7 +181,7 @@ func TestRunner_hooksAndAgents(t *testing.T) {
 
 	p := newRunnerPage(t, writeScript(t, echoAgent))
 
-	a, err := p.bots.agents.Spawn(agent.SpawnOptions{Name: "alpha", Cwd: t.TempDir()})
+	a, err := p.bots.agents.Spawn(t.Context(), agent.SpawnOptions{Name: "alpha", Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestRunner_terminal(t *testing.T) {
 
 	p := newRunnerPage(t, writeScript(t, echoAgent))
 
-	a, err := p.bots.agents.Spawn(agent.SpawnOptions{Name: "alpha", Cwd: t.TempDir()})
+	a, err := p.bots.agents.Spawn(t.Context(), agent.SpawnOptions{Name: "alpha", Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

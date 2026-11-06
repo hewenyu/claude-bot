@@ -25,7 +25,11 @@ func newFakeAgents() *fakeAgents {
 	return &fakeAgents{agents: map[string]*agent.Info{}}
 }
 
-func (f *fakeAgents) Spawn(o agent.SpawnOptions) (agent.Info, error) {
+func (f *fakeAgents) Spawn(ctx context.Context, o agent.SpawnOptions) (agent.Info, error) {
+	if err := ctx.Err(); err != nil {
+		return agent.Info{}, err
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -49,8 +53,12 @@ func (f *fakeAgents) AgentInfo(id string) (agent.Info, error) {
 	return *a, nil
 }
 
-func (f *fakeAgents) WaitAgent(id string, _ time.Duration) {
+func (f *fakeAgents) WaitAgent(ctx context.Context, id string) {
 	for range 200 {
+		if ctx.Err() != nil {
+			return
+		}
+
 		if a, _ := f.AgentInfo(id); !a.Status.Live() {
 			return
 		}
@@ -154,7 +162,7 @@ func (f *fakeAgents) count(prefix string) int {
 func (f *fakeAgents) waitKilled(t *testing.T, id string) {
 	t.Helper()
 
-	f.WaitAgent(id, 0)
+	f.WaitAgent(t.Context(), id)
 
 	if a, _ := f.AgentInfo(id); a.Status.Live() {
 		t.Fatalf("agent %s was not killed", id)
@@ -210,11 +218,19 @@ func newFixture(t *testing.T, check func(string) error, projects ...Project) *fi
 	return f
 }
 
-// tick reads the inboxes and steps once, and waits for the starts.
+// tick reads the inboxes and steps once, and waits for the starts; it
+// begins to end what they left to end, as Run does.
 func (f *fixture) tick() {
 	f.r.Poll()
-	f.r.Step()
+	f.r.Step(context.Background())
 	f.r.starts.Wait()
+	f.r.endQueued(context.Background())
+}
+
+// ends begins to end the agents the runner queued to end, as Run does
+// when kicked.
+func (f *fixture) ends() {
+	f.r.endQueued(context.Background())
 }
 
 func (f *fixture) run(t *testing.T, project int64) Run {
@@ -674,6 +690,7 @@ func TestTurnOffAndRemove(t *testing.T) {
 	f.tick()
 
 	f.r.SetProjects([]Project{{ID: 1, Dir: "/repo/1"}})
+	f.ends()
 	f.a.waitKilled(t, "a1")
 	f.tick()
 	f.expect(t, 1, Off)
@@ -687,6 +704,7 @@ func TestTurnOffAndRemove(t *testing.T) {
 	f.expect(t, 1, Running)
 
 	f.r.SetProjects(nil)
+	f.ends()
 	f.a.waitRemoved(t, "a2")
 
 	if runs := f.r.Saved().Runs; len(runs) != 0 {
@@ -708,7 +726,7 @@ func TestSavedRunsCarryOn(t *testing.T) {
 
 	r := New(Options{Agents: a, Pending: inbox.pending}, saved)
 	r.SetProjects([]Project{on(1), on(2), on(3)})
-	r.Step()
+	r.Step(t.Context())
 	r.starts.Wait()
 
 	if runs := r.Saved().Runs; runs[2].State != Resting || runs[2].LeftSig != "" {
@@ -825,7 +843,8 @@ func TestASlowStartHoldsUpNoOtherRun(t *testing.T) {
 	}
 
 	// Run returns once the start it began is done, so that what ends
-	// every agent after it ends this one too.
+	// every agent after it ends any it started too. One that had not
+	// started its agent yet starts none: the next gateway does.
 	cancel()
 
 	select {
@@ -837,8 +856,8 @@ func TestASlowStartHoldsUpNoOtherRun(t *testing.T) {
 	close(release)
 	<-done
 
-	if run := f.run(t, 1); run.AgentID == "" {
-		t.Fatalf("run 1 %+v", run)
+	if run := f.run(t, 1); run.AgentID != "" || run.State != Queued || run.Error != "" || f.a.count("spawn") != 1 {
+		t.Fatalf("run 1 %+v, calls %v", run, f.a.calls)
 	}
 }
 
@@ -858,14 +877,62 @@ func TestInboxErrorsShowUntilARead(t *testing.T) {
 
 	f.tick()
 
-	if run := f.run(t, 1); run.Error != detailInboxError+disk.Error() {
-		t.Fatalf("error %q", run.Error)
+	if run := f.run(t, 1); run.Error != detailInboxError+disk.Error() || !run.InboxError {
+		t.Fatalf("error %q, inbox %v", run.Error, run.InboxError)
 	}
 
 	f.inbox.fail(nil)
 	f.tick()
 
-	if run := f.run(t, 1); run.Error != "" {
+	if run := f.run(t, 1); run.Error != "" || run.InboxError {
 		t.Fatalf("error %q after a read", run.Error)
 	}
+}
+
+// A good read clears only the inbox's error; one saved before InboxError
+// was is the inbox's too.
+func TestInboxReadClearsOnlyItsError(t *testing.T) {
+	t.Parallel()
+
+	inbox := &fakeInbox{tasks: map[string][]Pending{}}
+	saved := Saved{Runs: []Run{
+		{Project: 1, Dir: "/repo/1", State: Failed, Error: "no claude"},
+		{Project: 2, Dir: "/repo/2", State: Resting, Error: detailInboxError + "disk on fire"},
+	}}
+
+	r := New(Options{Agents: newFakeAgents(), Pending: inbox.pending}, saved)
+	r.SetProjects([]Project{on(1), on(2)})
+	r.Poll()
+
+	if runs := r.Saved().Runs; runs[0].Error != "no claude" || runs[1].Error != "" {
+		t.Fatalf("runs %+v", runs)
+	}
+}
+
+// Changes made with the lock held reach OnChange through Run.
+func TestRunTellsChanges(t *testing.T) {
+	t.Parallel()
+
+	told := make(chan struct{}, 10)
+	r := New(Options{Agents: newFakeAgents(), Pending: (&fakeInbox{}).pending, OnChange: func() { told <- struct{}{} }}, Saved{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		r.Run(ctx)
+	}()
+
+	r.changedLater()
+
+	select {
+	case <-told:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a change was never told")
+	}
+
+	cancel()
+	<-done
 }

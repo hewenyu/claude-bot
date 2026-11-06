@@ -2,6 +2,7 @@ package agent
 
 import (
 	"cmp"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -113,13 +114,18 @@ type SpawnOptions struct {
 type Manager struct {
 	cfg      Config
 	onChange func()
+	notes    notifier
 
 	mu     sync.Mutex
 	agents map[string]*Agent
+
+	// changes are the agents that changed since the owner was last told.
+	changesMu sync.Mutex
+	changes   map[string]struct{}
 }
 
 // NewManager returns a manager that calls onChange after any change of an
-// agent it still has.
+// agent it still has: in the background, once for a burst of changes.
 func NewManager(cfg Config, onChange func()) *Manager {
 	if cfg.Program == "" {
 		cfg.Program = defaultProgram
@@ -129,7 +135,10 @@ func NewManager(cfg Config, onChange func()) *Manager {
 		cfg.RingSize = defaultRingSize
 	}
 
-	return &Manager{cfg: cfg, onChange: onChange, agents: map[string]*Agent{}}
+	m := &Manager{cfg: cfg, onChange: onChange, agents: map[string]*Agent{}, changes: map[string]struct{}{}}
+	m.notes.f = m.tell
+
+	return m
 }
 
 // Restore brings back agents saved by an earlier run of the owner, to show.
@@ -152,8 +161,13 @@ func (m *Manager) Restore(infos []Info) {
 	}
 }
 
-// Spawn starts a new agent with a fresh session.
-func (m *Manager) Spawn(o SpawnOptions) (Info, error) {
+// Spawn starts a new agent with a fresh session, unless ctx ended. The
+// agent outlives ctx: Kill ends it.
+func (m *Manager) Spawn(ctx context.Context, o SpawnOptions) (Info, error) {
+	if err := ctx.Err(); err != nil {
+		return Info{}, err
+	}
+
 	cwd, err := filepath.Abs(o.Cwd)
 	if err != nil {
 		return Info{}, err
@@ -305,9 +319,34 @@ func (m *Manager) env(info Info) []string {
 	return env
 }
 
+// changed notes that agent id changed, for tell. Agents call it with
+// their lock held: it does not block.
 func (m *Manager) changed(id string) {
-	if _, err := m.Get(id); err == nil && m.onChange != nil {
-		m.onChange()
+	if m.onChange == nil {
+		return
+	}
+
+	m.changesMu.Lock()
+	m.changes[id] = struct{}{}
+	m.changesMu.Unlock()
+
+	m.notes.notify()
+}
+
+// tell calls onChange if an agent that changed since it last did is still
+// one the manager has.
+func (m *Manager) tell() {
+	m.changesMu.Lock()
+	ids := m.changes
+	m.changes = map[string]struct{}{}
+	m.changesMu.Unlock()
+
+	for id := range ids {
+		if _, err := m.Get(id); err == nil {
+			m.onChange()
+
+			return
+		}
 	}
 }
 
@@ -424,8 +463,8 @@ func (m *Manager) AgentInfo(id string) (Info, error) {
 	return a.Info(), nil
 }
 
-// WaitAgent waits up to timeout for an agent's program to end.
-func (m *Manager) WaitAgent(id string, timeout time.Duration) {
+// WaitAgent waits until an agent's program ends, or ctx does.
+func (m *Manager) WaitAgent(ctx context.Context, id string) {
 	a, err := m.Get(id)
 	if err != nil {
 		return
@@ -438,7 +477,7 @@ func (m *Manager) WaitAgent(id string, timeout time.Duration) {
 
 	select {
 	case <-done:
-	case <-time.After(timeout):
+	case <-ctx.Done():
 	}
 }
 
