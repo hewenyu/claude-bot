@@ -1,9 +1,11 @@
 package markdown
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -54,6 +56,67 @@ func TestSplit_longFenceLineTerminates(t *testing.T) {
 		if n := utf8.RuneCountInString(part); n > 120 {
 			t.Fatalf("part has %d characters, limit 120", n)
 		}
+	}
+}
+
+func utf16Len(s string) int { return len(utf16.Encode([]rune(s))) }
+
+func TestSplitFunc_utf16(t *testing.T) {
+	t.Parallel()
+
+	// Each emoji is one rune but two UTF-16 units.
+	text := strings.Repeat("😀", 10) + "\n" + strings.Repeat("a", 5)
+
+	got := SplitFunc(text, 12, utf16Len)
+	want := []string{"😀😀😀😀", "😀😀😀😀", "😀😀", "aaaaa"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SplitFunc() = %q, want %q", got, want)
+	}
+
+	for _, part := range got {
+		if n := utf16Len(part); n > 12 {
+			t.Errorf("part %q is %d UTF-16 units, limit 12", part, n)
+		}
+	}
+}
+
+func TestSplitFunc_runeLongerThanTheLimitEnds(t *testing.T) {
+	t.Parallel()
+
+	// Room for one unit after the fence margin, but every rune takes two.
+	got := SplitFunc("😀😀", 5, utf16Len)
+	if want := []string{"😀", "😀"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("SplitFunc() = %q, want %q", got, want)
+	}
+}
+
+func TestSendParts(t *testing.T) {
+	t.Parallel()
+
+	errDown := errors.New("down")
+
+	var sent []string
+
+	err := SendParts([]string{"a", "b", "c"}, func(i int, part string) error {
+		if i == 2 {
+			return errDown
+		}
+
+		sent = append(sent, part)
+
+		return nil
+	})
+	if !errors.Is(err, errDown) || !strings.Contains(err.Error(), "sent 2 of 3 parts") {
+		t.Errorf("SendParts() = %v, want the failure after 2 of 3 parts", err)
+	}
+
+	if !reflect.DeepEqual(sent, []string{"a", "b"}) {
+		t.Errorf("sent %q, want a and b", sent)
+	}
+
+	if err := SendParts([]string{"a"}, func(int, string) error { return errDown }); err == nil || err.Error() != "down" {
+		t.Errorf("SendParts() of one part = %v, want the error as is", err)
 	}
 }
 
