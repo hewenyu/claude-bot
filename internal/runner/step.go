@@ -1,16 +1,19 @@
 package runner
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/agent"
+	"github.com/hewenyu/claude-bot/internal/term"
 )
 
-// Step brings every run up to date with its agent and starts what can
-// start.
+// Step brings every run up to date with its agent and begins to start what
+// can start. The starts go on after it returns: one may wait long for the
+// agent before it to end, and the other runs must not wait with it.
 func (r *Runner) Step() {
 	r.mu.Lock()
 
@@ -26,12 +29,13 @@ func (r *Runner) Step() {
 	r.mu.Unlock()
 
 	for _, run := range starts {
-		r.start(run)
-
-		changed = true
+		r.starts.Go(func() {
+			r.start(run)
+			r.changed()
+		})
 	}
 
-	if changed {
+	if changed || len(starts) > 0 {
 		r.changed()
 	}
 }
@@ -84,7 +88,7 @@ func (r *Runner) working(run *Run, info agent.Info) bool {
 // beginRound notes what waits as a round begins. Call it with the lock
 // held.
 func (r *Runner) beginRound(run *Run, turns int) {
-	r.readPending(run)
+	_ = r.readPending(run) // a failure shows on the run; what was read last stands
 
 	pending := r.pending[run.Project]
 	run.TurnBase, run.Round, run.RoundSig, run.RoundAt = turns, ids(pending), signature(pending), time.Now()
@@ -96,7 +100,7 @@ func (r *Runner) beginRound(run *Run, turns int) {
 // lock held.
 func (r *Runner) turnEnded(run *Run, info agent.Info) bool {
 	run.TurnBase = info.Turns
-	run.Summary = clip(info.LastMessage, summaryMax)
+	run.Summary = term.Clip(info.LastMessage, summaryMax)
 
 	switch {
 	case info.Ended == agent.EndInterrupt:
@@ -122,7 +126,7 @@ func (r *Runner) turnEnded(run *Run, info agent.Info) bool {
 // of its tasks; else only news does, or the same after a while. Call it
 // with the lock held.
 func (r *Runner) endRound(run *Run) {
-	r.readPending(run)
+	_ = r.readPending(run) // a failure shows on the run; what was read last stands
 
 	pending := r.pending[run.Project]
 	progress := progressed(run.Round, pending)
@@ -174,7 +178,7 @@ func (r *Runner) agentEnded(run *Run, info agent.Info) bool {
 	// Its program ended, by a person or right away: news starts it
 	// again, not what waits now, or a program that cannot start would
 	// start again on every poll.
-	r.readPending(run)
+	_ = r.readPending(run) // a failure shows on the run; what was read last stands
 	run.LeftSig, run.LeftAt = signature(r.pending[run.Project]), time.Now()
 
 	return r.set(run, Resting, detailRest)
@@ -188,7 +192,6 @@ func (r *Runner) stopAgent(run *Run) {
 	}
 
 	id := run.AgentID
-	run.Stopping = true
 
 	go func() { _ = r.o.Agents.KillAgent(id) }()
 }
@@ -211,7 +214,8 @@ func (r *Runner) forgetAgent(run *Run) {
 
 // startable picks the queued runs that can start, the longest waiting
 // first, and marks them running. All projects together run maxParallel
-// agents. Call it with the lock held.
+// agents. One still starting, e.g. turned off and on again meanwhile,
+// waits for that start to end. Call it with the lock held.
 func (r *Runner) startable() []*Run {
 	active := 0
 
@@ -226,7 +230,7 @@ func (r *Runner) startable() []*Run {
 	now := time.Now()
 
 	for _, run := range r.sorted() {
-		if run.State != Queued || now.Before(run.NextTry) || active >= r.maxParallel {
+		if run.State != Queued || run.starting || now.Before(run.NextTry) || active >= r.maxParallel {
 			continue
 		}
 
@@ -269,7 +273,7 @@ func (r *Runner) start(run *Run) {
 		return
 	}
 
-	run.AgentID, run.Stopping, run.Error = info.ID, false, ""
+	run.AgentID, run.Error = info.ID, ""
 	run.Starts++
 	r.beginRound(run, info.Turns)
 	r.logf(run, "交给 agent %s", info.ID)
@@ -342,7 +346,7 @@ func (r *Runner) sorted() []*Run {
 			return c
 		}
 
-		return int(a.Project - b.Project)
+		return cmp.Compare(a.Project, b.Project)
 	})
 
 	return out

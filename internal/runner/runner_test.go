@@ -1,9 +1,9 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -31,8 +31,7 @@ func (f *fakeAgents) Spawn(o agent.SpawnOptions) (agent.Info, error) {
 
 	f.n++
 	id := fmt.Sprintf("a%d", f.n)
-	// Any file that exists stands for its saved conversation.
-	f.agents[id] = &agent.Info{ID: id, Cwd: o.Cwd, Project: o.Project, SessionID: "s-" + id, Transcript: os.TempDir(), Status: agent.Starting}
+	f.agents[id] = &agent.Info{ID: id, Cwd: o.Cwd, Project: o.Project, SessionID: "s-" + id, Status: agent.Starting}
 	f.calls = append(f.calls, "spawn "+id+" "+o.Cwd+": "+o.Prompt)
 
 	return *f.agents[id], nil
@@ -104,7 +103,7 @@ func (f *fakeAgents) set(id string, st agent.Status, turns int) {
 }
 
 // endTurn ends the agent's turn, the way ended says.
-func (f *fakeAgents) endTurn(id string, turns int, ended string) {
+func (f *fakeAgents) endTurn(id string, turns int, ended agent.End) {
 	f.set(id, agent.Idle, turns)
 
 	f.mu.Lock()
@@ -166,6 +165,8 @@ func (f *fakeAgents) waitKilled(t *testing.T, id string) {
 type fakeInbox struct {
 	mu    sync.Mutex
 	tasks map[string][]Pending
+	// err, if set, is what reading any inbox fails with.
+	err error
 }
 
 func (i *fakeInbox) set(dir string, tasks ...Pending) {
@@ -175,9 +176,20 @@ func (i *fakeInbox) set(dir string, tasks ...Pending) {
 	i.tasks[dir] = tasks
 }
 
+func (i *fakeInbox) fail(err error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.err = err
+}
+
 func (i *fakeInbox) pending(dir string) ([]Pending, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+
+	if i.err != nil {
+		return nil, i.err
+	}
 
 	return i.tasks[dir], nil
 }
@@ -198,10 +210,11 @@ func newFixture(t *testing.T, check func(string) error, projects ...Project) *fi
 	return f
 }
 
-// tick reads the inboxes and steps once.
+// tick reads the inboxes and steps once, and waits for the starts.
 func (f *fixture) tick() {
 	f.r.Poll()
 	f.r.Step()
+	f.r.starts.Wait()
 }
 
 func (f *fixture) run(t *testing.T, project int64) Run {
@@ -465,8 +478,8 @@ func TestAFinishedRoundThatLeftAllWaiting(t *testing.T) {
 func TestAPersonStoppedIt(t *testing.T) {
 	t.Parallel()
 
-	for _, ended := range []string{agent.EndInterrupt, agent.EndDeclined} {
-		t.Run(ended, func(t *testing.T) {
+	for _, ended := range []agent.End{agent.EndInterrupt, agent.EndDeclined} {
+		t.Run(string(ended), func(t *testing.T) {
 			t.Parallel()
 
 			f := newFixture(t, nil, on(1))
@@ -696,6 +709,7 @@ func TestSavedRunsCarryOn(t *testing.T) {
 	r := New(Options{Agents: a, Pending: inbox.pending}, saved)
 	r.SetProjects([]Project{on(1), on(2), on(3)})
 	r.Step()
+	r.starts.Wait()
 
 	if runs := r.Saved().Runs; runs[2].State != Resting || runs[2].LeftSig != "" {
 		t.Fatalf("run 3 %+v", runs[2])
@@ -774,5 +788,84 @@ func TestHasNewsAndProgress(t *testing.T) {
 	if !progressed(nil, []Pending{task("a", 1)}) || progressed([]string{"a"}, []Pending{task("a", 2)}) ||
 		!progressed([]string{"a", "b"}, []Pending{task("b", 1)}) {
 		t.Fatal("progressed is wrong")
+	}
+}
+
+func TestASlowStartHoldsUpNoOtherRun(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	slow := func(dir string) error {
+		if dir == "/repo/1" {
+			<-release // e.g. its agent before takes long to end
+		}
+
+		return nil
+	}
+
+	f := newFixture(t, slow, on(1), on(2))
+	f.inbox.set("/repo/1", task("t1", 1))
+	f.inbox.set("/repo/2", task("t2", 1))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		f.r.Run(ctx)
+	}()
+
+	for f.run(t, 2).AgentID == "" {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if run := f.run(t, 1); run.AgentID != "" || run.State != Running {
+		t.Fatalf("run 1 %+v", run)
+	}
+
+	// Run returns once the start it began is done, so that what ends
+	// every agent after it ends this one too.
+	cancel()
+
+	select {
+	case <-done:
+		t.Fatal("Run returned while a start was under way")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	<-done
+
+	if run := f.run(t, 1); run.AgentID == "" {
+		t.Fatalf("run 1 %+v", run)
+	}
+}
+
+func TestInboxErrorsShowUntilARead(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, nil, on(1))
+	f.inbox.set("/repo/1", task("t1", 1))
+	f.tick()
+
+	disk := errors.New("disk on fire")
+	f.inbox.fail(disk)
+
+	if err := f.r.Finish("a1"); !errors.Is(err, disk) {
+		t.Fatalf("finish: %v", err)
+	}
+
+	f.tick()
+
+	if run := f.run(t, 1); run.Error != detailInboxError+disk.Error() {
+		t.Fatalf("error %q", run.Error)
+	}
+
+	f.inbox.fail(nil)
+	f.tick()
+
+	if run := f.run(t, 1); run.Error != "" {
+		t.Fatalf("error %q after a read", run.Error)
 	}
 }

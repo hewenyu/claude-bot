@@ -269,16 +269,11 @@ func override[C any](c **C, set func(*C)) {
 // way projects were configured before the gateway. The file is replaced
 // atomically, so a crash never leaves half-written credentials.
 func WriteFile(dir string, cfg Config) error {
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	if err := atomicfile.Write(filepath.Join(dir, configFile), append(raw, '\n'), privatePerm); err != nil {
+	if err := atomicfile.WriteJSON(filepath.Join(dir, configFile), cfg, privatePerm); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 

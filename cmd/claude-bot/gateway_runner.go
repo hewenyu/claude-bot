@@ -141,7 +141,7 @@ func startBots(ctx context.Context, home, url string, log *slog.Logger, program 
 			// /bot runs claude-bot: this one, whatever the PATH says.
 			"PATH": filepath.Dir(self),
 		},
-	}, func(agent.Info) {
+	}, func() {
 		b.changed()
 
 		if b.runner != nil {

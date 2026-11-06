@@ -27,6 +27,9 @@ const (
 	// pasteGap is the pause between pasting text and pressing Enter, so the
 	// program sees a paste followed by a submit, not one long paste.
 	pasteGap = 150 * time.Millisecond
+	// settleSlack is how long after settleDelay the fallbacks are applied,
+	// so that settleDelay has surely passed by then.
+	settleSlack = 50 * time.Millisecond
 	// killGrace is how long a program gets to end after each signal.
 	killGrace = 3 * time.Second
 	// drainWait is how long an ended program's last output gets to be
@@ -51,24 +54,13 @@ const (
 )
 
 // Info is what the outside sees of an agent. It is also what the gateway
-// saves, so an agent can be resumed after a restart.
+// saves, to show and to end what it left after a crash.
 type Info struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Cwd        string `json:"cwd"`
-	Project    int64  `json:"project,omitempty"`
-	SessionID  string `json:"session_id"`
-	Transcript string `json:"transcript,omitempty"`
-	Status     Status `json:"status"`
-	Detail     string `json:"detail,omitempty"`
-	Title      string `json:"title,omitempty"`
-	Turns      int    `json:"turns"`
-	// Ended is how the latest turn ended: EndStop, EndInterrupt or
-	// EndDeclined.
-	Ended       string `json:"ended,omitempty"`
-	LastMessage string `json:"last_message,omitempty"`
-	// Subagents is how many subagents it started that have not ended.
-	Subagents int `json:"subagents,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Cwd     string `json:"cwd"`
+	Project int64  `json:"project,omitempty"`
+	Activity
 	// Procs is its program and what that started, while it runs: what
 	// to end after a crash of the owner.
 	Procs     []Proc    `json:"procs,omitempty"`
@@ -80,17 +72,22 @@ type Info struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Resumable reports whether the agent's session can be resumed: Claude
-// saved its conversation. One that ended before its session began, e.g.
-// at a dialog before it, has none, and resuming it fails at once.
-func (i Info) Resumable() bool {
-	if i.SessionID == "" || i.Transcript == "" {
-		return false
-	}
-
-	_, err := os.Stat(i.Transcript)
-
-	return err == nil
+// Activity is the part of an agent that hooks, titles and input change:
+// its session and what it is doing.
+type Activity struct {
+	SessionID  string `json:"session_id"`
+	Transcript string `json:"transcript,omitempty"`
+	Status     Status `json:"status"`
+	Detail     string `json:"detail,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Turns      int    `json:"turns"`
+	// Ended is how the latest turn ended.
+	Ended       End    `json:"ended,omitempty"`
+	LastMessage string `json:"last_message,omitempty"`
+	// Subagents is how many subagents it started that have not ended: a
+	// turn that ends while one runs in the background goes on when it
+	// reports.
+	Subagents int `json:"subagents,omitempty"`
 }
 
 // Agent is one coding agent in a terminal. The terminal stays with the
@@ -111,7 +108,7 @@ type Agent struct {
 func newAgent(info Info, ringSize int, onChange func(id string)) *Agent {
 	return &Agent{
 		info:     info,
-		st:       state{Status: info.Status, SessionID: info.SessionID, Transcript: info.Transcript, Turns: info.Turns, Ended: info.Ended, LastMessage: info.LastMessage, Title: info.Title},
+		st:       state{Activity: info.Activity},
 		ring:     term.NewRing(ringSize),
 		viewers:  map[chan []byte]struct{}{},
 		onChange: onChange,
@@ -142,7 +139,8 @@ func (a *Agent) start(cmd *exec.Cmd) error {
 
 	a.cmd, a.pty = cmd, f
 	a.done = make(chan struct{})
-	a.st = state{Status: Starting, SessionID: a.st.SessionID, Transcript: a.st.Transcript, Turns: a.st.Turns, Ended: a.st.Ended, LastMessage: a.st.LastMessage, Title: a.st.Title}
+	a.st = state{Activity: a.st.Activity}
+	a.st.Status, a.st.Detail, a.st.Subagents = Starting, "", 0
 	a.info.PID = cmd.Process.Pid
 	a.info.ExitCode = nil
 	a.info.Rows, a.info.Cols = rows, cols
@@ -170,7 +168,7 @@ func (a *Agent) pump(fam *family, cmd *exec.Cmd, f *os.File) {
 		for {
 			n, err := f.Read(buf)
 			if n > 0 {
-				a.output(buf[:n])
+				a.output(f, buf[:n])
 			}
 
 			if err != nil {
@@ -252,9 +250,16 @@ func (a *Agent) track(fam *family, exited <-chan struct{}) {
 	}
 }
 
-func (a *Agent) output(p []byte) {
+// output takes what the program printed on its terminal f. A terminal the
+// agent no longer has, e.g. one a process that hid from reap still holds
+// after the program ended, says nothing about the agent.
+func (a *Agent) output(f *os.File, p []byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if a.pty != f {
+		return
+	}
 
 	// Under the lock, so a viewer attaching now gets p either in its
 	// replay or on its channel, never both.
@@ -292,15 +297,7 @@ func (a *Agent) output(p []byte) {
 // sync copies the state into the info and tells the owner, who reads the
 // latest info itself. Call it with the lock held.
 func (a *Agent) sync() {
-	a.info.Status = a.st.Status
-	a.info.Detail = a.st.Detail
-	a.info.Title = a.st.Title
-	a.info.Turns = a.st.Turns
-	a.info.Ended = a.st.Ended
-	a.info.LastMessage = a.st.LastMessage
-	a.info.Subagents = a.st.Subagents
-	a.info.SessionID = a.st.SessionID
-	a.info.Transcript = a.st.Transcript
+	a.info.Activity = a.st.Activity
 	a.info.UpdatedAt = time.Now()
 
 	if a.onChange != nil {
@@ -309,7 +306,7 @@ func (a *Agent) sync() {
 }
 
 func (a *Agent) settleLater() {
-	time.AfterFunc(settleDelay+50*time.Millisecond, func() {
+	time.AfterFunc(settleDelay+settleSlack, func() {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 

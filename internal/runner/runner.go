@@ -57,7 +57,7 @@ const (
 
 // stateIdle is a state of runners before one agent did one round: an
 // agent waiting for news. Saved runs in it rest.
-const stateIdle = "idle"
+const stateIdle State = "idle"
 
 // Live reports whether an agent holds a place for the run.
 func (s State) Live() bool {
@@ -111,6 +111,7 @@ const (
 	detailResumed     = "手动继续"
 	detailLostOften   = "agent 反复中断，不再自动恢复"
 	detailAgentGone   = "agent 不见了: "
+	detailInboxError  = "读不了 inbox: "
 	detailTurnedOff   = "已关闭自动处理"
 	detailTurnedOn    = "已打开自动处理，有待办就启动"
 )
@@ -212,12 +213,9 @@ type Run struct {
 	// LeftSig is what an agent left that does not start another round
 	// at once, LeftAt when: news does, and so does the same after a
 	// while. Empty, anything waiting starts one.
-	LeftSig string    `json:"left_sig,omitempty"`
-	LeftAt  time.Time `json:"left_at,omitzero"`
-	NextTry time.Time `json:"next_try,omitzero"`
-	// Stopping is set while the runner ends the agent: a start waits for
-	// it before it starts another.
-	Stopping  bool      `json:"stopping,omitempty"`
+	LeftSig   string    `json:"left_sig,omitempty"`
+	LeftAt    time.Time `json:"left_at,omitzero"`
+	NextTry   time.Time `json:"next_try,omitzero"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Log       []LogLine `json:"log,omitempty"`
 
@@ -234,6 +232,10 @@ type Saved struct {
 type Runner struct {
 	o    Options
 	kick chan struct{}
+
+	// starts are the runs being given to agents, which Run waits for: the
+	// owner ends every agent once it returns, a half-started one too.
+	starts sync.WaitGroup
 
 	mu          sync.Mutex
 	runs        map[int64]*Run
@@ -424,8 +426,10 @@ func (r *Runner) Kick() {
 	}
 }
 
-// Run runs the projects until ctx ends.
+// Run runs the projects until ctx ends, and the starts it began are done.
 func (r *Runner) Run(ctx context.Context) {
+	defer r.starts.Wait()
+
 	tick := time.NewTicker(r.o.Poll)
 	defer tick.Stop()
 
@@ -468,29 +472,41 @@ func (r *Runner) Poll() {
 
 		r.mu.Lock()
 
-		if run, ok := r.runs[id]; ok {
-			if err != nil {
-				run.Error = err.Error()
-			} else {
-				r.setPending(run, pending)
-				r.watch(run)
-			}
+		if run, ok := r.runs[id]; ok && r.setPending(run, pending, err) == nil {
+			r.watch(run)
 		}
 		r.mu.Unlock()
 	}
 }
 
 // readPending reads a project's inbox now. Call it with the lock held:
-// the files are local and few.
-func (r *Runner) readPending(run *Run) {
-	if pending, err := r.o.Pending(run.Dir); err == nil {
-		r.setPending(run, pending)
-	}
+// the files are local and few. If it cannot, what was read last stays.
+func (r *Runner) readPending(run *Run) error {
+	pending, err := r.o.Pending(run.Dir)
+
+	return r.setPending(run, pending, err)
 }
 
-// setPending records what waits in a project's inbox. Call it with the
+// setPending records what a read of a project's inbox found, or that it
+// failed: the run shows the error until a read succeeds. Call it with the
 // lock held.
-func (r *Runner) setPending(run *Run, pending []Pending) {
+func (r *Runner) setPending(run *Run, pending []Pending, err error) error {
+	if err != nil {
+		if msg := detailInboxError + err.Error(); run.Error != msg {
+			run.Error = msg
+			r.logf(run, "%s", msg)
+			r.changedLater()
+		}
+
+		return err
+	}
+
+	if strings.HasPrefix(run.Error, detailInboxError) {
+		run.Error = ""
+
+		r.changedLater()
+	}
+
 	r.pending[run.Project] = pending
 
 	if run.Pending != len(pending) {
@@ -498,6 +514,8 @@ func (r *Runner) setPending(run *Run, pending []Pending) {
 
 		r.changedLater()
 	}
+
+	return nil
 }
 
 // watch queues a resting run when anything waits that its last agent did
@@ -535,7 +553,10 @@ func (r *Runner) Finish(agentID string) error {
 		return ErrNotARound
 	}
 
-	r.readPending(run)
+	if err := r.readPending(run); err != nil {
+		// What it answered is not known: it tries again.
+		return fmt.Errorf("%s%w。过一会儿再运行 `claude-bot finish`", detailInboxError, err)
+	}
 
 	var left []string
 
@@ -664,6 +685,8 @@ func label(s State) string {
 		return "失败"
 	case Off:
 		return "关闭"
+	case stateIdle:
+		// Only saved runs have it, and New lets them rest.
 	}
 
 	return string(s)
@@ -728,12 +751,4 @@ func progressed(round []string, pending []Pending) bool {
 	}
 
 	return false
-}
-
-func clip(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n]) + "…"
-	}
-
-	return s
 }

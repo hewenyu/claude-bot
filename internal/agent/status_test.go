@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 )
@@ -217,6 +218,40 @@ func TestStartupDialogWaitsForTheSession(t *testing.T) {
 	s.input(at(1)) // e.g. moving the selection, drawn without the footer
 	s.settle(at(9))
 	expect(t, &s, Blocked, "启动时需要确认: 信任这个目录")
+}
+
+func TestTitlesDoNotReviveAnEndedAgent(t *testing.T) {
+	t.Parallel()
+
+	// It ended before its first hook; something it left still draws.
+	for _, st := range []Status{Exited, Lost} {
+		s := state{Status: st}
+		s.title("⠋ Working", at(0))
+		s.title("✳ Claude Code", at(1))
+
+		if s.Status != st || s.settle(at(9)) {
+			t.Errorf("%s became %s", st, s.Status)
+		}
+	}
+}
+
+func TestOutputOfAnotherTerminalIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer r.Close() //nolint:errcheck // test cleanup
+	defer w.Close() //nolint:errcheck // test cleanup
+
+	a := newAgent(Info{ID: "a1", Status: Exited}, 1<<10, nil)
+	a.output(r, []byte("\x1b]0;⠋ Working\x07late"))
+
+	if info := a.Info(); info.Status != Exited || len(a.ring.Bytes()) != 0 {
+		t.Fatalf("status %s, ring %q", info.Status, a.ring.Bytes())
+	}
 }
 
 func TestSplitGlyph(t *testing.T) {

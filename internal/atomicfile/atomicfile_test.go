@@ -39,3 +39,18 @@ func TestWrite_replacesContentAndTightensMode(t *testing.T) {
 		t.Errorf("dir holds %d entries, want only the target (no temp files left)", len(entries))
 	}
 }
+
+func TestWriteJSON_indentsAndEndsWithNewline(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "v.json")
+
+	if err := WriteJSON(path, map[string]int{"a": 1}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "{\n  \"a\": 1\n}\n" {
+		t.Fatalf("content = %q, %v", got, err)
+	}
+}
