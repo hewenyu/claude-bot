@@ -48,6 +48,24 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 
 ## 安装
 
+**Apple Silicon 的 Mac（M 系列芯片）**：从 [Releases](https://github.com/hewenyu/claude-bot/releases) 下载 `claude-bot-<版本>-arm64.dmg`，打开后把 claude-bot 拖进「应用程序」。App 里带着 `claude-bot` 命令，打开 App 就会启动 gateway 并显示它的网页。其他平台暂时没有 App，用下面的 `go install`。
+
+App 没有签 Apple 的开发者证书、也没有公证（开源项目），第一次打开会被 macOS 拦下。在终端里运行一次：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/claude-bot.app
+```
+
+或者先双击打开一次，再到「系统设置 → 隐私与安全性」里点「仍要打开」。
+
+在终端里用 `claude-bot`（`init` 登记项目等），把 App 里的那个链接到 PATH 上，和 App 用同一个版本：
+
+```bash
+sudo ln -sf /Applications/claude-bot.app/Contents/Resources/claude-bot /usr/local/bin/claude-bot
+```
+
+**只要命令行**（macOS 或 Linux）：
+
 ```bash
 go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
 ```

@@ -8,7 +8,10 @@ make build    # bin/claude-bot
 make web     # 用 web/ 重新构建 gateway 的网页到 internal/webui/static（要 Node）
 make web-check  # 重新构建，确认提交的 internal/webui/static 和 web/ 一致
 make desktop  # 用 bin/claude-bot 运行桌面 App（要 Node）
+make dmg      # 在 Apple Silicon 的 Mac 上构建 desktop/dist/claude-bot-<版本>-arm64.dmg（ad hoc 签名，未公证）
 ```
+
+发版：推送 `v*` tag，Kiln（维护者自己的 CI）按 `.kiln/workflows/release.yml` 在 Mac mini 上跑 lint、测试、核对网页，构建 DMG，发布到 GitHub Release（只有 DMG，二进制在 App 里）。PR 也会跑一遍构建，但不发布。
 
 代码结构：
 

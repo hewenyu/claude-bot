@@ -21,11 +21,13 @@ const OPEN_TIMEOUT_MS = 10_000;
 const ALLOWED_PERMISSIONS = new Set(["notifications", "clipboard-sanitized-write"]);
 
 /**
- * The claude-bot binary: $CLAUDE_BOT_BIN, the repository's own build when
- * run from it, else the one on the login shell's PATH.
+ * The claude-bot binary: $CLAUDE_BOT_BIN, the one inside the app, the
+ * repository's own build when run from it, else the one on the login
+ * shell's PATH.
  */
 function claudeBot() {
   if (process.env.CLAUDE_BOT_BIN) return process.env.CLAUDE_BOT_BIN;
+  if (app.isPackaged) return path.join(process.resourcesPath, "claude-bot");
 
   const dev = path.resolve(here, "../bin/claude-bot");
   if (!app.isPackaged && fs.existsSync(dev)) return dev;
@@ -55,8 +57,22 @@ function run(args, timeout) {
   });
 }
 
+/**
+ * The app is not notarized: a downloaded copy is quarantined, and so is the
+ * binary inside it, which the gateway then runs outside the app. Once the
+ * app is open, the person has let it run: the binary may run too.
+ */
+function trustBundledBinary() {
+  if (!app.isPackaged || process.platform !== "darwin") return Promise.resolve();
+
+  return new Promise((resolve) => {
+    execFile("/usr/bin/xattr", ["-d", "com.apple.quarantine", claudeBot()], () => resolve(undefined));
+  });
+}
+
 /** Starts the gateway if it is not running, and returns its page with the token. */
 async function gatewayPage() {
+  await trustBundledBinary();
   await run(["gateway", "start"], START_TIMEOUT_MS);
 
   const out = await run(["gateway", "open", "--print"], OPEN_TIMEOUT_MS);

@@ -50,7 +50,7 @@ gateway 启动的 Claude 默认带 `--permission-mode bypassPermissions`：没�
 
 **同一个项目别两种方式一起用**：打开了「自动处理」，就不要再在那个项目里自己开 `/loop /bot`，不然两个 Claude 会抢同一批任务。
 
-**桌面 App**：`desktop/` 是这个网页的独立窗口（Electron）。它在你的登录 shell 里运行 `claude-bot gateway start`（所以 gateway 和它启动的 Claude 用的是你终端里的 PATH 和环境变量），再用 `claude-bot gateway open --print` 拿到带令牌的地址打开；页面外的链接交给浏览器。关掉窗口不影响 gateway 和它在跑的 Claude。从源码运行：`make desktop`。
+**桌面 App**：`desktop/` 是这个网页的独立窗口（Electron），Apple Silicon 的 Mac 可以从 Releases 下载 DMG（见 [README · 安装](../README.md#安装)）。App 里带着 `claude-bot`，它在你的登录 shell 里用这个 `claude-bot` 运行 `gateway start`（所以 gateway 和它启动的 Claude 用的是你终端里的 PATH 和环境变量），再用 `claude-bot gateway open --print` 拿到带令牌的地址打开；页面外的链接交给浏览器。关掉窗口不影响 gateway 和它在跑的 Claude。从源码运行：`make desktop`。
 
 想知道还有多少件事在排队，可以运行 `claude-bot status`，看 `pending` 字段。
 

@@ -1,0 +1,70 @@
+# 发布 claude-bot 的 macOS 桌面 App：推送 v* tag 后，在 Mac mini（darwin/arm64）上检查、构建 DMG，
+# 发布到本仓库的 GitHub Release。PR 执行相同的检查和构建，但不发布。先打 tag 再构建，Kiln 不会替你打 tag。
+# - 开源项目，不签 Developer ID、不公证：App 只做 ad hoc 签名（Apple Silicon 不运行没签名的代码），
+#   第一次打开的步骤见 README。所以不需要证书和 secret。
+# - Release 里只有 DMG：claude-bot 二进制在 App 里（Contents/Resources/claude-bot），不单独发布；
+#   命令行用 go install，或者链接 App 里的那个（README）。
+# - 只支持 Apple Silicon 的 Mac，其他平台暂不支持。
+# - 工作区没有 .git，也没有 GITHUB_* 环境变量：版本号从 ${{ github.* }} 传进去，
+#   网页的检查比较目录，不用 git diff（make web-check）。
+# - publish 引用 Kiln 中的 environment release（ref 策略 refs/tags/v*），要先由运维创建。
+name: release
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+jobs:
+  dmg:
+    runs-on: darwin/arm64
+    runtimes: [go, node]
+    inputs: ["**"]
+    network: true            # go mod download、npm ci、下载 Electron
+    cache: false
+    resources: { cpu: 4, memory: 8Gi }
+    timeout-minutes: 60
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: "4"
+      GOFLAGS: "-p=4"
+      REF: ${{ github.ref }}
+      TAG: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+    toolcache:
+      - { name: gomod, env: GOMODCACHE }
+      - { name: gocache-macos, env: GOCACHE }
+      - { name: npm-macos, env: npm_config_cache }
+      - { name: electron-macos, env: electron_config_cache }
+    steps:
+      - name: lint 和 race tests
+        run: |
+          mkdir -p .ci/bin
+          GOBIN="$PWD/.ci/bin" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+          .ci/bin/golangci-lint run
+          go test -race ./...
+      - name: 提交的网页和 web/ 构建出来的一致
+        run: |
+          cp -R internal/webui/static .ci/static-committed
+          make web
+          diff -r .ci/static-committed internal/webui/static || { echo "internal/webui/static 和 web/ 不一致：运行 make web 并提交"; exit 1; }
+      - name: 构建 DMG（ad hoc 签名，未公证）
+        run: |
+          case "$REF" in
+            refs/tags/v*) version="$TAG" ;;
+            *) version="0.0.0-$(printf %.7s "$SHA")" ;;
+          esac
+          make dmg VERSION="$version"
+          ls -l desktop/dist/*.dmg
+          shasum -a 256 desktop/dist/*.dmg
+    outputs:
+      dmg: desktop/dist/*.dmg
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [dmg]
+    environment: release
+    release:
+      assets:
+        - from: dmg.dmg
+          name: claude-bot-${{ github.ref_name }}-arm64
+          archive: none
+      # 校验和文件默认是 SHA256SUMS
+      github: {}   # 发布到本仓库的 GitHub Release

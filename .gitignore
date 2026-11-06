@@ -50,6 +50,7 @@ tmp/
 # gateway page sources: dependencies (the built page in internal/webui/static is committed)
 web/node_modules/
 desktop/node_modules/
+desktop/dist/
 
 .claude/skills/
 .claude/agents/
