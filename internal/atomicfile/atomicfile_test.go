@@ -1,6 +1,8 @@
 package atomicfile
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,5 +54,32 @@ func TestWriteJSON_indentsAndEndsWithNewline(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != "{\n  \"a\": 1\n}\n" {
 		t.Fatalf("content = %q, %v", got, err)
+	}
+}
+
+func TestReadJSON(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "v.json")
+
+	var v map[string]int
+	if err := ReadJSON(path, &v); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadJSON(missing) = %v, want fs.ErrNotExist", err)
+	}
+
+	if err := WriteJSONNoSync(path, map[string]int{"a": 1}, PrivateFile); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReadJSON(path, &v); err != nil || v["a"] != 1 {
+		t.Errorf("ReadJSON = %v, %v", v, err)
+	}
+
+	if err := os.WriteFile(path, []byte("{"), PrivateFile); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReadJSON(path, &v); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadJSON(broken) = %v, want a parse error", err)
 	}
 }
