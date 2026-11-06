@@ -129,7 +129,7 @@ type Channel interface {
 .claude-bot/                   已加入 .gitignore
   config.json                  还没迁进 gateway 的项目的凭证（权限 0600），比如 {"lark": {...}, "discord": {...}, "telegram": {...}, "slack": {...}, "dingtalk": {...}, "github": {...}}；登记进 gateway 的项目的凭证在 ~/.claude-bot/gateway.db
   inbox/incoming/              刚收到、还没经过 Jev 筛选的消息
-  inbox/tasks/pending/  inbox/tasks/done/   待处理、已处理的事，每件一个 JSON 文件
+  inbox/tasks/pending/  inbox/tasks/done/   待处理、已处理的事，每件一个 JSON 文件；解析不了的文件改名成 *.json.bad 放在原地、记进日志，不挡住其他的（改回 .json 重试）
   inbox/tasks.lock             读写事情时的锁
   inbox/done/                  筛过的消息存档（去重、get、download 用）
   refused.jsonl                被拒的内容，供人复查
