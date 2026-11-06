@@ -64,7 +64,16 @@ xattr -dr com.apple.quarantine /Applications/claude-bot.app
 sudo ln -sf /Applications/claude-bot.app/Contents/Resources/claude-bot /usr/local/bin/claude-bot
 ```
 
-**只要命令行**（macOS 或 Linux）：
+**只要命令行**：[Releases](https://github.com/hewenyu/claude-bot/releases) 里有编译好的二进制，Apple Silicon 的 Mac（`darwin-arm64`）和 Linux（`linux-amd64`、`linux-arm64`）各一个。比如 Linux amd64：
+
+```bash
+curl -fsSL https://github.com/hewenyu/claude-bot/releases/latest/download/claude-bot-<版本>-linux-amd64.tar.gz | tar -xz claude-bot
+sudo install claude-bot /usr/local/bin/
+```
+
+`<版本>` 是 Releases 上的 tag，比如 `v0.3.0`。和 DMG 一样没有签名：在 Mac 上用浏览器下载的话，先 `xattr -d com.apple.quarantine claude-bot`；用 `curl` 下载不需要。
+
+或者用 Go 安装（macOS 或 Linux）：
 
 ```bash
 go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
