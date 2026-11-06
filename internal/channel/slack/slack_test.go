@@ -133,7 +133,7 @@ func TestConfig_validate(t *testing.T) {
 func TestFatal(t *testing.T) {
 	t.Parallel()
 
-	if !fatal(&APIError{Code: "invalid_auth"}) || fatal(&APIError{Code: "internal_error"}) || fatal(errors.New("eof")) {
+	if !fatal(&apiError{Code: "invalid_auth"}) || fatal(&apiError{Code: "internal_error"}) || fatal(errors.New("eof")) {
 		t.Error("fatal() misclassifies errors")
 	}
 }

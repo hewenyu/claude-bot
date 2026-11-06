@@ -9,15 +9,16 @@ import (
 // Reconnect backoff of the long-lived listeners.
 const (
 	ReconnectStart = 2 * time.Second // first wait after a failed connection
-	ReconnectCap   = time.Minute
+	reconnectCap   = time.Minute
 )
 
-// MaxRetryAfter is the longest rate-limit wait honoured before giving up.
-const MaxRetryAfter = 60 * time.Second
+// maxRetryAfter is the longest rate-limit wait honoured before giving up.
+const maxRetryAfter = 60 * time.Second
 
-// ReconnectBackoff is the backoff between reconnects of a listener.
+// ReconnectBackoff is the backoff between reconnects of a listener: from
+// ReconnectStart up to a minute.
 func ReconnectBackoff() Backoff {
-	return Backoff{Start: ReconnectStart, Cap: ReconnectCap}
+	return Backoff{Start: ReconnectStart, Cap: reconnectCap}
 }
 
 // Retry calls try until it succeeds or fails with an error fatal reports,
@@ -82,12 +83,47 @@ func Reconnect(ctx context.Context, log *slog.Logger, name string,
 	}
 }
 
+// Poll calls poll until ctx ends or a poll fails with an error fatal
+// reports: every after a successful poll (at once if 0, e.g. for long
+// polling), with b after a failed one, which a success resets. connected is
+// called after the first successful poll. name labels the log lines.
+func Poll(ctx context.Context, log *slog.Logger, name string, every time.Duration, b Backoff,
+	fatal func(error) bool, poll func(context.Context) error, connected func(),
+) error {
+	for {
+		err := poll(ctx)
+
+		wait := every
+
+		switch {
+		case ctx.Err() != nil:
+			return nil //nolint:nilerr // cancelled: the poll error is just the shutdown
+		case fatal(err):
+			return err
+		case err != nil:
+			wait = b.Next()
+			log.Warn(name+" poll", "err", err, "retry_in", wait)
+		default:
+			b.Reset()
+
+			if connected != nil {
+				connected()
+				connected = nil
+			}
+		}
+
+		if wait > 0 && !Sleep(ctx, wait) {
+			return nil
+		}
+	}
+}
+
 // RetryOnce calls call, and once more if limited reports a rate limit with a
-// wait of at most MaxRetryAfter.
+// wait of at most a minute.
 func RetryOnce(ctx context.Context, limited func(error) (wait time.Duration, ok bool), call func() error) error {
 	err := call()
 
-	if wait, ok := limited(err); ok && wait <= MaxRetryAfter {
+	if wait, ok := limited(err); ok && wait <= maxRetryAfter {
 		if !Sleep(ctx, wait) {
 			return ctx.Err()
 		}

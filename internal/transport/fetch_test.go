@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,17 +31,63 @@ func (zeros) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func TestDownload_refusesOversizedFiles(t *testing.T) {
+func TestDo(t *testing.T) {
 	t.Parallel()
 
-	c := &http.Client{Transport: sized(MaxDownload)}
-	if data, err := Download(t.Context(), c, "https://cdn.example/a", nil); err != nil || len(data) != MaxDownload {
-		t.Fatalf("Download at the limit = %d bytes, %v; want all of it", len(data), err)
+	c := &http.Client{Transport: sized(maxResponse)}
+
+	res, err := Do(t.Context(), c, http.MethodGet, "https://api.example/a", nil, nil)
+	if err != nil || res.Status != http.StatusOK || len(res.Body) != maxResponse {
+		t.Fatalf("Do() at the limit = %d, %d bytes, %v; want all of it", res.Status, len(res.Body), err)
 	}
 
-	c = &http.Client{Transport: sized(MaxDownload + 1)}
-	if _, err := Download(t.Context(), c, "https://cdn.example/a", nil); !errors.Is(err, ErrTooLarge) {
-		t.Errorf("Download over the limit = %v; want ErrTooLarge, not a truncated file", err)
+	c = &http.Client{Transport: sized(maxResponse + 1)}
+	if _, err := Do(t.Context(), c, http.MethodGet, "https://api.example/a", nil, nil); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("Do() over the limit = %v; want ErrTooLarge, not a truncated answer", err)
+	}
+}
+
+func TestDo_sendsHeaders(t *testing.T) {
+	t.Parallel()
+
+	headers := make(chan http.Header, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header
+
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte("short and stout"))
+	}))
+	t.Cleanup(srv.Close)
+
+	header := http.Header{"content-type": {JSON}, "x-acs-token": {"t"}}
+
+	res, err := Do(t.Context(), srv.Client(), http.MethodPost, srv.URL, header, strings.NewReader("{}"))
+	if err != nil || res.Status != http.StatusTeapot || string(res.Body) != "short and stout" {
+		t.Fatalf("Do() = %d %q, %v", res.Status, res.Body, err)
+	}
+
+	if got := <-headers; got.Get("Content-Type") != JSON || got.Get("X-Acs-Token") != "t" {
+		t.Errorf("request headers = %v", got)
+	}
+}
+
+func TestDownload_streams(t *testing.T) {
+	t.Parallel()
+
+	c := &http.Client{Transport: sized(1 << 20)}
+
+	var n int64
+
+	err := Download(t.Context(), c, "https://cdn.example/a", nil, func(r io.Reader) error {
+		var err error
+
+		n, err = io.Copy(io.Discard, r)
+
+		return err
+	})
+	if err != nil || n != 1<<20 {
+		t.Errorf("Download() handed over %d bytes, %v; want 1 MiB", n, err)
 	}
 }
 

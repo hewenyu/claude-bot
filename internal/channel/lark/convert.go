@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
@@ -247,6 +248,40 @@ func buildPost(text, mentionOpenID string) (string, error) {
 	p.Content = append(p.Content, []postSegment{{Tag: tagMarkdown, Text: text}})
 
 	return marshal(map[string]post{localeZhCN: p})
+}
+
+// maxPostLen bounds the Markdown of one post, measured by postLen. Lark
+// takes a post request body of at most 30 KB (text: 150 KB); 2 KB of that is
+// left for the rest of the body: the mention, the receiver, the uuid.
+const maxPostLen = 28 << 10
+
+// postLen is how many bytes Markdown takes in a send request: JSON-escaped
+// once in the post content, and again as the content string in the request
+// body, where an HTML-escaping encoder may also write <, > and & as \u003c etc.
+// It is additive, as markdown.SplitFunc needs.
+func postLen(s string) int {
+	n := 0
+
+	for _, r := range s {
+		switch r {
+		case '"', '\\':
+			n += len(`\\\"`)
+		case '\n', '\r', '\t':
+			n += len(`\\n`)
+		case '<', '>', '&':
+			n += len(`\u003c`)
+		case '\u2028', '\u2029', utf8.RuneError:
+			n += len(`\\u2028`)
+		default:
+			if r < ' ' {
+				n += len(`\\u0001`)
+			} else {
+				n += utf8.RuneLen(r)
+			}
+		}
+	}
+
+	return n
 }
 
 // buildText renders a plain text message, the fallback when post is rejected.

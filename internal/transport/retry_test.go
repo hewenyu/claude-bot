@@ -102,7 +102,45 @@ func TestRetryOnce(t *testing.T) {
 	}
 
 	calls = 0
-	if err := RetryOnce(t.Context(), limited(MaxRetryAfter+time.Second), call); !errors.Is(err, errBlip) || calls != 1 {
+	if err := RetryOnce(t.Context(), limited(maxRetryAfter+time.Second), call); !errors.Is(err, errBlip) || calls != 1 {
 		t.Errorf("RetryOnce() with a long wait = %v after %d calls; want no retry", err, calls)
+	}
+}
+
+func TestPoll(t *testing.T) {
+	t.Parallel()
+
+	fast := Backoff{Start: time.Millisecond, Cap: time.Millisecond}
+	log := slog.New(slog.DiscardHandler)
+	polls, connected := 0, 0
+
+	// Fails, succeeds twice, fails, then is refused.
+	err := Poll(t.Context(), log, "test", 0, fast, isFatal, func(context.Context) error {
+		switch polls++; polls {
+		case 1, 4:
+			return errBlip
+		case 5:
+			return errFatal
+		}
+
+		return nil
+	}, func() { connected++ })
+	if !errors.Is(err, errFatal) || polls != 5 {
+		t.Errorf("Poll() = %v after %d polls; want the fatal error after 5", err, polls)
+	}
+
+	if connected != 1 {
+		t.Errorf("connected called %d times, want once", connected)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	err = Poll(ctx, log, "test", time.Hour, fast, isFatal, func(context.Context) error {
+		cancel()
+
+		return errBlip
+	}, nil)
+	if err != nil {
+		t.Errorf("Poll() after cancel = %v, want nil", err)
 	}
 }

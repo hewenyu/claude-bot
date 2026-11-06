@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"sync"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -88,8 +87,7 @@ type Channel struct {
 	s   *discordgo.Session
 	log *slog.Logger
 
-	botMu sync.Mutex
-	bot   *Bot // cached once fetched successfully
+	bot channel.Memo[Bot]
 }
 
 var (
@@ -126,13 +124,10 @@ func (c *Channel) Name() string { return Name }
 // Bot returns the bot's identity. It doubles as a token check; only a
 // successful answer is cached, so a transient failure can be retried.
 func (c *Channel) Bot(ctx context.Context) (Bot, error) {
-	c.botMu.Lock()
-	defer c.botMu.Unlock()
+	return c.bot.Get(ctx, c.fetchBot)
+}
 
-	if c.bot != nil {
-		return *c.bot, nil
-	}
-
+func (c *Channel) fetchBot(ctx context.Context) (Bot, error) {
 	u, err := c.s.User(self, discordgo.WithContext(ctx))
 	if err != nil {
 		return Bot{}, fmt.Errorf("discord bot info: %w", err)
@@ -152,9 +147,7 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 		return Bot{}, fmt.Errorf("discord application info: parse: %w", err)
 	}
 
-	c.bot = &Bot{Name: u.Username, ID: u.ID, AppID: app.ID}
-
-	return *c.bot, nil
+	return Bot{Name: u.Username, ID: u.ID, AppID: app.ID}, nil
 }
 
 // Identity implements channel.Identifier.
@@ -247,7 +240,7 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 		return err
 	}
 
-	if msg.ChatType != channel.ChatDirect && msg.Sender.ID != "" {
+	if channel.MentionsSender(msg) && msg.Sender.ID != "" {
 		text = mentionSyntax(msg.Sender.ID) + " " + text
 	}
 
@@ -266,7 +259,7 @@ func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 // needs; only the first one references ref. Mentions of users notify them,
 // @everyone, @here and roles never do: the text may quote what anyone wrote.
 func (c *Channel) post(ctx context.Context, channelID, text string, ref *discordgo.MessageReference) error {
-	for i, part := range markdown.Split(text, maxMessageLen) {
+	err := markdown.SendParts(markdown.Split(text, maxMessageLen), func(i int, part string) error {
 		send := &discordgo.MessageSend{
 			Content:         part,
 			AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers}},
@@ -275,9 +268,12 @@ func (c *Channel) post(ctx context.Context, channelID, text string, ref *discord
 			send.Reference = ref
 		}
 
-		if _, err := c.s.ChannelMessageSendComplex(channelID, send, discordgo.WithContext(ctx)); err != nil {
-			return fmt.Errorf("discord send (part %d): %w", i+1, err)
-		}
+		_, err := c.s.ChannelMessageSendComplex(channelID, send, discordgo.WithContext(ctx))
+
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("discord send: %w", err)
 	}
 
 	return nil
@@ -327,12 +323,7 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("discord download: attachment %s not found on %s", att.Key, msg.ID)
 	}
 
-	data, err := transport.Download(ctx, c.s.Client, found.URL, nil)
-	if err != nil {
-		return "", fmt.Errorf("discord download: %w", err)
-	}
-
-	path, err := channel.SaveFile(dir, channel.FileName(found.ID, data, att.Name, found.Filename), data)
+	path, err := channel.SaveURL(ctx, c.s.Client, found.URL, nil, dir, found.ID, att.Name, found.Filename)
 	if err != nil {
 		return "", fmt.Errorf("discord download: %w", err)
 	}

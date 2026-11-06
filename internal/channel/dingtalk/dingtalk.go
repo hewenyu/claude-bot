@@ -122,8 +122,8 @@ func (c *Channel) Identity(ctx context.Context) (string, error) {
 // sender, in a group a message to the group that names the sender. The
 // OpenAPI cannot @-mention, so the name does not notify.
 func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) error {
-	if msg.ChatType == channel.ChatDirect {
-		return c.post(ctx, pathDirectSend, map[string]any{"userIds": []string{msg.Sender.ID}}, text)
+	if !channel.MentionsSender(msg) {
+		return c.send(ctx, pathDirectSend, map[string]any{"userIds": []string{msg.Sender.ID}}, text)
 	}
 
 	conversation, _, err := channel.LocateScoped(msg.ID)
@@ -140,24 +140,25 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 
 // Send implements channel.Channel. chatID is a group's conversation id.
 func (c *Channel) Send(ctx context.Context, chatID, text string) error {
-	return c.post(ctx, pathGroupSend, map[string]any{"openConversationId": chatID}, text)
+	return c.send(ctx, pathGroupSend, map[string]any{"openConversationId": chatID}, text)
 }
 
-// post sends Markdown through a robot send path, split into as many messages
+// send posts Markdown through a robot send path, split into as many messages
 // as the length limit needs. to says who receives it.
-func (c *Channel) post(ctx context.Context, path string, to map[string]any, text string) error {
-	for i, part := range markdown.Split(text, maxMarkdownLen) {
+func (c *Channel) send(ctx context.Context, path string, to map[string]any, text string) error {
+	err := markdown.SendParts(markdown.Split(text, maxMarkdownLen), func(_ int, part string) error {
 		param, err := json.Marshal(map[string]string{"title": title(part), "text": part})
 		if err != nil {
-			return fmt.Errorf("dingtalk send: %w", err)
+			return err
 		}
 
 		body := map[string]any{"robotCode": c.cfg.ClientID, "msgKey": msgKeyMarkdown, "msgParam": string(param)}
 		maps.Copy(body, to)
 
-		if err := c.call(ctx, path, body, nil); err != nil {
-			return fmt.Errorf("dingtalk send (part %d): %w", i+1, err)
-		}
+		return c.call(ctx, path, body, nil)
+	})
+	if err != nil {
+		return fmt.Errorf("dingtalk send: %w", err)
 	}
 
 	return nil
@@ -196,14 +197,9 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", errors.New("dingtalk download: no download link in the answer")
 	}
 
-	data, err := transport.Download(ctx, c.http, r.DownloadURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("dingtalk download: %w", err)
-	}
-
 	_, msgID, _ := channel.LocateScoped(msg.ID)
 
-	path, err := channel.SaveFile(dir, channel.FileName(msgID, data, att.Name), data)
+	path, err := channel.SaveURL(ctx, c.http, r.DownloadURL, nil, dir, msgID, att.Name)
 	if err != nil {
 		return "", fmt.Errorf("dingtalk download: %w", err)
 	}

@@ -23,21 +23,21 @@ const (
 	maxPages   = 10  // pages read per listing, so a huge backlog cannot stall the listener
 )
 
-// APIError is an error answer of the REST API.
-type APIError struct {
+// apiError is an error answer of the REST API.
+type apiError struct {
 	Method  string
 	Path    string
 	Status  int
 	Message string
 }
 
-func (e *APIError) Error() string {
+func (e *apiError) Error() string {
 	return fmt.Sprintf("github %s %s: %d %s", e.Method, e.Path, e.Status, e.Message)
 }
 
 // fatal reports errors that retrying cannot fix: a rejected token.
 func fatal(err error) bool {
-	ae, ok := errors.AsType[*APIError](err)
+	ae, ok := errors.AsType[*apiError](err)
 
 	return ok && ae.Status == http.StatusUnauthorized
 }
@@ -46,7 +46,7 @@ func fatal(err error) bool {
 // repository the token cannot see (GitHub answers 404 for both "no such
 // repository" and "not yours").
 func noAccess(err error) bool {
-	ae, ok := errors.AsType[*APIError](err)
+	ae, ok := errors.AsType[*apiError](err)
 
 	return fatal(err) || ok && ae.Status == http.StatusNotFound
 }
@@ -84,62 +84,59 @@ func (c *Channel) call(ctx context.Context, r request, out any) (response, error
 		u += "?" + r.query.Encode()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, r.method, u, body)
-	if err != nil {
-		return response{}, fmt.Errorf("github %s: %w", r.path, err)
+	header := http.Header{
+		"Accept":               {mediaType},
+		"X-Github-Api-Version": {apiVersion},
+		"User-Agent":           {transport.UserAgent},
+		"Authorization":        {transport.Bearer + c.token},
 	}
 
-	req.Header.Set("Accept", mediaType)
-	req.Header.Set("X-GitHub-Api-Version", apiVersion)
-	req.Header.Set("User-Agent", transport.UserAgent)
-	req.Header.Set("Authorization", transport.Bearer+c.token)
-
 	if body != nil {
-		req.Header.Set("Content-Type", transport.JSON)
+		header.Set("Content-Type", transport.JSON)
 	}
 
 	if r.etag != "" {
-		req.Header.Set("If-None-Match", r.etag)
+		header.Set("If-None-Match", r.etag)
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := transport.Do(ctx, c.http, r.method, u, header, body)
 	if err != nil {
 		return response{}, fmt.Errorf("github %s %s: %w", r.method, r.path, err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // read-only body
 
 	res := response{etag: resp.Header.Get("ETag")}
 
 	switch {
-	case resp.StatusCode == http.StatusNotModified:
+	case resp.Status == http.StatusNotModified:
 		res.notModified = true
 
 		return res, nil
-	case resp.StatusCode >= http.StatusBadRequest:
-		return res, apiError(r, resp)
-	case out == nil || resp.StatusCode == http.StatusNoContent:
+	case resp.Status >= http.StatusBadRequest:
+		return res, errorOf(r, resp)
+	case out == nil || resp.Status == http.StatusNoContent:
 		return res, nil
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(out); err != nil {
+	if err := json.Unmarshal(resp.Body, out); err != nil {
 		return res, fmt.Errorf("github %s %s: decode: %w", r.method, r.path, err)
 	}
 
 	return res, nil
 }
 
-func apiError(r request, resp *http.Response) error {
+// errorOf is the apiError of a failed call.
+func errorOf(r request, resp transport.Response) error {
 	var e struct {
 		Message string `json:"message"`
 	}
 
-	_ = json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(&e)
+	_ = json.Unmarshal(resp.Body, &e)
 
 	if e.Message == "" {
-		e.Message = http.StatusText(resp.StatusCode)
+		e.Message = http.StatusText(resp.Status)
 	}
 
-	return &APIError{Method: r.method, Path: r.path, Status: resp.StatusCode, Message: e.Message}
+	return &apiError{Method: r.method, Path: r.path, Status: resp.Status, Message: e.Message}
 }
 
 // repoPath is an API path below the repository, e.g. repoPath("/issues/%d", 42)

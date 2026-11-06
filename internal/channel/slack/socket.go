@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -66,37 +65,7 @@ func (c *Channel) session(ctx context.Context, bot Bot, deliver func(channel.Mes
 		return false, err
 	}
 
-	conn, resp, err := c.dialer.DialContext(ctx, wsURL, nil)
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-
-	if err != nil {
-		return false, fmt.Errorf("slack socket: %w", err)
-	}
-
-	defer conn.Close() //nolint:errcheck // closing a finished connection
-
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-
-	done := make(chan struct{})
-	defer close(done)
-
-	touch := transport.KeepAlive(conn, done)
-
-	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			if ctx.Err() != nil {
-				return connected, nil
-			}
-
-			return connected, fmt.Errorf("slack socket: %w", err)
-		}
-
-		touch()
-
+	_, err = transport.Session(ctx, c.dialer, wsURL, nil, func(conn *websocket.Conn, data []byte) (bool, error) {
 		hello, end, err := c.frame(ctx, conn, data, bot, deliver)
 		if hello {
 			connected = true
@@ -105,10 +74,13 @@ func (c *Channel) session(ctx context.Context, bot Bot, deliver func(channel.Mes
 			ready()
 		}
 
-		if end || err != nil {
-			return connected, err
-		}
+		return end, err
+	})
+	if err != nil {
+		return connected, fmt.Errorf("slack socket: %w", err)
 	}
+
+	return connected, nil
 }
 
 // frame acknowledges and handles one Socket Mode frame. hello reports that
@@ -125,8 +97,7 @@ func (c *Channel) frame(ctx context.Context, conn *websocket.Conn, data []byte, 
 	// Acknowledge first: Slack redelivers what is not acknowledged within
 	// 3 s, and the inbox drops duplicates anyway.
 	if env.EnvelopeID != "" {
-		_ = conn.SetWriteDeadline(time.Now().Add(transport.WriteTimeout))
-		if err := conn.WriteJSON(map[string]string{"envelope_id": env.EnvelopeID}); err != nil {
+		if err := transport.WriteJSON(conn, map[string]string{"envelope_id": env.EnvelopeID}); err != nil {
 			return false, true, fmt.Errorf("slack socket ack: %w", err)
 		}
 	}
@@ -162,7 +133,7 @@ func (c *Channel) handle(ctx context.Context, payload json.RawMessage, bot Bot, 
 		return
 	}
 
-	c.nameSender(ctx, &msg)
+	c.names.NameSender(ctx, &msg, c.log, nameWarning)
 
 	if err := deliver(msg); err != nil {
 		c.log.Error("slack deliver", "id", msg.ID, "err", err)
