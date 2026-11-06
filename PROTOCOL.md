@@ -74,7 +74,7 @@ Jev 调用失败（网络、限流、key 失效）时，消息留在 `incoming/`
 | 命令 | 行为 |
 |---|---|
 | `inbox [--wait D]` | 输出待处理的事，一行一件（见 [1.1](#11-jev-筛选)），等得最久的在前。加 `--wait` 时会阻塞，直到有事或者超时。监听进程没在运行就报错；在运行但还没连上，就把日志尾部报出来；没接入 Jev 时报错 |
-| `reply <task:id> [text\|-]` | 在这件事最新的那条消息下回复，内容是 Markdown；群聊里会 @ 发送者，话题消息回在话题里。成功后把回复记进这件事，并标记为已处理（加 `--keep` 则保留待处理；处理期间又有新消息的，也留在待处理里）。也可以写消息 `id`：只属于一件事的消息等于写那件事，不属于任何事的（比如升级前的消息）只回复。飞书上重复调用不会重复发送（按内容哈希做 1 小时去重）；Discord、Telegram、Slack、钉钉没有这种去重。超过平台长度上限的回复会拆成多条发送（Discord 2000 字，Telegram 4000 字，钉钉 4000 字，Slack 12000 字，GitHub 60000 字）。Slack 频道里的回复发在原消息的 thread 里。GitHub 上回复是一条评论，末尾带隐藏标记 `<!-- claude-bot -->` |
+| `reply <task:id> [text\|-]` | 在这件事最新的那条消息下回复，内容是 Markdown；群聊里会 @ 发送者，话题消息回在话题里。成功后把回复记进这件事，并标记为已处理（加 `--keep` 则保留待处理；处理期间又有新消息的，也留在待处理里）。也可以写消息 `id`：只属于一件事的消息等于写那件事，不属于任何事的（比如升级前的消息）只回复。飞书上重复调用不会重复发送（按消息、第几段和内容哈希做 1 小时去重，拆成多条的每条各自去重）；Discord、Telegram、Slack、钉钉没有这种去重。超过平台长度上限的回复会拆成多条发送，只有第一条 @ 发送者（飞书按请求体算，每条富文本约 28 KB 以内，中文约 9000 字；Discord 2000 字，Telegram 4096 个 UTF-16 单位（emoji 算 2 个），钉钉 4000 字，Slack 12000 字，GitHub 60000 字）。中途失败时报错会说明已经发出了几条。Slack 频道里的回复发在原消息的 thread 里。GitHub 上回复是一条评论，末尾带隐藏标记 `<!-- claude-bot -->` |
 | `done <task:id>...` | 标记为已处理，不回复。写消息 `id` 时处理它所属的那件事 |
 | `get <id>` | 获取任意一条消息（比如 `reply_to` 指向的那条）。Telegram 和钉钉不支持 |
 | `download <id>` | 把附件下载到 `.claude-bot/files/`，并输出文件路径 |
@@ -108,15 +108,15 @@ type Channel interface {
 - **`Sender.Mention` 必须是平台原生语法**，确保对方真的能收到通知：飞书是 `<at user_id="ou_xxx"></at>`，Discord 和 Slack 是 `<@123>`，Telegram 是 `@username`（没有用户名的人是 `[名字](tg://user?id=123)`），GitHub 是 `@login`。钉钉的开放接口发不了 @，只能写成 `@昵称` 这样的纯文本。
 - **`Reply` 在原消息下回复**，群聊里要 @ 发送者，话题消息要回在原话题里。
 - **`deliver` 必须快速返回**（平台有超时重推机制），重复投递由收件箱负责去重。
-- **`ready` 在连接建立后调用**。gateway（或项目自己的监听进程）等这个项目的所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断是否健康。心跳里记着监听的渠道和版本，跟 CLI 的版本对不上时，`inbox` 会提示用户运行 `claude-bot gateway restart`。
+- **`ready` 在第一次连上之后调用**；重连时再调用也无妨（调用方只认第一次）。gateway（或项目自己的监听进程）等这个项目的所有渠道都 ready 之后才写心跳，`inbox` 靠心跳判断是否健康。心跳里记着监听的渠道和版本，跟 CLI 的版本对不上时，`inbox` 会提示用户运行 `claude-bot gateway restart`。
 - `Ack` 是"已收到"的反馈（比如表情回应），尽力而为即可，失败不影响收消息。
 - **`Listen` 只在重试无济于事时返回**（凭据被拒等）；启动时的网络错误也要退避重试，gateway 不会重启返回了的 `Listen`。
 - 最好再实现可选的 `channel.Identifier`：gateway 网页检查渠道时用 `Identity` 核对凭据，并显示它是哪个账号。
 
 可以直接用的公共部分：
-- `transport`：带代理和超时的 HTTP / WebSocket 客户端（`HTTP`、`WebSocket`、`ProxyOr`），WebSocket 保活（`KeepAlive`），限长下载（`Download`、`ReadAll`），重连退避（`Backoff`、`Sleep`，启动时重试用 `Retry`，长连接重连用 `Reconnect`），以及限流后重试一次（`RetryOnce`）。
-- `channel`：消息只能在会话内定位的平台，用 `ScopedID` / `LocateScoped` 拼、拆 `<会话>/<消息>` 形式的 ID；附件用 `KindOf` 按 MIME 分图片和文件，`UniqueNames` 让一条消息里的附件不重名，`FileName` 取下载的文件名（没有扩展名时按内容补上），`SaveFile` 落盘。
-- `markdown.Split`：按平台的长度上限拆分回复，被切开的代码块会补上闭合和重新开启的 fence；`markdown.Truncate` 截断到指定长度并加「…」。
+- `transport`：带代理和超时的 HTTP / WebSocket 客户端（`HTTP`、`WebSocket`、`ProxyOr`）；API 调用 `Do`（读完整个响应，超过 16 MiB 报 `ErrTooLarge`，不截断）；流式下载 `Download`；WebSocket 会话 `Session`（拨号、保活、逐帧交给回调）和 `WriteJSON`；重连退避（`Backoff`、`Sleep`，启动时重试用 `Retry`，长连接重连用 `Reconnect`，轮询用 `Poll`），以及限流后重试一次（`RetryOnce`）。
+- `channel`：消息只能在会话内定位的平台，用 `ScopedID` / `LocateScoped` 拼、拆 `<会话>/<消息>` 形式的 ID；`MentionsSender` 判断回复要不要 @ 发送者（私聊以外都要）；`Memo` 缓存第一次成功取到的身份；`Names` 缓存显示名，`NameSender` 给消息补上发送者名字。附件用 `KindOf` 按 MIME 分图片和文件，`UniqueNames` 让一条消息里的附件不重名；下载用 `SaveURL`（或拿到 `io.Reader` 时用 `SaveStream`）边收边写进临时文件，超过 512 MiB 报错、不留残缺文件，命名同 `FileName`（没有扩展名时按开头的内容补上）。
+- `markdown.Split`：按平台的长度上限拆分回复，被切开的代码块会补上闭合和重新开启的 fence；长度不按字符算的平台用 `SplitFunc` 传自己的计数函数；`SendParts` 逐条发送并在出错时说明发出了几条；`markdown.Truncate` 截断到指定长度并加「…」（「…」算在长度里）。
 
 然后在 `internal/config` 里加上这个渠道的配置字段（以及它在 gateway 数据库里的读写和 `AppKey`：标识这个应用、不含密钥的 key，用来保证一个应用只属于一个项目），在 `cmd/claude-bot/app.go` 的 `newApp` 里注册，在 `cmd/claude-bot/init_token.go`（或单独的文件）里加上 `init` 的接入流程。Claude 那一侧的用法完全不用改。
 
