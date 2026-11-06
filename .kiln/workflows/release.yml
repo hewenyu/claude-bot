@@ -10,7 +10,7 @@
 #   或者在 Linux 上跑 gateway 的人。
 # - 桌面 App 只支持 Apple Silicon 的 Mac；二进制支持 Apple Silicon 的 Mac 和 Linux（arm64、amd64）。
 # - 工作区没有 .git，也没有 GITHUB_* 环境变量：版本号从 ${{ github.* }} 传进去。
-# - publish 引用 Kiln 中的 environment release（ref 策略 refs/tags/v*），要先由运维创建。
+# - 发布到本仓库的 GitHub Release 用 Kiln 的 GitHub App 授权，没有密钥也不需要审批，所以 publish 不引用 environment。
 name: release
 on:
   push:
@@ -103,7 +103,6 @@ jobs:
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [dmg, build]
-    environment: release
     release:
       assets:
         - from: dmg.dmg
