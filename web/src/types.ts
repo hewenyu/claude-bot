@@ -1,7 +1,10 @@
-// Shapes of the gateway's API (cmd/claude-bot/gateway_web.go).
+// Shapes of the gateway's API (cmd/claude-bot/gateway_web*.go). Each one
+// names the Go type it mirrors.
 
+/** projectState in cmd/claude-bot/gateway.go. */
 export type ProjectState = "running" | "starting" | "busy" | "failed" | "idle" | "stopped";
 
+/** projectStatus in cmd/claude-bot/gateway_cmd.go. */
 export interface ProjectStatus {
   id: number;
   name: string;
@@ -16,6 +19,7 @@ export interface ProjectStatus {
   screening: number;
 }
 
+/** overviewResponse in cmd/claude-bot/gateway_web.go (gatewayStatus in gateway_cmd.go, plus self and runner). */
 export interface Overview {
   home: string;
   running: boolean;
@@ -32,10 +36,13 @@ export interface Overview {
 
 // The runner (internal/runner): Claude Code with /bot in each project that has it on.
 
+/** runner.State in internal/runner/runner.go. */
 export type RunState = "queued" | "running" | "blocked" | "waiting" | "resting" | "failed" | "off";
 
+/** agent.Status in internal/agent/status.go. */
 export type AgentStatus = "starting" | "working" | "blocked" | "idle" | "exited" | "lost";
 
+/** agent.Info in internal/agent/agent.go (with its Activity), the fields the page reads. */
 export interface AgentInfo {
   id: string;
   name: string;
@@ -44,13 +51,15 @@ export interface AgentInfo {
   detail?: string;
   title?: string;
   turns: number;
-  ended?: string;
+  /** How the latest turn ended (agent.End): only "stop" is the agent finishing it itself. */
+  ended?: "stop" | "interrupt" | "declined";
   last_message?: string;
   subagents?: number;
   created_at: string;
   updated_at: string;
 }
 
+/** runView in cmd/claude-bot/gateway_web_runner.go: runner.Run (internal/runner/runner.go) and its agent. */
 export interface Run {
   project: number;
   name: string;
@@ -71,13 +80,16 @@ export interface Run {
   agent?: AgentInfo;
 }
 
+/** runnerOverview in cmd/claude-bot/gateway_web_runner.go. */
 export interface RunnerOverview {
   max_parallel: number;
   runs: Run[];
 }
 
+/** taskState in cmd/claude-bot/gateway_web_tasks.go. */
 export type TaskState = "pending" | "working" | "replied" | "closed";
 
+/** taskSummary in cmd/claude-bot/gateway_web_tasks.go. */
 export interface TaskSummary {
   id: string;
   channel: string;
@@ -94,12 +106,14 @@ export interface TaskSummary {
   link?: string;
 }
 
+/** channel.User in internal/channel/channel.go. */
 export interface User {
   id: string;
   name?: string;
   mention?: string;
 }
 
+/** inbox.Entry in internal/inbox/task.go. */
 export interface Entry {
   kind: "user" | "bot";
   message?: string;
@@ -110,12 +124,14 @@ export interface Entry {
   file?: string;
 }
 
+/** taskDetail in cmd/claude-bot/gateway_web_tasks.go. */
 export interface TaskDetail extends TaskSummary {
   handled: number;
   thread_id?: string;
   log: Entry[];
 }
 
+/** channelField in cmd/claude-bot/gateway_web_channels.go. */
 export interface Field {
   key: string;
   label: string;
@@ -129,6 +145,7 @@ export interface Field {
   default?: string;
 }
 
+/** channelType in cmd/claude-bot/gateway_web_channels.go. */
 export interface ChannelType {
   name: string;
   label: string;
@@ -139,11 +156,25 @@ export interface ChannelType {
   unavailable?: string;
 }
 
+/** secretView in cmd/claude-bot/gateway_web_channels.go. */
 export interface SecretView {
   set: boolean;
   hint?: string;
 }
 
+/** A channel field's value is a secret, masked, rather than plain text. */
+export function isSecret(v: unknown): v is SecretView {
+  return typeof v === "object" && v !== null && "set" in v;
+}
+
+/** A secret in words: "已设置 …1234", "已设置" without a hint, else unset. */
+export function secretText(v: SecretView, unset = "未设置"): string {
+  if (!v.set) return unset;
+
+  return v.hint ? `已设置 ${v.hint}` : "已设置";
+}
+
+/** channelView in cmd/claude-bot/gateway_web_channels.go. */
 export interface ChannelView {
   name: string;
   label: string;
@@ -152,12 +183,14 @@ export interface ChannelView {
   updated_at: string;
 }
 
+/** testResult in cmd/claude-bot/gateway_web_channels.go. */
 export interface TestResult {
   ok: boolean;
   identity?: string;
   error?: string;
 }
 
+/** githubTokenView in cmd/claude-bot/gateway_web_github.go. */
 export interface GitHubToken {
   /** "" is the default token. */
   name: string;
@@ -165,6 +198,7 @@ export interface GitHubToken {
   projects: string[];
 }
 
+/** githubProject in cmd/claude-bot/gateway_web_github.go. */
 export interface GitHubProject {
   id: number;
   name: string;
@@ -172,6 +206,7 @@ export interface GitHubProject {
   token_name?: string;
 }
 
+/** settingsView in cmd/claude-bot/gateway_web_settings.go. */
 export interface Settings {
   typesafe_key: SecretView;
   github_tokens: GitHubToken[];

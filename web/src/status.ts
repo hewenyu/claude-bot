@@ -1,7 +1,8 @@
 // A project's state as the page shows it: one tone, one label, one order.
 
+import { channelLabel } from "./channelKinds";
 import { allProblems } from "./diagnose";
-import { channel, projectStateLabel } from "./format";
+import { projectStateLabel } from "./format";
 import type { AgentStatus, Overview, ProjectStatus, RunState, TaskState } from "./types";
 import type { Tone } from "./ui";
 
@@ -58,7 +59,21 @@ export function projectLabel(p: ProjectStatus): string {
   const stopped = p.stopped ?? [];
   if (p.state !== "running" || !stopped.length) return projectStateLabel[p.state];
 
-  return stopped.length === 1 ? `${channel(stopped[0]).label} 已断开` : `${stopped.length} 个渠道已断开`;
+  return stopped.length === 1 ? `${channelLabel(stopped[0])} 已断开` : `${stopped.length} 个渠道已断开`;
+}
+
+/**
+ * One configured channel of the project: connected, stopped while the
+ * others run, down with the whole project, connecting, or not connected.
+ */
+export function channelStatus(p: ProjectStatus, name: string): { tone: Tone; label: string } {
+  if (p.stopped?.includes(name)) return { tone: "bad", label: "已断开" };
+  if (p.connected?.includes(name)) return { tone: "ok", label: "已连接" };
+  // A failed project has no channel up: each one is down, not just idle.
+  if (p.state === "failed") return { tone: "bad", label: "没连上" };
+  if (p.state === "starting") return { tone: "warn", label: "连接中" };
+
+  return { tone: "off", label: "未连接" };
 }
 
 /** The orb's state for the whole gateway. */

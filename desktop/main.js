@@ -16,9 +16,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const START_TIMEOUT_MS = 40_000;
 const OPEN_TIMEOUT_MS = 10_000;
 
-// Permissions the page may have: notifications, and copying from the
-// terminal. Everything else (camera, geolocation, …) is denied.
-const ALLOWED_PERMISSIONS = new Set(["notifications", "clipboard-sanitized-write"]);
+// Permissions the page may have: copying (its copy buttons, and from the
+// terminal). Everything else (notifications, camera, geolocation, …) is
+// denied, and so is anything asked by a page other than the gateway's.
+const ALLOWED_PERMISSIONS = new Set(["clipboard-sanitized-write"]);
 
 /** Login shells that run the POSIX script in run(). */
 const POSIX_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh"]);
@@ -39,6 +40,16 @@ function claudeBot() {
 }
 
 /**
+ * One word for a POSIX shell: in single quotes, each ' inside closing the
+ * quote, escaped, and opening it again.
+ *
+ * @param {string} s
+ */
+function shellQuote(s) {
+  return `'${s.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
  * Runs claude-bot in a login shell, so the gateway it starts, and the
  * agents it runs, get the PATH and environment of the user's terminal,
  * not the bare one apps get. The binary is passed as $0, never spliced
@@ -52,7 +63,7 @@ function run(args, timeout) {
   // The script below is POSIX sh; a fish or nushell login shell would reject it.
   const user = process.env.SHELL ?? "";
   const sh = POSIX_SHELLS.has(path.basename(user)) ? user : "/bin/zsh";
-  const script = `exec "$0" ${args.map((a) => `'${a}'`).join(" ")}`;
+  const script = `exec "$0" ${args.map(shellQuote).join(" ")}`;
 
   return new Promise((resolve, reject) => {
     execFile(sh, ["-l", "-c", script, claudeBot()], { timeout }, (err, stdout, stderr) => {
@@ -100,8 +111,35 @@ function openExternal(url) {
   }
 }
 
+/** The gateway page's origin, once a window has opened it. @type {string | null} */
+let pageOrigin = null;
+
+/**
+ * The URL, or origin (Electron hands some over with a trailing slash), is
+ * the gateway page's.
+ *
+ * @param {string} url
+ */
+function onPage(url) {
+  try {
+    return pageOrigin !== null && new URL(url).origin === pageOrigin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The web contents shows the gateway's page, not some other one.
+ *
+ * @param {Electron.WebContents | null} wc
+ */
+function showsPage(wc) {
+  return !!wc && onPage(wc.getURL());
+}
+
 /** @param {URL} page */
 function createWindow(page) {
+  pageOrigin = page.origin;
   const win = new BrowserWindow({
     width: 1360,
     height: 900,
@@ -118,21 +156,13 @@ function createWindow(page) {
   });
 
   // The page stays the page: anything else opens in the browser.
-  const ours = (/** @type {string} */ url) => {
-    try {
-      return new URL(url).origin === page.origin;
-    } catch {
-      return false;
-    }
-  };
-
   win.webContents.setWindowOpenHandler(({ url }) => {
     openExternal(url);
 
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (e, url) => {
-    if (!ours(url)) {
+    if (!onPage(url)) {
       e.preventDefault();
       openExternal(url);
     }
@@ -180,17 +210,22 @@ function openOnce() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // Opening the app again shows its window, or opens one if it was closed.
   app.on("second-instance", () => {
     const [win] = BrowserWindow.getAllWindows();
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
+    if (!win) {
+      if (app.isReady()) void openOnce();
+      return;
     }
+    if (win.isMinimized()) win.restore();
+    win.focus();
   });
 
   app.whenReady().then(() => {
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)));
-    session.defaultSession.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission) && showsPage(wc)));
+    session.defaultSession.setPermissionCheckHandler(
+      (wc, permission, requestingOrigin) => ALLOWED_PERMISSIONS.has(permission) && onPage(requestingOrigin) && showsPage(wc),
+    );
 
     void openOnce();
 

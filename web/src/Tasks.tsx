@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "./api";
-import { ago, channel, fullTime, taskStateLabel } from "./format";
+import { channelFacts, channelLabel } from "./channelKinds";
+import { ago, errorText, fullTime, taskStateLabel } from "./format";
 import { POLL_SLOW, useNow, usePoll } from "./hooks";
 import { Icon } from "./icons";
 import { Markdown } from "./markdown";
 import { go, href } from "./route";
 import { isOpenTask, taskTone, untitled } from "./status";
-import type { Entry, ProjectStatus, TaskDetail, TaskState, TaskSummary } from "./types";
-import { Banner, ChannelBadge, CopyButton, Empty, Mark, SrOnly, errorText } from "./ui";
+import type { Entry, ProjectStatus, TaskDetail, TaskSummary } from "./types";
+import { Banner, ChannelBadge, CopyButton, Empty, Mark, SrOnly } from "./ui";
 
 /**
  * The page shows the open tasks; handled ones are archived on their own and
@@ -15,19 +16,23 @@ import { Banner, ChannelBadge, CopyButton, Empty, Mark, SrOnly, errorText } from
  */
 type View = "open" | "archived";
 
-const archived = (s: TaskState) => !isOpenTask(s);
-
-const views: { key: View; label: string; match: (s: TaskState) => boolean }[] = [
-  { key: "open", label: "进行中", match: (s) => !archived(s) },
-  { key: "archived", label: "已归档", match: archived },
+const views: { key: View; label: string }[] = [
+  { key: "open", label: "进行中" },
+  { key: "archived", label: "已归档" },
 ];
+
+const viewOf = (t: TaskSummary): View => (isOpenTask(t.state) ? "open" : "archived");
 
 const matches = (t: TaskSummary, q: string) =>
   !q || t.title.toLowerCase().includes(q) || t.senders.some((s) => s.toLowerCase().includes(q)) || t.id.includes(q);
 
-/** GitHub threads are public issues and PRs, not group chats. */
-const chatKind = (t: TaskSummary) => (t.channel === "github" ? "GitHub" : t.chat_type === "group" ? "群聊" : "私聊");
+/** A channel whose threads are public issues and PRs (GitHub's), not group chats or DMs. */
+const onIssues = (t: TaskSummary) => !!channelFacts(t.channel)?.issues;
 
+const chatKind = (t: TaskSummary) => (onIssues(t) ? channelLabel(t.channel) : t.chat_type === "group" ? "群聊" : "私聊");
+
+/** An entry that is a saved attachment. */
+const isFile = (e: Entry): e is Entry & { file: string } => !!e.file;
 
 /** Why nothing has come in, for a project whose messages cannot arrive yet; the banner above says how to fix it. */
 const noTasksYet: Partial<Record<ProjectStatus["state"], string>> = {
@@ -47,8 +52,7 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
   const { shown, counts, found } = useMemo(() => {
     const q = query.trim().toLowerCase();
     const all = tasks.data ?? [];
-    const of = (v: View) => all.filter((t) => views.find((x) => x.key === v)!.match(t.state));
-    const byView = { open: of("open"), archived: of("archived") };
+    const byView = { open: all.filter((t) => isOpenTask(t.state)), archived: all.filter((t) => !isOpenTask(t.state)) };
     const found = { open: byView.open.filter((t) => matches(t, q)), archived: byView.archived.filter((t) => matches(t, q)) };
 
     return { shown: found[view], counts: { open: byView.open.length, archived: byView.archived.length }, found };
@@ -59,7 +63,7 @@ export function TasksPanel({ project, selected }: { project: ProjectStatus; sele
   const loaded = !!tasks.data;
   useEffect(() => {
     const t = tasks.data?.find((x) => x.id === selected);
-    if (t) setView(archived(t.state) ? "archived" : "open");
+    if (t) setView(viewOf(t));
   }, [selected, loaded]); // not tasks.data: each poll would undo a switch by hand
 
   // With no task picked, the page shows the latest open conversation.
@@ -280,7 +284,7 @@ function Conversation({ project, id }: { project: number; id: string }) {
             <dt>来源</dt>
             <dd>
               <ChannelBadge name={t.channel} size="sm" />
-              {t.channel === "github" ? channel(t.channel).label : `${channel(t.channel).label} ${chatKind(t)}`}
+              {onIssues(t) ? channelLabel(t.channel) : `${channelLabel(t.channel)} ${chatKind(t)}`}
             </dd>
           </div>
           <div>
@@ -345,7 +349,7 @@ function Message({ turn, now }: { turn: Turn; now: number }) {
 
   const who = first.sender?.name || first.sender?.id || "用户";
   const text = turn.entries.filter((e) => !e.file).map((e) => e.text ?? "").join("");
-  const files = turn.entries.filter((e) => e.file);
+  const files = turn.entries.filter(isFile);
 
   return (
     <article className="entry">
@@ -367,8 +371,8 @@ function Message({ turn, now }: { turn: Turn; now: number }) {
         {files.map((f) => (
           <div key={f.file} className="file" title={f.file}>
             <Icon name="paperclip" />
-            <span className="file-name mono">{f.file!.split("/").pop()}</span>
-            <CopyButton text={f.file!} icon label="复制路径" />
+            <span className="file-name mono">{f.file.split("/").pop()}</span>
+            <CopyButton text={f.file} icon label="复制路径" />
           </div>
         ))}
       </div>

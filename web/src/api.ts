@@ -96,8 +96,8 @@ export const api = {
   setRunner: (project: number, on: boolean) => call<Run>("PUT", `${p(project)}/runner`, { on }),
   resumeRunner: (project: number) => call<Run>("POST", `${p(project)}/runner/resume`),
   saveRunner: (maxParallel: number) => call<RunnerOverview>("PUT", "/api/runner", { max_parallel: maxParallel }),
-  agentAction: (agent: string, action: "interrupt" | "kill" | "keys" | "send", text?: string) =>
-    call<AgentInfo>("POST", `/api/agents/${encodeURIComponent(agent)}/${action}`, text === undefined ? undefined : { text }),
+  // The gateway also takes "keys" and "send" with a text; the page types into the terminal instead.
+  agentAction: (agent: string, action: "interrupt" | "kill") => call<AgentInfo>("POST", `/api/agents/${encodeURIComponent(agent)}/${action}`),
 };
 
 /**

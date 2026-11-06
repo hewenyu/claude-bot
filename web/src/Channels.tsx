@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from "react";
 import { api, ApiError } from "./api";
-import { ago, fullTime } from "./format";
-import { usePoll } from "./hooks";
-import type { ChannelType, ChannelView, ProjectStatus, SecretView, TestResult } from "./types";
-import { channelDocs, consoles } from "./diagnose";
+import { channelDocs, channelFacts } from "./channelKinds";
+import { ago, errorText, fullTime } from "./format";
+import { useAction, usePoll } from "./hooks";
+import { channelStatus } from "./status";
+import { isSecret, secretText, type ChannelType, type ChannelView, type ProjectStatus, type TestResult } from "./types";
 import { Icon } from "./icons";
-import { Banner, ChannelBadge, Empty, Mark, Modal, errorText, toast } from "./ui";
+import { Banner, ChannelBadge, ConfirmModal, Empty, Modal, Result, StateText, toast } from "./ui";
 
 interface Props {
   project: ProjectStatus;
@@ -52,16 +53,21 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
       <p className="lede">凭证只存在本机的 gateway 数据库里。保存后几秒内自动重连，不用重启。一个应用只能属于一个项目。</p>
 
       <div className="cards">
-        {list.map((c) => (
-          <ChannelCard
-            key={c.name}
-            view={c}
-            type={typeOf(c.name)}
-            project={p}
-            onEdit={() => setEditing({ type: typeOf(c.name)!, current: c })}
-            onRemove={() => setRemoving(c)}
-          />
-        ))}
+        {list.map((c) => {
+          const type = typeOf(c.name);
+
+          return (
+            <ChannelCard
+              key={c.name}
+              view={c}
+              type={type}
+              project={p}
+              // A channel this gateway no longer offers has no form to edit it with.
+              onEdit={type && (() => setEditing({ type, current: c }))}
+              onRemove={() => setRemoving(c)}
+            />
+          );
+        })}
 
         {unused.length > 0 && <AddCard types={unused} onPick={(type) => setEditing({ type })} />}
         {!list.length && !unused.length && <Empty title="没有可用的渠道类型" />}
@@ -82,81 +88,88 @@ export function ChannelsPanel({ project: p, onChanged }: Props) {
       )}
 
       {removing && (
-        <ConfirmRemove
-          project={p}
-          channel={removing}
-          onClose={() => setRemoving(null)}
+        <ConfirmModal
+          title={`移除 ${removing.label}？`}
+          confirm="移除"
+          busyLabel="移除中…"
+          onConfirm={() => api.removeChannel(p.id, removing.name).then(() => toast(`已移除 ${removing.label}`))}
           onDone={() => {
             setRemoving(null);
             changed();
           }}
-        />
+          onClose={() => setRemoving(null)}
+        >
+          <p>gateway 会断开 {removing.label}，删掉它的凭证。之后发给这个渠道的消息不会再进来。</p>
+        </ConfirmModal>
       )}
     </div>
   );
 }
 
-function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: ChannelView; type?: ChannelType; project: ProjectStatus; onEdit: () => void; onRemove: () => void }) {
-  const [test, setTest] = useState<TestResult | "running" | null>(null);
+type Test = TestResult | "running" | null;
 
-  const stopped = p.stopped?.includes(view.name);
-  const connected = p.connected?.includes(view.name);
-  const status = stopped
-    ? { tone: "bad" as const, text: "已断开" }
-    : connected
-      ? { tone: "ok" as const, text: "已连接" }
-      : p.state === "starting"
-        ? { tone: "warn" as const, text: "连接中" }
-        : p.state === "failed"
-          ? { tone: "bad" as const, text: "没连上" }
-          : { tone: "off" as const, text: "未连接" };
+/** A credentials check: run it, and what it said; reset forgets the answer. */
+function useTest() {
+  const [test, setTest] = useState<Test>(null);
 
-  const runTest = () => {
+  const run = (check: () => Promise<TestResult>) => {
     setTest("running");
-    api.testChannel(p.id, view.name).then(setTest, (e) => setTest({ ok: false, error: errorText(e) }));
+    check().then(setTest, (e) => setTest({ ok: false, error: errorText(e) }));
   };
 
+  return { test, run, reset: () => setTest(null) };
+}
+
+function TestButton({ test, onClick }: { test: Test; onClick: () => void }) {
   return (
-    <article className={`card channel-card${stopped || status.text === "没连上" ? " card-bad" : ""}`}>
+    <button type="button" className="btn btn-ghost" onClick={onClick} disabled={test === "running"}>
+      {test === "running" ? "测试中…" : "测试连接"}
+    </button>
+  );
+}
+
+function TestLine({ test }: { test: Test }) {
+  if (!test || test === "running") return null;
+
+  return <Result tone={test.ok ? "ok" : "bad"}>{test.ok ? `凭证有效：${test.identity}` : test.error}</Result>;
+}
+
+function ChannelCard({ view, type, project: p, onEdit, onRemove }: { view: ChannelView; type?: ChannelType; project: ProjectStatus; onEdit?: () => void; onRemove: () => void }) {
+  const test = useTest();
+  const status = channelStatus(p, view.name);
+
+  return (
+    <article className={`card channel-card${status.tone === "bad" ? " card-bad" : ""}`}>
       <header className="card-head">
         <ChannelBadge name={view.name} size="lg" />
         <div className="card-title">
           <h2>{view.label || view.name}</h2>
-          <span className={`state-text tone-${status.tone}`}>
-            <Mark tone={status.tone} live={status.tone === "warn"} />
-            {status.text}
-          </span>
+          <StateText tone={status.tone} live={status.tone === "warn"}>
+            {status.label}
+          </StateText>
         </div>
       </header>
 
       <dl className="fields">
         {(type?.fields ?? []).map((f) => {
           const v = view.fields[f.key];
-          const secret = typeof v === "object" ? (v as SecretView) : undefined;
 
           return (
             <div key={f.key} className="field-row">
               <dt>{f.label}</dt>
-              <dd className={secret || !v ? "muted" : "mono"}>{secret ? (secret.set ? `已设置 ${secret.hint ?? ""}` : "未设置") : (v as string) || "默认"}</dd>
+              <dd className={isSecret(v) || !v ? "muted" : "mono"}>{isSecret(v) ? secretText(v) : v || "默认"}</dd>
             </div>
           );
         })}
       </dl>
 
-      {test && test !== "running" && (
-        <p className={`result ${test.ok ? "result-ok" : "result-bad"}`} role="status">
-          <Icon name={test.ok ? "check" : "cross"} />
-          {test.ok ? `凭证有效：${test.identity}` : test.error}
-        </p>
-      )}
+      <TestLine test={test.test} />
 
       <div className="card-foot">
-        <button type="button" className="btn" onClick={onEdit}>
+        <button type="button" className="btn" onClick={onEdit} disabled={!onEdit} title={onEdit ? undefined : "这个 gateway 不认识这种渠道，没法在这里编辑"}>
           编辑
         </button>
-        <button type="button" className="btn btn-ghost" onClick={runTest} disabled={test === "running"}>
-          {test === "running" ? "测试中…" : "测试连接"}
-        </button>
+        <TestButton test={test.test} onClick={() => test.run(() => api.testChannel(p.id, view.name))} />
         <span className="grow" />
         <span className="card-meta" title={`${view.app_key} · ${fullTime(view.updated_at)}`}>
           {ago(view.updated_at)}更新
@@ -194,31 +207,31 @@ function AddCard({ types, onPick }: { types: ChannelType[]; onPick: (t: ChannelT
 function ChannelEditor({ project, type, current, onClose, onSaved }: { project: ProjectStatus; type: ChannelType; current?: ChannelView; onClose: () => void; onSaved: () => void }) {
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
-      type.fields.map((f) => [f.key, current ? (typeof current.fields[f.key] === "string" ? (current.fields[f.key] as string) : "") : (f.default ?? "")]),
+      type.fields.map((f) => {
+        const v = current?.fields[f.key];
+
+        return [f.key, current ? (typeof v === "string" ? v : "") : (f.default ?? "")];
+      }),
     ),
   );
-  const [test, setTest] = useState<TestResult | "running" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const test = useTest();
+  const saving = useAction();
+  const where = channelFacts(type.name)?.console;
 
   const set = (key: string, v: string) => {
     setValues((xs) => ({ ...xs, [key]: v }));
-    setTest(null);
-  };
-
-  const runTest = () => {
-    setTest("running");
-    api.testChannel(project.id, type.name, values).then(setTest, (e) => setTest({ ok: false, error: errorText(e) }));
+    test.reset();
   };
 
   const save = (e: FormEvent) => {
     e.preventDefault();
-    setSaving(true);
-    setError(null);
-    api.saveChannel(project.id, type.name, values).then(onSaved, (err) => {
-      setSaving(false);
-      setError(err instanceof ApiError && err.status === 409 ? `这个应用已经属于另一个项目：${err.message}` : errorText(err));
-    });
+    saving.run(
+      () =>
+        api.saveChannel(project.id, type.name, values).catch((err) => {
+          throw err instanceof ApiError && err.status === 409 ? new Error(`这个应用已经属于另一个项目：${err.message}`) : err;
+        }),
+      onSaved,
+    );
   };
 
   return (
@@ -227,15 +240,13 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
       onClose={onClose}
       footer={
         <>
-          <button type="button" className="btn btn-ghost" onClick={runTest} disabled={test === "running"}>
-            {test === "running" ? "测试中…" : "测试连接"}
-          </button>
+          <TestButton test={test.test} onClick={() => test.run(() => api.testChannel(project.id, type.name, values))} />
           <span className="grow" />
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             取消
           </button>
-          <button type="submit" form="channel-form" className="btn btn-primary" disabled={saving}>
-            {saving ? "保存中…" : "保存"}
+          <button type="submit" form="channel-form" className="btn btn-primary" disabled={saving.busy}>
+            {saving.busy ? "保存中…" : "保存"}
           </button>
         </>
       }
@@ -246,9 +257,9 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
           <div>
             <p className="where-title">凭证在哪里拿</p>
             <p className="where-links">
-              {consoles[type.name] && (
-                <a href={consoles[type.name].href} target="_blank" rel="noreferrer noopener">
-                  {consoles[type.name].label}
+              {where && (
+                <a href={where.href} target="_blank" rel="noreferrer noopener">
+                  {where.label}
                   <Icon name="external" />
                 </a>
               )}
@@ -262,14 +273,15 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
         {type.note && <p className="note">{type.note}</p>}
         {!current && type.add_note && <p className="note">{type.add_note}</p>}
         {type.fields.map((f) => {
-          const secret = current?.fields[f.key] as SecretView | undefined;
+          const v = current?.fields[f.key];
+          const kept = f.secret && isSecret(v) && v.set ? v : undefined;
           const id = `f-${f.key}`;
 
           return (
             <label key={f.key} className="form-row" htmlFor={id}>
               <span className="form-label">
                 {f.label}
-                {f.required && !(f.secret && secret?.set) && <span className="req"> *</span>}
+                {f.required && !kept && <span className="req"> *</span>}
               </span>
               {f.select || f.options ? (
                 <select id={id} value={values[f.key]} onChange={(e) => set(f.key, e.target.value)}>
@@ -288,59 +300,17 @@ function ChannelEditor({ project, type, current, onClose, onSaved }: { project: 
                   spellCheck={false}
                   value={values[f.key]}
                   onChange={(e) => set(f.key, e.target.value)}
-                  placeholder={f.secret && secret?.set ? `已设置 ${secret.hint ?? ""}，留空则不修改` : f.placeholder}
-                  required={f.required && !(f.secret && secret?.set)}
+                  placeholder={kept ? `${secretText(kept)}，留空则不修改` : f.placeholder}
+                  required={f.required && !kept}
                 />
               )}
             </label>
           );
         })}
         <p className="muted small">先点「测试连接」：它只问平台「我是谁」来核对凭证，不建立长连接，不会抢走正在运行的连接的消息。</p>
-        {test && test !== "running" && (
-          <p className={`result ${test.ok ? "result-ok" : "result-bad"}`} role="status">
-            <Icon name={test.ok ? "check" : "cross"} />
-            {test.ok ? `凭证有效：${test.identity}` : test.error}
-          </p>
-        )}
-        {error && <p className="result result-bad">{error}</p>}
+        <TestLine test={test.test} />
+        {saving.error && <Result tone="bad">{saving.error}</Result>}
       </form>
-    </Modal>
-  );
-}
-
-function ConfirmRemove({ project: p, channel: c, onClose, onDone }: { project: ProjectStatus; channel: ChannelView; onClose: () => void; onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const confirm = () => {
-    setBusy(true);
-    api
-      .removeChannel(p.id, c.name)
-      .then(() => toast(`已移除 ${c.label}`))
-      .then(onDone, (e) => {
-        setBusy(false);
-        setError(errorText(e));
-      });
-  };
-
-  return (
-    <Modal
-      title={`移除 ${c.label}？`}
-      onClose={onClose}
-      footer={
-        <>
-          <span className="grow" />
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
-            取消
-          </button>
-          <button type="button" className="btn btn-danger" onClick={confirm} disabled={busy}>
-            {busy ? "移除中…" : "移除"}
-          </button>
-        </>
-      }
-    >
-      <p>gateway 会断开 {c.label}，删掉它的凭证。之后发给这个渠道的消息不会再进来。</p>
-      {error && <p className="result result-bad">{error}</p>}
     </Modal>
   );
 }

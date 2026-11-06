@@ -2,14 +2,15 @@ import { useState } from "react";
 import { api } from "./api";
 import { AgentPanel } from "./Agent";
 import { ChannelsPanel } from "./Channels";
+import { channelLabel } from "./channelKinds";
 import { projectProblems } from "./diagnose";
-import { channel, shortPath } from "./format";
+import { shortPath } from "./format";
 import { ProblemCard } from "./Problems";
 import { go, href, type Tab } from "./route";
-import { projectLabel, projectTone, runLabel, runTone } from "./status";
+import { channelStatus, projectLabel, projectTone, runLabel, runTone } from "./status";
 import { TasksPanel } from "./Tasks";
 import type { Overview, ProjectStatus } from "./types";
-import { Banner, ChannelBadge, CopyButton, Mark, Menu, Modal, SrOnly, errorText, toast } from "./ui";
+import { Banner, ChannelBadge, ConfirmModal, CopyButton, Mark, Menu, SrOnly, StateText, copyText, toast } from "./ui";
 
 interface Props {
   project: ProjectStatus;
@@ -31,15 +32,14 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
       <header className="phead">
         <div className="phead-row">
           <h1>{p.name}</h1>
-          <span className={`state-text tone-${tone}`}>
-            <Mark tone={tone} live={p.state === "starting"} />
+          <StateText tone={tone} live={p.state === "starting"}>
             {projectLabel(p)}
-          </span>
+          </StateText>
           <span className="grow" />
           <Menu
             label="项目操作"
             items={[
-              { label: "复制项目路径", onSelect: () => navigator.clipboard.writeText(p.dir).then(() => toast("已复制项目路径")) },
+              { label: "复制项目路径", onSelect: () => void copyText(p.dir, "已复制项目路径") },
               { label: "从 gateway 移除…", danger: true, onSelect: () => setRemoving(true) },
             ]}
           />
@@ -98,56 +98,24 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
       {tab === "channels" && <ChannelsPanel project={p} onChanged={onChanged} />}
       {tab === "agent" && <AgentPanel project={p} />}
 
+      {/* Taking the project out of the gateway; its config goes back to the project's config.json. */}
       {removing && (
-        <RemoveProject
-          project={p}
-          onClose={() => setRemoving(false)}
+        <ConfirmModal
+          title={`从 gateway 移除 ${p.name}？`}
+          confirm="移除项目"
+          busyLabel="移除中…"
+          onConfirm={() => api.removeProject(p.id).then((r) => toast(`已移除 ${p.name}，配置写回 ${shortPath(r.config)}`))}
           // Leave once the overview no longer has the project.
           onDone={() => onChanged().then(() => go({ page: "home" }))}
-        />
+          onClose={() => setRemoving(false)}
+        >
+          <p>gateway 会断开这个项目的所有渠道，不再服务它。</p>
+          <p className="muted">
+            配置写回 <code>{shortPath(p.dir)}/.claude-bot/config.json</code>，对话记录都保留。之后可以用 <code>claude-bot start</code> 单独运行，或者再 <code>claude-bot gateway import</code> 回来。
+          </p>
+        </ConfirmModal>
       )}
     </div>
-  );
-}
-
-/** Confirm taking the project out of the gateway; its config goes back to the project's config.json. */
-function RemoveProject({ project: p, onClose, onDone }: { project: ProjectStatus; onClose: () => void; onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const confirm = () => {
-    setBusy(true);
-    api
-      .removeProject(p.id)
-      .then((r) => toast(`已移除 ${p.name}，配置写回 ${shortPath(r.config)}`))
-      .then(onDone, (e) => {
-        setBusy(false);
-        setError(errorText(e));
-      });
-  };
-
-  return (
-    <Modal
-      title={`从 gateway 移除 ${p.name}？`}
-      onClose={onClose}
-      footer={
-        <>
-          <span className="grow" />
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
-            取消
-          </button>
-          <button type="button" className="btn btn-danger" onClick={confirm} disabled={busy}>
-            {busy ? "移除中…" : "移除项目"}
-          </button>
-        </>
-      }
-    >
-      <p>gateway 会断开这个项目的所有渠道，不再服务它。</p>
-      <p className="muted">
-        配置写回 <code>{shortPath(p.dir)}/.claude-bot/config.json</code>，对话记录都保留。之后可以用 <code>claude-bot start</code> 单独运行，或者再 <code>claude-bot gateway import</code> 回来。
-      </p>
-      {error && <p className="result result-bad">{error}</p>}
-    </Modal>
   );
 }
 
@@ -158,16 +126,13 @@ function ChannelHealth({ project: p }: { project: ProjectStatus }) {
   return (
     <span className="health">
       {p.channels.map((name) => {
-        const stopped = p.stopped?.includes(name);
-        const connected = p.connected?.includes(name);
-        // A failed project has no channel up: each one is down, not just idle.
-        const tone = stopped || p.state === "failed" ? "bad" : connected ? "ok" : p.state === "starting" ? "warn" : "off";
-        const why = stopped ? "已断开" : connected ? "已连接" : p.state === "failed" ? "没连上" : p.state === "starting" ? "连接中" : "未连接";
+        const { tone, label: why } = channelStatus(p, name);
+        const label = channelLabel(name);
 
         return (
-          <a key={name} className={`chip chip-${tone}`} href={href({ page: "project", project: p.id, tab: "channels" })} title={`${channel(name).label} ${why}`}>
+          <a key={name} className={`chip chip-${tone}`} href={href({ page: "project", project: p.id, tab: "channels" })} title={`${label} ${why}`}>
             <ChannelBadge name={name} size="sm" />
-            {channel(name).label}
+            {label}
             <Mark tone={tone} />
             <SrOnly>：{why}</SrOnly>
           </a>

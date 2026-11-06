@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { errorText } from "./format";
 
 /** How often the page polls: the overview drives the orb and the badges, task lists can lag a little. */
 export const POLL_FAST = 3000;
@@ -71,4 +72,43 @@ export function useNow(every = 30_000): number {
   }, [every]);
 
   return now;
+}
+
+export interface Action {
+  /** A run is under way. */
+  busy: boolean;
+  /** Why the last run failed; cleared when the next one starts. */
+  error: string | null;
+  /**
+   * Runs fn; once it succeeds, onOk with what it returned. Busy lasts until
+   * a promise onOk returns settles, so a dialog that leaves the page when
+   * done cannot be submitted twice meanwhile.
+   */
+  run: <T>(fn: () => Promise<T>, onOk?: (v: T) => unknown) => void;
+}
+
+/**
+ * A button's request: busy while it runs, and why it failed. With onError,
+ * failures go there instead of error.
+ */
+export function useAction(onError?: (message: string) => void): Action {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
+  const run = useCallback(<T>(fn: () => Promise<T>, onOk?: (v: T) => unknown) => {
+    setBusy(true);
+    setError(null);
+    fn().then(
+      (v) => Promise.resolve(onOk?.(v)).finally(() => setBusy(false)),
+      (e) => {
+        setBusy(false);
+        if (onErrorRef.current) onErrorRef.current(errorText(e));
+        else setError(errorText(e));
+      },
+    );
+  }, []);
+
+  return { busy, error, run };
 }

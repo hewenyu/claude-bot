@@ -1,14 +1,13 @@
 // A project's agent: whether the gateway runs /bot there by itself, how it
 // is doing, and its terminal.
 
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense } from "react";
 import { api, ApiError } from "./api";
-import { ago, fullTime } from "./format";
-import { POLL_FAST, useNow, usePoll } from "./hooks";
-import { Icon } from "./icons";
+import { ago, errorText, fullTime } from "./format";
+import { POLL_FAST, useAction, useNow, usePoll } from "./hooks";
 import { liveAgentStatus, resumableRun, runLabel, runTone } from "./status";
 import type { ProjectStatus, Run } from "./types";
-import { Banner, Mark, errorText, toast } from "./ui";
+import { Banner, Result, StateText, toast } from "./ui";
 
 // xterm is most of the page's weight: it loads with the first terminal.
 const Terminal = lazy(() => import("./Terminal").then((m) => ({ default: m.Terminal })));
@@ -17,7 +16,12 @@ const liveAgent = (r: Run) => !!r.agent && liveAgentStatus.has(r.agent.status);
 
 export function AgentPanel({ project }: { project: ProjectStatus }) {
   const run = usePoll(() => api.run(project.id), POLL_FAST, `run-${project.id}`);
-  const [busy, setBusy] = useState(false);
+  // A switch or a button: it says how it went in a toast, and the run is read again either way.
+  const action = useAction((e) => {
+    toast(e, "bad");
+    void run.reload();
+  });
+  const busy = action.busy;
 
   if (run.error instanceof ApiError && run.error.status === 503) {
     return <Banner tone="warn">gateway 现在不运行 agent：它的页面没能启动时也不跑 agent，看一下 gateway 的日志。</Banner>;
@@ -28,13 +32,12 @@ export function AgentPanel({ project }: { project: ProjectStatus }) {
   const r = run.data;
   const on = r.state !== "off";
 
-  const act = (what: string, f: () => Promise<unknown>) => {
-    setBusy(true);
-    f()
-      .then(() => toast(what), (e) => toast(errorText(e), "bad"))
-      .then(run.reload)
-      .finally(() => setBusy(false));
-  };
+  const act = (what: string, f: () => Promise<unknown>) =>
+    action.run(f, () => {
+      toast(what);
+
+      return run.reload();
+    });
 
   return (
     <div className="agent">
@@ -81,10 +84,9 @@ function RunState({ run: r, busy, act }: { run: Run; busy: boolean; act: (what: 
   return (
     <>
       <div className="run-state">
-        <span className={`state-text tone-${tone}`}>
-          <Mark tone={tone} live={r.state === "running"} />
+        <StateText tone={tone} live={r.state === "running"}>
           {runLabel[r.state]}
-        </span>
+        </StateText>
         {r.detail && <span className="muted">{r.detail}</span>}
         <span className="grow" />
         <span className="muted small" title={fullTime(r.updated_at)}>
@@ -92,12 +94,7 @@ function RunState({ run: r, busy, act }: { run: Run; busy: boolean; act: (what: 
         </span>
       </div>
 
-      {r.error && r.state === "failed" && (
-        <p className="result result-bad">
-          <Icon name="cross" />
-          {r.error}
-        </p>
-      )}
+      {r.error && r.state === "failed" && <Result tone="bad">{r.error}</Result>}
       {r.summary && (
         <blockquote className="run-summary" title="上一轮结束时 Claude 说的">
           {r.summary}

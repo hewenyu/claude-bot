@@ -61,19 +61,6 @@ export const taskStateLabel: Record<TaskState, string> = {
   closed: "已关闭",
 };
 
-const channelLabels: Record<string, string> = {
-  lark: "飞书",
-  dingtalk: "钉钉",
-  telegram: "Telegram",
-  discord: "Discord",
-  slack: "Slack",
-  github: "GitHub",
-};
-
-export function channel(name: string): { label: string } {
-  return { label: channelLabels[name] ?? name };
-}
-
 /** Shortens a home-relative path for display. */
 export function shortPath(dir: string): string {
   return dir.replace(/^\/(?:Users|home)\/[^/]+/, "~");
@@ -81,3 +68,8 @@ export function shortPath(dir: string): string {
 
 /** The palette's shortcut as this keyboard writes it. */
 export const paletteKey = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘K" : "Ctrl K";
+
+/** What went wrong, in the words the error carries. */
+export function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}

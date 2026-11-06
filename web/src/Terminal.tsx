@@ -16,6 +16,8 @@ const RESIZE_DEBOUNCE_MS = 120;
 const SCROLLBACK = 5000;
 
 // The terminal is always dark, in both themes: Claude Code draws for one.
+// xterm paints its own canvas, so it takes a colour, not a CSS variable:
+// background must stay equal to --term-bg in styles.css, the frame around it.
 const theme = {
   background: "#111113",
   foreground: "#e6e6ea",

@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
-import { channel } from "./format";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { channelLabel } from "./channelKinds";
+import { useAction } from "./hooks";
 import { Icon } from "./icons";
 import { ChannelLogo, hasLogo } from "./logos";
 
@@ -7,18 +8,18 @@ export type Tone = "ok" | "warn" | "bad" | "off" | "info";
 
 /** The channel's official logo; a lettered tile for a channel without one. */
 export function ChannelBadge({ name, size = "md" }: { name: string; size?: "sm" | "md" | "lg" }) {
-  const c = channel(name);
+  const label = channelLabel(name);
 
   if (hasLogo(name)) {
     return (
-      <span className={`badge badge-${size} badge-logo`} title={c.label} aria-hidden>
+      <span className={`badge badge-${size} badge-logo`} title={label} aria-hidden>
         <ChannelLogo name={name} />
       </span>
     );
   }
 
   return (
-    <span className={`badge badge-${size}`} title={c.label} aria-hidden>
+    <span className={`badge badge-${size}`} title={label} aria-hidden>
       {name.slice(0, 2).toUpperCase()}
     </span>
   );
@@ -31,6 +32,26 @@ export function ChannelBadge({ name, size = "md" }: { name: string; size?: "sm" 
  */
 export function Mark({ tone, live }: { tone: Tone; live?: boolean }) {
   return <span className={`mark mark-${tone}${live ? " mark-live" : ""}`} aria-hidden />;
+}
+
+/** A state in words after its mark, in the state's colour. */
+export function StateText({ tone, live, children }: { tone: Tone; live?: boolean; children: ReactNode }) {
+  return (
+    <span className={`state-text tone-${tone}`}>
+      <Mark tone={tone} live={live} />
+      {children}
+    </span>
+  );
+}
+
+/** How a request went, under the form or card that made it. */
+export function Result({ tone, children }: { tone: "ok" | "bad"; children: ReactNode }) {
+  return (
+    <p className={`result result-${tone}`} role="status">
+      <Icon name={tone === "ok" ? "check" : "cross"} />
+      {children}
+    </p>
+  );
 }
 
 /** The gateway's presence: calm when all is well, breathing while a bot works, red when something is broken. */
@@ -85,10 +106,31 @@ export function useFlag(ms = 1500): [boolean, () => void] {
   return [on, () => setOn(true)];
 }
 
+/**
+ * Copies text to the clipboard and resolves whether it could; with msg, a
+ * toast says it did. When the browser refuses, a toast says so.
+ */
+export function copyText(text: string, msg?: string): Promise<boolean> {
+  return Promise.resolve()
+    .then(() => navigator.clipboard.writeText(text))
+    .then(
+      () => {
+        if (msg) toast(msg);
+
+        return true;
+      },
+      () => {
+        toast("没能复制：浏览器不让这个页面写剪贴板", "bad");
+
+        return false;
+      },
+    );
+}
+
 /** Copies text; says so for a moment. With icon, a square icon button. */
 export function CopyButton({ text, label = "复制", icon }: { text: string; label?: string; icon?: boolean }) {
   const [done, flag] = useFlag();
-  const copy = () => navigator.clipboard.writeText(text).then(flag);
+  const copy = () => copyText(text).then((ok) => ok && flag());
 
   if (icon) {
     return (
@@ -143,7 +185,7 @@ const focusable = 'a[href], button:not(:disabled), input:not(:disabled), select:
  * page re-renders on every poll, so depending on onClose would pull focus back
  * to the first field every few seconds.
  */
-function useTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
+export function useTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
   const close = useRef(onClose);
   close.current = onClose;
 
@@ -182,13 +224,14 @@ function useTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
 /** A dialog; Escape or the backdrop closes it, and Tab stays inside it. */
 export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
   useTrap(ref, onClose);
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal${wide ? " modal-wide" : ""}`} role="dialog" aria-modal="true" aria-label={title} ref={ref}>
+      <div className={`modal${wide ? " modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref}>
         <div className="modal-head">
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">
             <Icon name="cross" />
           </button>
@@ -200,15 +243,78 @@ export function Modal({ title, onClose, children, footer, wide }: { title: strin
   );
 }
 
-/** A "⋯" button with a small menu of actions. */
+/**
+ * Asks before doing something that cannot be undone. onConfirm does it; a
+ * failure shows under the text and leaves the dialog open.
+ */
+export function ConfirmModal({
+  title,
+  confirm,
+  busyLabel,
+  disabled,
+  onConfirm,
+  onDone,
+  onClose,
+  children,
+}: {
+  title: string;
+  /** The danger button's label, and what it says while it works. */
+  confirm: string;
+  busyLabel: string;
+  disabled?: boolean;
+  onConfirm: () => Promise<unknown>;
+  /** Called once onConfirm succeeded; a promise it returns keeps the button busy. */
+  onDone: () => unknown;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const action = useAction();
+
+  return (
+    <Modal
+      title={title}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className="btn btn-danger" onClick={() => action.run(onConfirm, onDone)} disabled={action.busy || disabled}>
+            {action.busy ? busyLabel : confirm}
+          </button>
+        </>
+      }
+    >
+      {children}
+      {action.error && <Result tone="bad">{action.error}</Result>}
+    </Modal>
+  );
+}
+
+const menuItem = '[role="menuitem"]';
+
+/**
+ * A "⋯" button with a small menu of actions. Opening it focuses the first
+ * item; the arrow keys, Home and End move between them; Escape or picking
+ * one gives focus back to the button, Tab or a click elsewhere closes it.
+ */
 export function Menu({ label, items }: { label: string; items: { label: string; danger?: boolean; onSelect: () => void }[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    pop.current?.querySelector<HTMLElement>(menuItem)?.focus();
+
     const away = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      button.current?.focus();
+    };
     document.addEventListener("mousedown", away);
     document.addEventListener("keydown", esc);
 
@@ -218,21 +324,35 @@ export function Menu({ label, items }: { label: string; items: { label: string; 
     };
   }, [open]);
 
+  const onKey = (e: ReactKeyboardEvent) => {
+    if (e.key === "Tab") return setOpen(false);
+
+    const all = [...(pop.current?.querySelectorAll<HTMLElement>(menuItem) ?? [])];
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    const to = ({ ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 } as Record<string, number>)[e.key];
+    if (to === undefined || !all.length) return;
+
+    e.preventDefault();
+    all[(to + all.length) % all.length].focus();
+  };
+
   return (
     <div className="menu" ref={ref}>
-      <button type="button" className="icon-btn" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button type="button" className="icon-btn" ref={button} aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         <Icon name="more" />
       </button>
       {open && (
-        <div className="menu-pop" role="menu">
+        <div className="menu-pop" role="menu" aria-label={label} ref={pop} onKeyDown={onKey}>
           {items.map((it) => (
             <button
               key={it.label}
               type="button"
               role="menuitem"
+              tabIndex={-1}
               className={it.danger ? "danger" : undefined}
               onClick={() => {
                 setOpen(false);
+                button.current?.focus();
                 it.onSelect();
               }}
             >
@@ -279,8 +399,4 @@ export function Toasts() {
       ))}
     </div>
   );
-}
-
-export function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

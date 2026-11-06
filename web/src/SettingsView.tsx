@@ -1,13 +1,18 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { api } from "./api";
-import { shortPath } from "./format";
-import { usePoll } from "./hooks";
+import { TYPESAFE_KEYS } from "./diagnose";
+import { errorText, shortPath } from "./format";
+import { useAction, usePoll } from "./hooks";
 import { activeRun } from "./status";
-import type { GitHubProject, GitHubToken, Overview, SecretView, Settings } from "./types";
+import { secretText, type GitHubProject, type GitHubToken, type Overview, type SecretView, type Settings } from "./types";
 import { Icon } from "./icons";
-import { Banner, Mark, Modal, errorText, toast } from "./ui";
+import { Banner, ConfirmModal, Modal, Result, StateText, toast } from "./ui";
 
-export function SettingsView({ overview }: { overview: Overview }) {
+/** The default token, when the gateway has none yet. */
+const noDefaultToken: GitHubToken = { name: "", token: { set: false }, projects: [] };
+
+/** onChanged reloads the overview. */
+export function SettingsView({ overview, onChanged }: { overview: Overview; onChanged: () => Promise<void> }) {
   const settings = usePoll(api.settings, null, "settings");
 
   if (settings.error && !settings.data)
@@ -33,7 +38,7 @@ export function SettingsView({ overview }: { overview: Overview }) {
         help={
           <>
             每条消息先交给 TypeSafe 的 Jev 裁剪、归组、拦下非法请求，再交给 Claude。没有 key 时 gateway 不连接任何项目。在{" "}
-            <a href="https://console.typesafe.ai/keys" target="_blank" rel="noreferrer noopener">
+            <a href={TYPESAFE_KEYS} target="_blank" rel="noreferrer noopener">
               console.typesafe.ai
             </a>{" "}
             创建。
@@ -46,32 +51,28 @@ export function SettingsView({ overview }: { overview: Overview }) {
 
       <GitHubTokens settings={settings.data} onSaved={settings.reload} />
 
-      {overview.runner && <RunnerSetting saved={overview.runner.max_parallel} running={overview.runner.runs.filter((r) => activeRun.has(r.state)).length} />}
+      {overview.runner && (
+        <RunnerSetting saved={overview.runner.max_parallel} running={overview.runner.runs.filter((r) => activeRun.has(r.state)).length} onSaved={onChanged} />
+      )}
     </div>
   );
 }
 
 /** How many agents run at once, in all projects. */
-function RunnerSetting({ saved, running }: { saved: number; running: number }) {
+function RunnerSetting({ saved, running, onSaved }: { saved: number; running: number; onSaved: () => void }) {
   const [input, setInput] = useState(String(saved));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const saving = useAction();
   const n = Number(input);
   const changed = Number.isInteger(n) && n !== saved;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
-    setError(null);
-    api.saveRunner(n).then(
+    saving.run(
+      () => api.saveRunner(n),
       (r) => {
-        setBusy(false);
         setInput(String(r.max_parallel));
         toast(`最多同时运行 ${r.max_parallel} 个 agent`);
-      },
-      (err) => {
-        setBusy(false);
-        setError(errorText(err));
+        onSaved();
       },
     );
   };
@@ -87,16 +88,11 @@ function RunnerSetting({ saved, running }: { saved: number; running: number }) {
       <p className="muted">打开了「自动处理」的项目，每个最多一个 Claude Code。名额满了，空闲最久的 agent 让出名额，等有新消息再启动。</p>
       <form className="inline-form" onSubmit={submit}>
         <input type="number" min={1} max={32} step={1} value={input} onChange={(e) => setInput(e.target.value)} aria-label="同时运行的 agent 数" />
-        <button type="submit" className={`btn${changed ? " btn-primary" : ""}`} disabled={!changed || busy}>
-          {busy ? "保存中…" : "保存"}
+        <button type="submit" className={`btn${changed ? " btn-primary" : ""}`} disabled={!changed || saving.busy}>
+          {saving.busy ? "保存中…" : "保存"}
         </button>
       </form>
-      {error && (
-        <p className="result result-bad">
-          <Icon name="cross" />
-          {error}
-        </p>
-      )}
+      {saving.error && <Result tone="bad">{saving.error}</Result>}
     </section>
   );
 }
@@ -131,34 +127,22 @@ function SecretSetting({
 }
 
 function SecretState({ value, missing }: { value: SecretView; missing: string }) {
-  return (
-    <span className={`state-text tone-${value.set ? "ok" : "bad"}`}>
-      <Mark tone={value.set ? "ok" : "bad"} />
-      {value.set ? `已设置 ${value.hint ?? ""}` : missing}
-    </span>
-  );
+  return <StateText tone={value.set ? "ok" : "bad"}>{secretText(value, missing)}</StateText>;
 }
 
 /** A password field that verifies and saves a new value. */
 function ReplaceSecret({ label, value, save, onSaved }: { label: string; value: SecretView; save: (v: string) => Promise<unknown>; onSaved: () => void }) {
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const saving = useAction();
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    setBusy(true);
-    setError(null);
-    save(input.trim()).then(
+    saving.run(
+      () => save(input.trim()),
       () => {
-        setBusy(false);
         setInput("");
         onSaved();
         toast(`${label} 已验证并保存`);
-      },
-      (err) => {
-        setBusy(false);
-        setError(errorText(err));
       },
     );
   };
@@ -175,27 +159,21 @@ function ReplaceSecret({ label, value, save, onSaved }: { label: string; value: 
           onChange={(e) => setInput(e.target.value)}
           aria-label={label}
         />
-        <button type="submit" className={`btn${input.trim() ? " btn-primary" : ""}`} disabled={!input.trim() || busy}>
-          {busy ? "验证中…" : "验证并保存"}
+        <button type="submit" className={`btn${input.trim() ? " btn-primary" : ""}`} disabled={!input.trim() || saving.busy}>
+          {saving.busy ? "验证中…" : "验证并保存"}
         </button>
       </form>
-      {error && (
-        <p className="result result-bad">
-          <Icon name="cross" />
-          {error}
-        </p>
-      )}
+      {saving.error && <Result tone="bad">{saving.error}</Result>}
     </>
   );
 }
-
-const hint = (v: SecretView) => (v.hint ? v.hint : "已设置");
 
 /** The default GitHub token and the named ones, each with the projects it serves. */
 function GitHubTokens({ settings, onSaved }: { settings: Settings; onSaved: () => void }) {
   const [editing, setEditing] = useState<GitHubToken | "new" | null>(null);
   const [removing, setRemoving] = useState<GitHubToken | null>(null);
-  const [def, ...named] = settings.github_tokens;
+  const def = settings.github_tokens.find((t) => t.name === "") ?? noDefaultToken;
+  const named = settings.github_tokens.filter((t) => t.name !== "");
   const projects = settings.github_projects;
 
   return (
@@ -227,7 +205,7 @@ function GitHubTokens({ settings, onSaved }: { settings: Settings; onSaved: () =
               <li key={t.name} className="token-row">
                 <div className="token-main">
                   <span className="mono strong">{t.name}</span>
-                  <span className={`small ${t.token.set ? "muted" : "tone-bad"}`}>{t.token.set ? hint(t.token) : "token 丢了，请重新填"}</span>
+                  <span className={`small ${t.token.set ? "muted" : "tone-bad"}`}>{secretText(t.token, "token 丢了，请重新填")}</span>
                 </div>
                 <Serves names={t.projects} empty="没有项目用它" />
                 <div className="token-actions">
@@ -264,14 +242,24 @@ function GitHubTokens({ settings, onSaved }: { settings: Settings; onSaved: () =
       )}
 
       {removing && (
-        <ConfirmRemoveToken
-          token={removing}
-          onClose={() => setRemoving(null)}
+        <ConfirmModal
+          title={`删除 GitHub token「${removing.name}」？`}
+          confirm="删除"
+          busyLabel="删除中…"
+          disabled={removing.projects.length > 0}
+          onConfirm={() => api.removeGitHubToken(removing.name).then(() => toast(`已删除 GitHub token「${removing.name}」`))}
           onDone={() => {
             setRemoving(null);
             onSaved();
           }}
-        />
+          onClose={() => setRemoving(null)}
+        >
+          {removing.projects.length ? (
+            <p>它还在服务 {removing.projects.join("、")}。先在「编辑」里取消勾选，让它们改用默认 token，再删除。</p>
+          ) : (
+            <p>没有项目在用它，删除后 gateway 里就没有这个 token 了。</p>
+          )}
+        </ConfirmModal>
       )}
     </section>
   );
@@ -297,24 +285,18 @@ function TokenEditor({
   const [name, setName] = useState(token?.name ?? "");
   const [value, setValue] = useState("");
   const [serve, setServe] = useState<number[]>(() => projects.filter((p) => token && p.token_name === token.name).map((p) => p.id));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const saving = useAction();
 
   const nameOK = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/.test(name);
   const nameTaken = !token && taken.includes(name);
 
   const save = (e: FormEvent) => {
     e.preventDefault();
-    setSaving(true);
-    setError(null);
-    api.saveGitHubToken(name, value.trim(), serve).then(
+    saving.run(
+      () => api.saveGitHubToken(name, value.trim(), serve),
       () => {
         toast(`GitHub token「${name}」已验证并保存`);
         onSaved();
-      },
-      (err) => {
-        setSaving(false);
-        setError(errorText(err));
       },
     );
   };
@@ -331,8 +313,8 @@ function TokenEditor({
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             取消
           </button>
-          <button type="submit" form="token-form" className="btn btn-primary" disabled={saving || !nameOK || nameTaken || (!token && !value.trim())}>
-            {saving ? "验证中…" : "验证并保存"}
+          <button type="submit" form="token-form" className="btn btn-primary" disabled={saving.busy || !nameOK || nameTaken || (!token && !value.trim())}>
+            {saving.busy ? "验证中…" : "验证并保存"}
           </button>
         </>
       }
@@ -355,7 +337,7 @@ function TokenEditor({
             type="password"
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={token?.token.set ? `已设置 ${token.token.hint ?? ""}，留空则不修改` : "ghp_… 或 github_pat_…"}
+            placeholder={token?.token.set ? `${secretText(token.token)}，留空则不修改` : "ghp_… 或 github_pat_…"}
             autoComplete="off"
             spellCheck={false}
           />
@@ -373,57 +355,8 @@ function TokenEditor({
           ))}
           <span className="muted small">不勾的项目用默认 token；原来用这个 token、现在不勾的项目，改回默认 token。</span>
         </fieldset>
-        {error && (
-          <p className="result result-bad">
-            <Icon name="cross" />
-            {error}
-          </p>
-        )}
+        {saving.error && <Result tone="bad">{saving.error}</Result>}
       </form>
-    </Modal>
-  );
-}
-
-function ConfirmRemoveToken({ token, onClose, onDone }: { token: GitHubToken; onClose: () => void; onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const confirm = () => {
-    setBusy(true);
-    api.removeGitHubToken(token.name).then(
-      () => {
-        toast(`已删除 GitHub token「${token.name}」`);
-        onDone();
-      },
-      (e) => {
-        setBusy(false);
-        setError(errorText(e));
-      },
-    );
-  };
-
-  return (
-    <Modal
-      title={`删除 GitHub token「${token.name}」？`}
-      onClose={onClose}
-      footer={
-        <>
-          <span className="grow" />
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
-            取消
-          </button>
-          <button type="button" className="btn btn-danger" onClick={confirm} disabled={busy || token.projects.length > 0}>
-            {busy ? "删除中…" : "删除"}
-          </button>
-        </>
-      }
-    >
-      {token.projects.length ? (
-        <p>它还在服务 {token.projects.join("、")}。先在「编辑」里取消勾选，让它们改用默认 token，再删除。</p>
-      ) : (
-        <p>没有项目在用它，删除后 gateway 里就没有这个 token 了。</p>
-      )}
-      {error && <p className="result result-bad">{error}</p>}
     </Modal>
   );
 }
