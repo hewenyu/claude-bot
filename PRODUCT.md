@@ -37,17 +37,19 @@ The bot is deliberately minimal: channels only, with Claude doing all the judgin
 ## Operating Context
 
 - Install with `go install`. One Go binary embeds the web page (built from `web/` and committed to `internal/webui/static`), so installing needs no Node.
-- `claude-bot init` registers a project. `claude-bot gateway start|stop|restart|open` runs the gateway. Claude Code runs `/loop /bot` in each repo and processes the inbox through `claude-bot inbox --wait` and `claude-bot reply`.
+- `claude-bot init` registers a project. `claude-bot gateway start|stop|restart|open` runs the gateway. Claude Code runs `/bot` in each repo and processes the inbox through `claude-bot inbox --wait` and `claude-bot reply`. Either the gateway runs it (a project's 自动处理 is on), or a person keeps `/loop /bot` open in a terminal. Never both in one project.
 - The page opens only on the local machine, with an access token in the URL fragment (`#token=…`). It polls the gateway every few seconds. It has to handle the gateway going offline, the TypeSafe key missing, and projects that have been removed.
 - Development uses a demo gateway with fake data (every project state, no real platforms): `CLAUDE_BOT_PAGE_DEMO=127.0.0.1:7601 go test -run TestPageDemo -timeout 0 ./cmd/claude-bot`, then `http://127.0.0.1:7601/#token=de30de30`.
 
 ## Capabilities and Constraints
 
-- **Gateway page stack:** React 19, TypeScript and Vite, with no UI library or other runtime dependencies. Run `make web` to rebuild into `internal/webui/static`, and commit the result. `make web-check` enforces that the committed build matches `web/`.
-- **Project states:** running, starting, busy, failed, stopped. Channel states: connected, connecting, not connected, error, stopped.
+- **Gateway page stack:** React 19, TypeScript and Vite, with no UI library or other runtime dependencies. The one exception is `@xterm/xterm` (with its fit addon) for the agent terminal: a terminal emulator that renders Claude Code correctly is not something to hand-roll. It loads lazily with the first terminal, so the rest of the page stays light. Run `make web` to rebuild into `internal/webui/static`, and commit the result. `make web-check` enforces that the committed build matches `web/`.
+- **Runner (自动处理):** the gateway starts Claude Code with `/bot` in a project whose runner is on, when its inbox has tasks. There is one agent per project, and at most `runner_max_parallel` across all projects (default 3). An idle agent yields its place and resumes its session on news. The runner decides when; `/bot` (the project's `bot.md`) decides what. The runner has no task list of its own. Its agents run in bypass-permissions mode as the user, so they can read `~/.claude-bot`; the page and docs say so.
+- **Desktop app:** `desktop/` is an Electron window around the page, not a second UI. It starts the gateway in a login shell and opens the tokenized URL. Anything the app shows belongs in the page.
+- **Project states:** running, starting, busy, failed, stopped. Run states: queued, running, blocked (等你确认), waiting (需要你看看), idle (值守中), resting, failed, off. Channel states: connected, connecting, not connected, error, stopped.
 - **Credentials only go in.** The page never shows a stored secret, only its last few characters. After an edit, the gateway reconnects within seconds.
 - **Handled tasks archive themselves** and come back to the list when someone follows up.
-- **Terms in use:** 项目 (project), 渠道 (channel), 事 / task, 收件箱 (inbox), 筛选 (screening by Jev), 归档 (archive), gateway, TypeSafe API key.
+- **Terms in use:** 项目 (project), 渠道 (channel), 事 / task, 收件箱 (inbox), 筛选 (screening by Jev), 归档 (archive), 自动处理 (the runner), agent / Claude, 名额 (a place among the parallel agents), gateway, TypeSafe API key.
 - **Supported agent:** Claude Code is the only supported agent. Other agents would get separate adapters, not features in this product.
 - **Scope:** keep the bot minimal. New surface area needs a reason the user has asked for.
 

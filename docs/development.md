@@ -7,6 +7,7 @@ make fmt      # golangci-lint fmt
 make build    # bin/claude-bot
 make web     # 用 web/ 重新构建 gateway 的网页到 internal/webui/static（要 Node）
 make web-check  # 重新构建，确认提交的 internal/webui/static 和 web/ 一致
+make desktop  # 用 bin/claude-bot 运行桌面 App（要 Node）
 ```
 
 代码结构：
@@ -28,8 +29,12 @@ internal/config/            项目定位，配置的读写（gateway 数据库�
 internal/store/             gateway 的 SQLite 数据库（纯 Go 的 modernc.org/sqlite，不用 cgo）：共用设置、登记的项目、各项目的渠道
 internal/transport/         各适配器共用的 HTTP / WebSocket 客户端、代理、WebSocket 保活、限长下载、重连退避
 internal/atomicfile/        原子写文件
+internal/runner/            「自动处理」的调度：每个项目什么时候启动、让出、恢复它的 Claude（做什么由 /bot 决定）
+internal/agent/             在伪终端里运行 Claude Code，通过 hook、终端标题和屏幕判断它在做什么，保存和恢复会话
+internal/term/              终端输出的环形缓冲、标题解析，以及替还没连上的终端回答终端查询
 internal/webui/            gateway 网页的静态文件（go:embed），由 web/ 构建后提交，所以 go install 不需要 Node
-web/                        gateway 网页的源码：React + TypeScript + Vite，接口在 cmd/claude-bot/gateway_web.go
+web/                        gateway 网页的源码：React + TypeScript + Vite，接口在 cmd/claude-bot/gateway_web.go 和 gateway_web_runner.go
+desktop/                    桌面 App：网页的 Electron 窗口，确保 gateway 在跑
 ```
 
 改网页：改 `web/src/` 后运行 `make web`，把 `internal/webui/static/` 的变化一起提交。开发时可以起一个假数据的 gateway（临时目录、假渠道，每种状态的项目都有，不连任何平台）：
