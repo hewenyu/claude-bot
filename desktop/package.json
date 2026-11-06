@@ -1,0 +1,17 @@
+{
+  "name": "claude-bot-desktop",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The claude-bot gateway's page in a window of its own",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "electron": "45.2.1",
+    "typescript": "7.0.2"
+  }
+}

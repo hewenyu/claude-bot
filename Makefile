@@ -2,7 +2,7 @@ BINARY  := claude-bot
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-s -w -X main.Version=$(VERSION)"
 
-.PHONY: all build install test lint fmt clean web web-check
+.PHONY: all build install test lint fmt clean web web-check desktop
 
 all: lint test build
 
@@ -34,6 +34,10 @@ web:
 web-check: web
 	git diff --exit-code -- internal/webui/static
 	@test -z "$$(git status --porcelain -- internal/webui/static)" || (echo "internal/webui/static has untracked files: run make web and commit" && exit 1)
+
+## desktop: run the desktop app (the gateway's page in a window) with bin/claude-bot
+desktop: build
+	cd desktop && npm ci && npm run typecheck && npm start
 
 clean:
 	rm -rf bin/
