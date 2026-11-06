@@ -265,7 +265,7 @@ func saveDemoTask(t *testing.T, box *inbox.Inbox, tk inbox.Task, lines []demoLin
 		tk.Handled = len(tk.Entries)
 	}
 
-	if err := box.Locked(func() error { return box.SaveTask(tk, pending) }); err != nil {
+	if err := box.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(tk, pending) }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -313,7 +313,7 @@ func demoShopTasks(t *testing.T, box *inbox.Inbox) {
 
 	tk.Shown = len(tk.Entries)
 
-	if err := box.Locked(func() error { return box.SaveTask(tk, true) }); err != nil {
+	if err := box.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(tk, true) }); err != nil {
 		t.Fatal(err)
 	}
 }

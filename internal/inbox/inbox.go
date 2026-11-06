@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -146,7 +148,7 @@ func (b *Inbox) Incoming() ([]channel.Message, error) {
 }
 
 func (b *Inbox) list(state string) ([]channel.Message, error) {
-	msgs, err := readAll[channel.Message](filepath.Join(b.dir, state), "message")
+	msgs, err := readAll[channel.Message](filepath.Join(b.dir, state), "message", time.Time{})
 	if err != nil {
 		return nil, err
 	}
@@ -172,9 +174,11 @@ func (b *Inbox) Find(id string) (channel.Message, error) {
 	return channel.Message{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 }
 
-// readAll reads every JSON file in dir, a message or a task (what). A dir
-// not made yet holds none.
-func readAll[T any](dir, what string) ([]T, error) {
+// readAll reads every JSON file in dir, a message or a task (what), but
+// those last written before modSince, if set. A dir not made yet holds
+// none. A file that does not parse is set aside (see setAside), so that
+// one bad file does not stop everything else in dir.
+func readAll[T any](dir, what string, modSince time.Time) ([]T, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -187,13 +191,21 @@ func readAll[T any](dir, what string) ([]T, error) {
 	out := make([]T, 0, len(entries))
 
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" || modifiedBefore(e, modSince) {
 			continue
 		}
 
-		v, err := readJSON[T](filepath.Join(dir, e.Name()), what)
+		path := filepath.Join(dir, e.Name())
+
+		v, err := readJSON[T](path, what)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue // moved by another process since ReadDir
+		}
+
+		if errors.Is(err, errParse) {
+			setAside(path, err)
+
+			continue
 		}
 
 		if err != nil {
@@ -206,6 +218,41 @@ func readAll[T any](dir, what string) ([]T, error) {
 	return out, nil
 }
 
+// modifiedBefore reports whether e was last written before since; never
+// for a zero since, or when that is not known.
+func modifiedBefore(e fs.DirEntry, since time.Time) bool {
+	if since.IsZero() {
+		return false
+	}
+
+	info, err := e.Info()
+
+	return err == nil && info.ModTime().Before(since)
+}
+
+// badSuffix marks a file set aside: readers skip it, as it is no *.json.
+const badSuffix = ".bad"
+
+// setAside renames a file that does not parse to *.json.bad, and says so
+// once, on the default logger. Every file is written whole (atomicfile, or
+// a link to a synced temp file), so such a file is broken for good, e.g.
+// edited by hand, and reading it again would only fail again. Renaming it
+// back retries it.
+func setAside(path string, why error) {
+	if err := os.Rename(path, path+badSuffix); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) { // set aside by another reader
+			slog.Warn("inbox: skip unreadable file", "path", path, "err", why, "rename_err", err)
+		}
+
+		return
+	}
+
+	slog.Warn("inbox: set aside unreadable file", "path", path+badSuffix, "err", why)
+}
+
+// errParse marks a file that is not the JSON it should be.
+var errParse = errors.New("not valid JSON")
+
 // readJSON reads one JSON file, a message or a task (what).
 func readJSON[T any](path, what string) (T, error) {
 	var v T
@@ -216,7 +263,7 @@ func readJSON[T any](path, what string) (T, error) {
 	}
 
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return v, fmt.Errorf("parse %s: %w", filepath.Base(path), err)
+		return v, fmt.Errorf("parse %s: %w: %w", filepath.Base(path), errParse, err)
 	}
 
 	return v, nil

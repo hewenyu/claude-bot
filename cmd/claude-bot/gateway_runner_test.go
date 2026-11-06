@@ -241,7 +241,8 @@ func TestRunner_aRound(t *testing.T) {
 	}
 
 	task.Entries = append(task.Entries, inbox.Entry{Kind: inbox.EntryBot, At: time.Now(), Text: "done"})
-	if err := box.SaveTask(task, false); err != nil {
+
+	if err := box.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(task, false) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -304,7 +305,7 @@ func newRound(t *testing.T) (*runnerPage, *inbox.Inbox, inbox.Task) {
 	box := projectInbox(proj)
 	task := inbox.Task{ID: "t1", Entries: []inbox.Entry{{Kind: inbox.EntryUser, At: time.Now(), Text: "hi"}}}
 
-	if err := box.SaveTask(task, true); err != nil {
+	if err := box.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(task, true) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -421,7 +422,8 @@ func TestPendingCountsPeople(t *testing.T) {
 	replied := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
 
 	task := inbox.Task{ID: "t1", Entries: []inbox.Entry{{Kind: inbox.EntryUser, Text: "hi"}, {Kind: inbox.EntryBot, At: replied, Text: "on it"}}}
-	if err := b.SaveTask(task, true); err != nil {
+
+	if err := b.Locked(func(tx *inbox.Tx) error { return tx.SaveTask(task, true) }); err != nil {
 		t.Fatal(err)
 	}
 

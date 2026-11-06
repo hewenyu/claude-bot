@@ -118,7 +118,7 @@ func (a *app) screenIncoming(ctx context.Context, ask screen.Asker) error {
 
 	// Store the tasks and messages before replying: if this fails nothing
 	// was sent, and once it succeeds the refused pieces are gone for good.
-	if err := a.inbox.Locked(func() error { return a.commit(items, tasks, byID) }); err != nil {
+	if err := a.inbox.Locked(func(tx *inbox.Tx) error { return a.commit(tx, items, tasks, byID) }); err != nil {
 		return err
 	}
 
@@ -172,7 +172,7 @@ func (a *app) threads(m channel.Message) ([]screen.Thread, error) {
 // task's pieces go into its inbox task, new or continued, which is then
 // pending; each message is archived without its refused pieces and labelled
 // with the tasks its pieces went to; refused files are deleted.
-func (a *app) commit(items []screen.Item, tasks []screen.Task, byID map[string]channel.Message) error {
+func (a *app) commit(tx *inbox.Tx, items []screen.Item, tasks []screen.Task, byID map[string]channel.Message) error {
 	labels := map[string][]channel.Piece{}
 	refused := map[string][]screen.Piece{}
 
@@ -185,7 +185,7 @@ func (a *app) commit(items []screen.Item, tasks []screen.Task, byID map[string]c
 			continue
 		}
 
-		task, err := a.taskFor(t, byID)
+		task, err := taskFor(tx, t, byID)
 		if err != nil {
 			return err
 		}
@@ -200,7 +200,7 @@ func (a *app) commit(items []screen.Item, tasks []screen.Task, byID map[string]c
 			}
 		}
 
-		if err := a.inbox.SaveTask(task, true); err != nil {
+		if err := tx.SaveTask(task, true); err != nil {
 			return err
 		}
 	}
@@ -240,9 +240,9 @@ func (a *app) archive(items []screen.Item, labels map[string][]channel.Piece, re
 }
 
 // taskFor returns the inbox task t continues, or a new one.
-func (a *app) taskFor(t screen.Task, byID map[string]channel.Message) (inbox.Task, error) {
+func taskFor(tx *inbox.Tx, t screen.Task, byID map[string]channel.Message) (inbox.Task, error) {
 	if t.Thread != "" {
-		task, _, err := a.inbox.Task(t.Thread)
+		task, _, err := tx.Task(t.Thread)
 		if err == nil {
 			return task, nil
 		}

@@ -205,14 +205,14 @@ func TestInbox_Tasks(t *testing.T) {
 	old, recent, other := task("task:old", now.Add(-48*time.Hour), "o"), task("task:recent", now.Add(-time.Hour), "r"), task("task:other", now, "x")
 	other.ChatID = "oc_2"
 
-	err := b.Locked(func() error {
+	err := b.Locked(func(tx *Tx) error {
 		for _, tk := range []Task{old, recent} {
-			if err := b.SaveTask(tk, false); err != nil {
+			if err := tx.SaveTask(tk, false); err != nil {
 				return err
 			}
 		}
 
-		return b.SaveTask(other, true)
+		return tx.SaveTask(other, true)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +224,7 @@ func TestInbox_Tasks(t *testing.T) {
 	}
 
 	// Reopening moves it to pending.
-	if err := b.Locked(func() error { return b.SaveTask(recent, true) }); err != nil {
+	if err := b.Locked(func(tx *Tx) error { return tx.SaveTask(recent, true) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,7 +248,7 @@ func TestInbox_LockedSerializes(t *testing.T) {
 	t.Parallel()
 
 	b := New(t.TempDir())
-	if err := b.Locked(func() error { return b.SaveTask(task("task:1", time.Now(), "a"), true) }); err != nil {
+	if err := b.Locked(func(tx *Tx) error { return tx.SaveTask(task("task:1", time.Now(), "a"), true) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,16 +257,11 @@ func TestInbox_LockedSerializes(t *testing.T) {
 	const n = 20
 	for i := range n {
 		wg.Go(func() {
-			err := b.Locked(func() error {
-				tk, _, err := b.Task("task:1")
-				if err != nil {
-					return err
-				}
-
+			err := b.UpdateTask("task:1", func(tk *Task, _ *bool) (bool, error) {
 				id := "lark:om_" + string(rune('A'+i))
 				tk.Append(id, []Entry{{Kind: EntryUser, Message: id, At: time.Now()}})
 
-				return b.SaveTask(tk, true)
+				return true, nil
 			})
 			if err != nil {
 				t.Error(err)
@@ -279,6 +274,104 @@ func TestInbox_LockedSerializes(t *testing.T) {
 	tk, _, err := b.Task("task:1")
 	if err != nil || len(tk.Entries) != n+1 {
 		t.Errorf("entries = %d, %v; want %d, none lost", len(tk.Entries), err, n+1)
+	}
+}
+
+func TestInbox_UpdateTask(t *testing.T) {
+	t.Parallel()
+
+	b := New(t.TempDir())
+	if err := b.Locked(func(tx *Tx) error { return tx.SaveTask(task("task:1", time.Now(), "a"), true) }); err != nil {
+		t.Fatal(err)
+	}
+
+	// Not saved: nothing changes on disk.
+	err := b.UpdateTask("task:1", func(tk *Task, pending *bool) (bool, error) {
+		tk.Handled, *pending = 1, false
+
+		return false, nil
+	})
+	if tk, pending, _ := b.Task("task:1"); err != nil || !pending || tk.Handled != 0 {
+		t.Errorf("unsaved update = %v; task %+v pending %v, want it as it was", err, tk, pending)
+	}
+
+	// Saved as done: it moves.
+	err = b.UpdateTask("task:1", func(tk *Task, pending *bool) (bool, error) {
+		tk.Handled, *pending = 1, false
+
+		return true, nil
+	})
+	if tk, pending, _ := b.Task("task:1"); err != nil || pending || tk.Handled != 1 {
+		t.Errorf("saved update = %v; task %+v pending %v, want it done", err, tk, pending)
+	}
+
+	if err := b.UpdateTask("task:nope", func(*Task, *bool) (bool, error) { return true, nil }); !errors.Is(err, ErrNoTask) {
+		t.Errorf("UpdateTask missing = %v, want ErrNoTask", err)
+	}
+
+	var kept *Tx
+
+	_ = b.Locked(func(tx *Tx) error { kept = tx; return nil })
+
+	if err := kept.SaveTask(task("task:2", time.Now(), "b"), true); err == nil {
+		t.Error("a Tx saved after its lock was released")
+	}
+}
+
+// One file that does not parse is set aside; the rest still reads.
+func TestInbox_unreadableFileIsSetAside(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	b := New(dir)
+
+	if err := b.Locked(func(tx *Tx) error { return tx.SaveTask(task("task:1", time.Now(), "a"), true) }); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := filepath.Join(dir, tasksDir, taskPending, "task_bad.json")
+	if err := os.WriteFile(bad, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := b.PendingTasks()
+	if err != nil || len(tasks) != 1 || tasks[0].ID != "task:1" {
+		t.Fatalf("PendingTasks = %v, %v; want task:1 despite the bad file", tasks, err)
+	}
+
+	if _, err := os.Stat(bad + badSuffix); err != nil {
+		t.Errorf("bad file not set aside: %v", err)
+	}
+}
+
+// RecentTasks does not read done tasks whose files were last written long
+// before since: they cannot have been updated after it.
+func TestInbox_RecentTasksSkipsOldFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	b := New(dir)
+	now := time.Now()
+
+	// Its file says it was written two days ago, whatever it says inside.
+	stale := task("task:stale", now, "s")
+
+	if err := b.Locked(func(tx *Tx) error { return tx.SaveTask(stale, false) }); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, tasksDir, taskDone, channel.PathSafe(stale.ID)+".json")
+	if err := os.Chtimes(path, now.Add(-48*time.Hour), now.Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := b.RecentTasks("lark", "oc_1", "", now.Add(-24*time.Hour))
+	if err != nil || len(got) != 0 {
+		t.Errorf("RecentTasks = %v, %v; want the stale file skipped", got, err)
+	}
+
+	if got, _ := b.DoneTasks(); len(got) != 1 {
+		t.Errorf("DoneTasks = %v; want every done task", got)
 	}
 }
 
