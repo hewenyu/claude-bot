@@ -281,3 +281,19 @@ func TestInbox_LockedSerializes(t *testing.T) {
 		t.Errorf("entries = %d, %v; want %d, none lost", len(tk.Entries), err, n+1)
 	}
 }
+
+func TestNewTaskID_uniqueWithinAMillisecond(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	seen := map[string]bool{}
+
+	for range 100 {
+		id := NewTaskID(now)
+		if seen[id] || channel.PathSafe(id) != "task_"+id[len(TaskPrefix):] {
+			t.Fatalf("id %q repeats or does not make a file name", id)
+		}
+
+		seen[id] = true
+	}
+}

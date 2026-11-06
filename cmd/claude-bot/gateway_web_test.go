@@ -32,6 +32,7 @@ const (
 type page struct {
 	t *testing.T
 	f *gatewayFixture
+	w *web
 	h http.Handler
 }
 
@@ -45,9 +46,20 @@ func newPage(t *testing.T) *page {
 		t.Fatal(err)
 	}
 
-	w := &web{g: f.g, token: testPageToken, hosts: hosts, log: slog.New(slog.DiscardHandler), checkGitHub: fakeGitHubCheck}
+	w := newWeb(f.g.store, nil, testPageToken, hosts, slog.New(slog.DiscardHandler))
+	w.checkGitHub = fakeGitHubCheck
+	w.checkJev = fakeJevCheck
 
-	return &page{t: t, f: f, h: w.routes()}
+	return &page{t: t, f: f, w: w, h: w.routes()}
+}
+
+// fakeJevCheck accepts TypeSafe keys starting with "good".
+func fakeJevCheck(_ context.Context, key string) error {
+	if !strings.HasPrefix(key, "good") {
+		return errors.New("401 invalid key")
+	}
+
+	return nil
 }
 
 // fakeGitHubCheck accepts tokens starting with "good" for any repository.
@@ -151,6 +163,44 @@ func TestLoopbackHosts(t *testing.T) {
 		if _, err := loopbackHosts(addr); err == nil {
 			t.Errorf("%s: accepted", addr)
 		}
+	}
+
+	// Any loopback address is reached by its own name too.
+	if hosts, _ := loopbackHosts("127.0.0.2:7600"); !slices.Contains(hosts, "127.0.0.2:7600") {
+		t.Errorf("hosts of 127.0.0.2:7600 = %v, want it among them", hosts)
+	}
+}
+
+// A setting that is turned away leaves the others as they were, rather
+// than saving half of the form.
+func TestWeb_putSettingsChecksAllFirst(t *testing.T) {
+	t.Parallel()
+
+	p := newPage(t)
+
+	// The default token is checked against the repository of a project
+	// that uses it.
+	if _, err := p.f.store.SaveProject(t.Context(), t.TempDir(), []store.Channel{
+		{Name: "github", AppKey: "github:o/a", Config: json.RawMessage(`{"repo":"o/a"}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body := p.call(http.MethodPut, "/api/settings", map[string]string{"typesafe_key": "good-key", "github_token": "bad-token"})
+	if code != http.StatusBadRequest || !strings.Contains(string(body), "GitHub token not accepted") {
+		t.Fatalf("PUT settings = %d %s, want 400 for the GitHub token", code, body)
+	}
+
+	if v, _ := p.f.store.Setting(t.Context(), store.SettingTypeSafeKey); v == "good-key" {
+		t.Error("the TypeSafe key was saved though the form was turned away")
+	}
+
+	if code, body := p.call(http.MethodPut, "/api/settings", map[string]string{"typesafe_key": "good-key"}); code != http.StatusOK {
+		t.Fatalf("PUT settings = %d %s, want 200", code, body)
+	}
+
+	if v, _ := p.f.store.Setting(t.Context(), store.SettingTypeSafeKey); v != "good-key" {
+		t.Errorf("TypeSafe key = %q, want it saved", v)
 	}
 }
 
@@ -411,7 +461,7 @@ func TestWeb_taskList(t *testing.T) {
 	byID := map[string]taskSummary{}
 
 	for _, s := range list {
-		order = append(order, s.ID+"="+s.State)
+		order = append(order, s.ID+"="+string(s.State))
 		byID[s.ID] = s
 	}
 
@@ -439,7 +489,7 @@ func TestListTasks_keepsEveryOpenTask(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	task := func(id, state string, minutes int) taskSummary {
+	task := func(id string, state taskState, minutes int) taskSummary {
 		return taskSummary{ID: id, State: state, UpdatedAt: at.Add(time.Duration(minutes) * time.Minute)}
 	}
 

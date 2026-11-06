@@ -2,7 +2,6 @@ package inbox
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,16 +27,19 @@ const (
 // TaskPrefix starts every task id, which tells it from a message id.
 const TaskPrefix = "task:"
 
+// EntryKind is who an entry of a task's conversation is from.
+type EntryKind string
+
 // Entry kinds.
 const (
-	EntryUser = "user"
-	EntryBot  = "bot"
+	EntryUser EntryKind = "user"
+	EntryBot  EntryKind = "bot"
 )
 
 // Entry is one turn of a task's conversation: a piece of what a user said
 // or sent, or one reply of the bot.
 type Entry struct {
-	Kind    string        `json:"kind"`               // EntryUser or EntryBot
+	Kind    EntryKind     `json:"kind"`               // EntryUser or EntryBot
 	Message string        `json:"message,omitempty"`  // user entries: the message this is part of
 	Sender  *channel.User `json:"sender,omitempty"`   // user entries
 	ReplyTo string        `json:"reply_to,omitempty"` // user entries: what the message replies to
@@ -66,9 +68,11 @@ type Task struct {
 
 var taskSeq atomic.Int64
 
-// NewTaskID returns an id no other task has.
+// NewTaskID returns an id no other task has: the time keeps ids apart
+// across restarts, the sequence, which does not wrap, within one
+// millisecond.
 func NewTaskID(now time.Time) string {
-	return TaskPrefix + strconv.FormatInt(now.UnixMilli(), 36) + strconv.FormatInt(taskSeq.Add(1)%36, 36)
+	return TaskPrefix + strconv.FormatInt(now.UnixMilli(), 36) + strconv.FormatInt(taskSeq.Add(1), 36)
 }
 
 // Append adds user entries for one message, replacing any it already had
@@ -182,16 +186,11 @@ func (b *Inbox) SaveTask(t Task, pending bool) error {
 		state, other = taskPending, taskDone
 	}
 
-	raw, err := json.MarshalIndent(t, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal task: %w", err)
-	}
-
 	if err := os.MkdirAll(filepath.Join(b.dir, tasksDir, state), dirPerm); err != nil {
 		return fmt.Errorf("create inbox: %w", err)
 	}
 
-	if err := atomicfile.Write(b.taskPath(state, t.ID), append(raw, '\n'), messagePerm); err != nil {
+	if err := atomicfile.WriteJSON(b.taskPath(state, t.ID), t, messagePerm); err != nil {
 		return fmt.Errorf("store task: %w", err)
 	}
 
@@ -210,7 +209,7 @@ func (b *Inbox) Task(id string) (Task, bool, error) {
 			state = taskPending
 		}
 
-		t, err := readTask(b.taskPath(state, id))
+		t, err := readJSON[Task](b.taskPath(state, id), "task")
 		if err == nil {
 			return t, pending, nil
 		}
@@ -293,50 +292,5 @@ func (b *Inbox) WaitTasks(ctx context.Context, every time.Duration) ([]Task, err
 }
 
 func (b *Inbox) tasks(state string) ([]Task, error) {
-	dir := filepath.Join(b.dir, tasksDir, state)
-
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("read tasks: %w", err)
-	}
-
-	var tasks []Task
-
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-
-		t, err := readTask(filepath.Join(dir, e.Name()))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // moved since ReadDir
-		}
-
-		if err != nil {
-			return nil, err
-		}
-
-		tasks = append(tasks, t)
-	}
-
-	return tasks, nil
-}
-
-func readTask(path string) (Task, error) {
-	var t Task
-
-	raw, err := os.ReadFile(path) //nolint:gosec // path is built from a sanitized id inside the inbox
-	if err != nil {
-		return t, fmt.Errorf("read task: %w", err)
-	}
-
-	if err := json.Unmarshal(raw, &t); err != nil {
-		return t, fmt.Errorf("parse %s: %w", filepath.Base(path), err)
-	}
-
-	return t, nil
+	return readAll[Task](filepath.Join(b.dir, tasksDir, state), "task")
 }

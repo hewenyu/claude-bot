@@ -51,6 +51,11 @@ var sessionVars = map[string]bool{
 	"CLAUDE_CODE_PARENT_SESSION_ID": true,
 }
 
+// messagingVarPrefix starts the variables a Claude Code session sets for
+// its messaging, which a nested session must not inherit either. It
+// mirrors Claude Code's own names.
+const messagingVarPrefix = "CLAUDE_CODE_MESSAGING_"
+
 // Environment the manager gives every agent.
 const (
 	// EnvPrefix starts the variables the manager and its owner give an
@@ -107,15 +112,15 @@ type SpawnOptions struct {
 // Manager owns the agents.
 type Manager struct {
 	cfg      Config
-	onChange func(Info)
+	onChange func()
 
 	mu     sync.Mutex
 	agents map[string]*Agent
 }
 
-// NewManager returns a manager that reports every change of an agent to
-// onChange.
-func NewManager(cfg Config, onChange func(Info)) *Manager {
+// NewManager returns a manager that calls onChange after any change of an
+// agent it still has.
+func NewManager(cfg Config, onChange func()) *Manager {
 	if cfg.Program == "" {
 		cfg.Program = DefaultProgram
 	}
@@ -127,8 +132,8 @@ func NewManager(cfg Config, onChange func(Info)) *Manager {
 	return &Manager{cfg: cfg, onChange: onChange, agents: map[string]*Agent{}}
 }
 
-// Restore brings back agents saved by an earlier run of the owner. Their programs
-// ended with it, so live ones come back lost, ready to resume.
+// Restore brings back agents saved by an earlier run of the owner, to show.
+// Their programs ended with it, so live ones come back lost.
 func (m *Manager) Restore(infos []Info) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -176,7 +181,7 @@ func (m *Manager) Spawn(o SpawnOptions) (Info, error) {
 
 	a := newAgent(info, m.cfg.RingSize, m.changed)
 
-	cmd, err := m.command(info, false, o.Prompt)
+	cmd, err := m.command(info, o.Prompt)
 	if err != nil {
 		return Info{}, err
 	}
@@ -198,36 +203,9 @@ func (m *Manager) Spawn(o SpawnOptions) (Info, error) {
 	return a.Info(), nil
 }
 
-// Resume starts an ended agent again in its session, with all its earlier
-// conversation, and submits prompt if there is one.
-func (m *Manager) Resume(id, prompt string) (Info, error) {
-	a, err := m.Get(id)
-	if err != nil {
-		return Info{}, err
-	}
-
-	info := a.Info()
-	if info.Status.Live() {
-		return Info{}, ErrLive
-	}
-
-	cmd, err := m.command(info, true, prompt)
-	if err != nil {
-		return Info{}, err
-	}
-
-	a.note("resumed session " + info.SessionID)
-
-	if err := a.start(cmd); err != nil {
-		return Info{}, err
-	}
-
-	return a.Info(), nil
-}
-
 // command is how to run an agent: the program, its hooks reporting to the
 // gateway, and the session it keeps.
-func (m *Manager) command(info Info, resume bool, prompt string) (*exec.Cmd, error) {
+func (m *Manager) command(info Info, prompt string) (*exec.Cmd, error) {
 	path, err := exec.LookPath(m.cfg.Program)
 	if err != nil {
 		return nil, fmt.Errorf("agent program %q: %w", m.cfg.Program, err)
@@ -239,13 +217,7 @@ func (m *Manager) command(info Info, resume bool, prompt string) (*exec.Cmd, err
 	}
 
 	args := slices.Clone(m.cfg.Args)
-	args = append(args, "--settings", settings)
-
-	if resume {
-		args = append(args, "--resume", info.SessionID)
-	} else {
-		args = append(args, "--session-id", info.SessionID)
-	}
+	args = append(args, "--settings", settings, "--session-id", info.SessionID)
 
 	if prompt != "" {
 		if strings.HasPrefix(prompt, "-") {
@@ -312,7 +284,7 @@ func (m *Manager) env(info Info) []string {
 		k, v, _ := strings.Cut(kv, "=")
 
 		switch {
-		case sessionVars[k] || strings.HasPrefix(k, "CLAUDE_CODE_MESSAGING_") || strings.HasPrefix(k, EnvPrefix):
+		case sessionVars[k] || strings.HasPrefix(k, messagingVarPrefix) || strings.HasPrefix(k, EnvPrefix):
 			// Not a nested session; the gateway's own settings come below.
 			continue
 		case k == "PATH" && extra["PATH"] != "":
@@ -334,9 +306,8 @@ func (m *Manager) env(info Info) []string {
 }
 
 func (m *Manager) changed(id string) {
-	a, err := m.Get(id)
-	if err == nil && m.onChange != nil {
-		m.onChange(a.Info())
+	if _, err := m.Get(id); err == nil && m.onChange != nil {
+		m.onChange()
 	}
 }
 
@@ -451,16 +422,6 @@ func (m *Manager) AgentInfo(id string) (Info, error) {
 	}
 
 	return a.Info(), nil
-}
-
-// SendText submits text to an idle agent.
-func (m *Manager) SendText(id, text string) error {
-	a, err := m.Get(id)
-	if err != nil {
-		return err
-	}
-
-	return a.Send(text, false)
 }
 
 // WaitAgent waits up to timeout for an agent's program to end.

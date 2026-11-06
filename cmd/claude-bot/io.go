@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -31,9 +32,26 @@ func textArg(args []string) (string, error) {
 	return text, nil
 }
 
-func printJSON(v any) error {
+// parseFlags parses args into fs; a bad flag is a usage error.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%w: %w", errUsage, err)
+	}
+
+	return nil
+}
+
+// stdoutJSON is an encoder of JSON for people and Claude to read: no HTML
+// escapes in messages.
+func stdoutJSON() *json.Encoder {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
+
+	return enc
+}
+
+func printJSON(v any) error {
+	enc := stdoutJSON()
 	enc.SetIndent("", "  ")
 
 	if err := enc.Encode(v); err != nil {
@@ -43,13 +61,21 @@ func printJSON(v any) error {
 	return nil
 }
 
-func writeJSON(path string, v any) error {
-	raw, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+// writeLines prints values as JSON lines.
+func writeLines[T any](values []T) error {
+	enc := stdoutJSON()
+
+	for _, v := range values {
+		if err := enc.Encode(v); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
 	}
 
-	return atomicfile.Write(path, append(raw, '\n'), privatePerm)
+	return nil
+}
+
+func writeJSON(path string, v any) error {
+	return atomicfile.WriteJSON(path, v, privatePerm)
 }
 
 // tailFile returns the last n lines of a file, for error reports.

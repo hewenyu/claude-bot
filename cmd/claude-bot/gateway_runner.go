@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/agent"
+	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/runner"
 	"github.com/hewenyu/claude-bot/internal/store"
@@ -89,6 +90,7 @@ type bots struct {
 
 	saveMu   sync.Mutex
 	saveSoon *time.Timer
+	final    bool // under saveMu: shutdown saved the state for the last time
 	stopping atomic.Bool
 }
 
@@ -139,7 +141,7 @@ func startBots(ctx context.Context, home, url string, log *slog.Logger, program 
 			// /bot runs claude-bot: this one, whatever the PATH says.
 			"PATH": filepath.Dir(self),
 		},
-	}, func(agent.Info) {
+	}, func() {
 		b.changed()
 
 		if b.runner != nil {
@@ -197,7 +199,7 @@ func latestAgents(saved runnerState) []agent.Info {
 // were, to come back lost: a new agent does the round they were doing.
 func (b *bots) shutdown() {
 	b.stopping.Store(true)
-	b.save()
+	b.save(true)
 	b.agents.KillAll()
 }
 
@@ -224,20 +226,27 @@ func (b *bots) changed() {
 			b.saveSoon = nil
 			b.saveMu.Unlock()
 
-			if !b.stopping.Load() {
-				b.save()
-			}
+			b.save(false)
 		})
 	}
 }
 
-func (b *bots) save() {
+// save writes the runner's state; final is shutdown's save, after which
+// nothing is saved: a save scheduled before it would record the agents
+// ending with the gateway as ended.
+func (b *bots) save(final bool) {
 	if b.runner == nil {
 		return // restoring the agents, before the runner is made
 	}
 
 	b.saveMu.Lock()
 	defer b.saveMu.Unlock()
+
+	if b.final {
+		return
+	}
+
+	b.final = final
 
 	st := runnerState{Runs: b.runner.Saved().Runs, Agents: b.agents.List()}
 	if err := writeJSON(b.path, st); err != nil {
@@ -273,11 +282,6 @@ func (b *bots) sync(ctx context.Context, s *store.Store) error {
 	return b.runner.SetMaxParallel(n)
 }
 
-// runnerKey is the setting that turns a project's runner on.
-func runnerKey(project int64) string {
-	return store.SettingRunnerPrefix + strconv.FormatInt(project, 10)
-}
-
 // runnerMaxParallel is how many agents may run at once.
 func runnerMaxParallel(ctx context.Context, s *store.Store) (int, error) {
 	v, err := s.Setting(ctx, store.SettingRunnerMaxParallel)
@@ -286,18 +290,23 @@ func runnerMaxParallel(ctx context.Context, s *store.Store) (int, error) {
 	}
 
 	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 || n > runner.MaxParallelLimit {
+	if err != nil || !validMaxParallel(n) {
 		return runner.DefaultMaxParallel, nil //nolint:nilerr // a bad value is the default, as the page shows it
 	}
 
 	return n, nil
 }
 
+// validMaxParallel reports whether the runner takes n agents at once.
+func validMaxParallel(n int) bool {
+	return n >= 1 && n <= runner.MaxParallelLimit
+}
+
 // pendingIn reads what waits in a project's inbox. A task's length counts
 // what people wrote, not the bot's own replies: a reply is no news, but
 // when the latest was is how the runner tells a task answered.
 func pendingIn(dir string) ([]runner.Pending, error) {
-	tasks, err := projectInbox(store.Project{Dir: dir}).PendingTasks()
+	tasks, err := inbox.New(filepath.Join(dir, config.DirName, inboxDir)).PendingTasks()
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +418,7 @@ func agentPost(ctx context.Context, url, token, id string, body []byte, out any)
 		return err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(headerAuthorization, bearerPrefix+token)
 	req.Header.Set(headerAgent, id)
 	req.Header.Set("Content-Type", "application/json")
 

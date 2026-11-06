@@ -122,16 +122,11 @@ func (b *Inbox) Migrate() (int, error) {
 
 // move writes m into state and removes it from incoming.
 func (b *Inbox) move(m channel.Message, state string) error {
-	raw, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
-	}
-
 	if err := os.MkdirAll(filepath.Join(b.dir, state), dirPerm); err != nil {
 		return fmt.Errorf("create inbox: %w", err)
 	}
 
-	if err := atomicfile.Write(b.path(state, m.ID), append(raw, '\n'), messagePerm); err != nil {
+	if err := atomicfile.WriteJSON(b.path(state, m.ID), m, messagePerm); err != nil {
 		return fmt.Errorf("store message: %w", err)
 	}
 
@@ -151,32 +146,9 @@ func (b *Inbox) Incoming() ([]channel.Message, error) {
 }
 
 func (b *Inbox) list(state string) ([]channel.Message, error) {
-	entries, err := os.ReadDir(filepath.Join(b.dir, state))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-
+	msgs, err := readAll[channel.Message](filepath.Join(b.dir, state), "message")
 	if err != nil {
-		return nil, fmt.Errorf("read inbox: %w", err)
-	}
-
-	msgs := make([]channel.Message, 0, len(entries))
-
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-
-		m, err := read(filepath.Join(b.dir, state, e.Name()))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // moved by another process since ReadDir
-		}
-
-		if err != nil {
-			return nil, err
-		}
-
-		msgs = append(msgs, m)
+		return nil, err
 	}
 
 	slices.SortFunc(msgs, func(a, c channel.Message) int { return a.CreatedAt.Compare(c.CreatedAt) })
@@ -187,7 +159,7 @@ func (b *Inbox) list(state string) ([]channel.Message, error) {
 // Find returns a message by id from pending or done.
 func (b *Inbox) Find(id string) (channel.Message, error) {
 	for _, state := range []string{statePending, stateDone} {
-		m, err := read(b.path(state, id))
+		m, err := readJSON[channel.Message](b.path(state, id), "message")
 		if err == nil {
 			return m, nil
 		}
@@ -200,17 +172,52 @@ func (b *Inbox) Find(id string) (channel.Message, error) {
 	return channel.Message{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 }
 
-func read(path string) (channel.Message, error) {
-	var m channel.Message
+// readAll reads every JSON file in dir, a message or a task (what). A dir
+// not made yet holds none.
+func readAll[T any](dir, what string) ([]T, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("read %ss: %w", what, err)
+	}
+
+	out := make([]T, 0, len(entries))
+
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+
+		v, err := readJSON[T](filepath.Join(dir, e.Name()), what)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // moved by another process since ReadDir
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, v)
+	}
+
+	return out, nil
+}
+
+// readJSON reads one JSON file, a message or a task (what).
+func readJSON[T any](path, what string) (T, error) {
+	var v T
 
 	raw, err := os.ReadFile(path) //nolint:gosec // path is built from a sanitized id inside the inbox
 	if err != nil {
-		return m, fmt.Errorf("read message: %w", err)
+		return v, fmt.Errorf("read %s: %w", what, err)
 	}
 
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return m, fmt.Errorf("parse %s: %w", filepath.Base(path), err)
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return v, fmt.Errorf("parse %s: %w", filepath.Base(path), err)
 	}
 
-	return m, nil
+	return v, nil
 }

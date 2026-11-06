@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,7 +36,7 @@ type githubProject struct {
 
 // githubProjects returns the projects with a GitHub channel.
 func (w *web) githubProjects(ctx context.Context) ([]githubProject, error) {
-	projects, err := w.g.store.Projects(ctx)
+	projects, err := w.store.Projects(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +44,7 @@ func (w *web) githubProjects(ctx context.Context) ([]githubProject, error) {
 	out := []githubProject{}
 
 	for _, p := range projects {
-		chans, err := w.g.store.Channels(ctx, p.ID)
+		chans, err := w.store.Channels(ctx, p.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -70,12 +69,12 @@ func (w *web) githubProjects(ctx context.Context) ([]githubProject, error) {
 // githubTokens returns the default token and the named ones, and the
 // projects with a GitHub channel.
 func (w *web) githubTokens(ctx context.Context) ([]githubTokenView, []githubProject, error) {
-	def, err := w.g.store.Setting(ctx, store.SettingGitHubToken)
+	def, err := w.store.Setting(ctx, store.SettingGitHubToken)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	named, err := config.GitHubTokens(ctx, w.g.store)
+	named, err := config.GitHubTokens(ctx, w.store)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -85,12 +84,7 @@ func (w *web) githubTokens(ctx context.Context) ([]githubTokenView, []githubProj
 		return nil, nil, err
 	}
 
-	names := make([]string, 0, len(named))
-	for name := range named {
-		names = append(names, name)
-	}
-
-	slices.Sort(names)
+	names := sortedKeys(named)
 
 	// A project naming a token the gateway lost still shows, under it.
 	for _, p := range projects {
@@ -155,53 +149,49 @@ type githubTokenInput struct {
 	Projects []int64 `json:"projects"`
 }
 
-func (w *web) putGitHubToken(rw http.ResponseWriter, r *http.Request) {
+func (w *web) putGitHubToken(r *http.Request) (any, error) {
 	name := r.PathValue("name")
 	if err := config.CheckTokenName(name); err != nil {
-		w.fail(rw, fmt.Errorf("%w: %w", errBadRequest, err))
-
-		return
+		return nil, badRequest(err)
 	}
 
 	var in githubTokenInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		w.fail(rw, fmt.Errorf("%w: %w", errBadRequest, err))
-
-		return
+	if err := decodeBody(r, &in); err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), webTimeout)
 	defer cancel()
 
-	token, err := w.githubTokenToSave(ctx, name, strings.TrimSpace(in.Token), in.Projects)
+	projects, err := w.githubProjects(ctx)
 	if err != nil {
-		w.fail(rw, err)
-
-		return
+		return nil, err
 	}
 
-	if err := w.g.store.SetSetting(ctx, store.SettingGitHubTokenPrefix+name, token); err != nil {
-		w.fail(rw, err)
-
-		return
+	token, err := w.githubTokenToSave(ctx, projects, name, strings.TrimSpace(in.Token), in.Projects)
+	if err != nil {
+		return nil, err
 	}
 
-	if err := w.assignGitHubToken(ctx, name, in.Projects); err != nil {
-		w.fail(rw, err)
-
-		return
+	if err := w.store.SetSetting(ctx, store.SettingGitHubTokenPrefix+name, token); err != nil {
+		return nil, err
 	}
 
-	w.settings(rw, r)
+	if err := w.assignGitHubToken(ctx, projects, name, in.Projects); err != nil {
+		return nil, err
+	}
+
+	return w.settingsNow(ctx)
 }
 
 // githubTokenToSave returns the token to save under name, after checking it
-// against the repository of every project it is to serve.
-func (w *web) githubTokenToSave(ctx context.Context, name, token string, serve []int64) (string, error) {
+// against the repository of every project, of those with a GitHub channel,
+// it is to serve.
+func (w *web) githubTokenToSave(ctx context.Context, projects []githubProject, name, token string, serve []int64) (string, error) {
 	if token == "" {
-		stored, err := config.GitHubToken(ctx, w.g.store, name)
+		stored, err := config.GitHubToken(ctx, w.store, name)
 		if errors.Is(err, config.ErrNoGitHubToken) {
-			return "", fmt.Errorf("%w: a new GitHub token needs its value", errBadRequest)
+			return "", badRequestf("a new GitHub token needs its value")
 		}
 
 		if err != nil {
@@ -211,20 +201,15 @@ func (w *web) githubTokenToSave(ctx context.Context, name, token string, serve [
 		token = stored
 	}
 
-	projects, err := w.githubProjects(ctx)
-	if err != nil {
-		return "", err
-	}
-
 	for _, id := range serve {
 		i := slices.IndexFunc(projects, func(p githubProject) bool { return p.ID == id })
 		if i < 0 {
-			return "", fmt.Errorf("%w: project %d has no GitHub channel", errBadRequest, id)
+			return "", badRequestf("project %d has no GitHub channel", id)
 		}
 
 		p := projects[i]
 		if err := w.checkGitHub(ctx, token, github.Config{Repo: p.Repo, Proxy: p.proxy}); err != nil {
-			return "", fmt.Errorf("%w: GitHub token not accepted for %s (%s): %w", errBadRequest, p.Name, p.Repo, err)
+			return "", badRequestf("GitHub token not accepted for %s (%s): %w", p.Name, p.Repo, err)
 		}
 	}
 
@@ -232,13 +217,9 @@ func (w *web) githubTokenToSave(ctx context.Context, name, token string, serve [
 }
 
 // assignGitHubToken has the projects in serve use the token called name,
-// and those that used it and are not in serve the default token.
-func (w *web) assignGitHubToken(ctx context.Context, name string, serve []int64) error {
-	projects, err := w.githubProjects(ctx)
-	if err != nil {
-		return err
-	}
-
+// and those of projects that used it and are not in serve the default
+// token.
+func (w *web) assignGitHubToken(ctx context.Context, projects []githubProject, name string, serve []int64) error {
 	for _, p := range projects {
 		want := p.TokenName
 
@@ -264,7 +245,7 @@ func (w *web) assignGitHubToken(ctx context.Context, name string, serve []int64)
 // setGitHubTokenName has a project's GitHub channel use the token called
 // name.
 func (w *web) setGitHubTokenName(ctx context.Context, project int64, name string) error {
-	chans, err := w.g.store.Channels(ctx, project)
+	chans, err := w.store.Channels(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -286,18 +267,16 @@ func (w *web) setGitHubTokenName(ctx context.Context, project int64, name string
 		return err
 	}
 
-	return w.g.store.PutChannel(ctx, project, rows[0])
+	return w.store.PutChannel(ctx, project, rows[0])
 }
 
 // deleteGitHubToken removes a named token no project uses.
-func (w *web) deleteGitHubToken(rw http.ResponseWriter, r *http.Request) {
+func (w *web) deleteGitHubToken(r *http.Request) (any, error) {
 	name := r.PathValue("name")
 
 	projects, err := w.githubProjects(r.Context())
 	if err != nil {
-		w.fail(rw, err)
-
-		return
+		return nil, err
 	}
 
 	var users []string
@@ -309,68 +288,12 @@ func (w *web) deleteGitHubToken(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(users) > 0 {
-		apiError(rw, http.StatusConflict, fmt.Sprintf("GitHub token %q still serves %s: give them another token first", name, strings.Join(users, ", ")))
-
-		return
+		return nil, conflict(fmt.Errorf("GitHub token %q still serves %s: give them another token first", name, strings.Join(users, ", ")))
 	}
 
-	if err := w.g.store.SetSetting(r.Context(), store.SettingGitHubTokenPrefix+name, ""); err != nil {
-		w.fail(rw, err)
-
-		return
+	if err := w.store.SetSetting(r.Context(), store.SettingGitHubTokenPrefix+name, ""); err != nil {
+		return nil, err
 	}
 
-	w.settings(rw, r)
-}
-
-// channelTypes are the channels a project can add, with the choices it has:
-// the GitHub tokens, the repository of its GitHub remote. A repository not
-// on GitHub has nothing there to watch.
-func (w *web) channelTypes(rw http.ResponseWriter, r *http.Request) {
-	p, err := w.project(r)
-	if err != nil {
-		w.fail(rw, err)
-
-		return
-	}
-
-	named, err := config.GitHubTokens(r.Context(), w.g.store)
-	if err != nil {
-		w.fail(rw, err)
-
-		return
-	}
-
-	names := make([]string, 0, len(named))
-	for name := range named {
-		names = append(names, name)
-	}
-
-	slices.Sort(names)
-
-	remote := githubRemote(r.Context(), p.Dir)
-	out := make([]channelType, len(channelTypes))
-
-	for i, t := range channelTypes {
-		t.Fields = slices.Clone(t.Fields)
-
-		if t.Name == github.Name {
-			for j, f := range t.Fields {
-				switch f.Key {
-				case "repo":
-					t.Fields[j].Default = remote
-				case "token_name":
-					t.Fields[j].Options = names
-				}
-			}
-
-			if remote == "" {
-				t.Unavailable = "仓库没有 GitHub 上的 remote"
-			}
-		}
-
-		out[i] = t
-	}
-
-	writeAPI(rw, http.StatusOK, out)
+	return w.settingsNow(r.Context())
 }
