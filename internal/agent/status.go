@@ -9,13 +9,15 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/hewenyu/claude-bot/internal/term"
 )
 
 // Status is what an agent is doing.
 type Status string
 
-// Statuses. Lost is an agent whose process ended with the gateway; it can be
-// resumed from its session.
+// Statuses. Lost is an agent whose process ended with the gateway, as an
+// earlier run of it saved the agent.
 const (
 	Starting Status = "starting"
 	Working  Status = "working"
@@ -56,13 +58,32 @@ const (
 	detailDeclined   = "已拒绝"
 )
 
+// End is how a turn ended.
+type End string
+
 // How a turn ended, kept in Info.Ended. Only a Stop hook means the agent
 // finished its turn itself; the others are a person stopping it.
 const (
-	EndStop      = "stop"
-	EndInterrupt = "interrupt"
-	EndDeclined  = "declined"
+	EndStop      End = "stop"
+	EndInterrupt End = "interrupt"
+	EndDeclined  End = "declined"
 )
+
+// Phrases of Claude Code's screen, as squash leaves them: they mirror what
+// it draws, and change when it does.
+const (
+	// screenCancel and screenAsk are on its dialogs: "Esc to cancel", "Do
+	// you want to …".
+	screenCancel = "esctocancel"
+	screenAsk    = "doyouwantto"
+	// screenTrust is on the dialog that asks, before a session in a new
+	// folder, whether to trust it.
+	screenTrust = "trustthisfolder"
+)
+
+// tailMax is how much squashed output is kept to match a phrase split
+// between reads: more than the longest phrase.
+const tailMax = 256
 
 // glyphIdle is the glyph Claude Code puts before its title when idle.
 const glyphIdle = '✳'
@@ -92,20 +113,7 @@ type Hook struct {
 // are the truth; the title and the screen only cover what hooks never say:
 // a turn interrupted with Esc, or a permission prompt answered "no".
 type state struct {
-	Status Status
-	Detail string
-	Title  string
-	Turns  int
-	// Ended is how the latest turn ended: EndStop, EndInterrupt or
-	// EndDeclined.
-	Ended       string
-	LastMessage string
-	SessionID   string
-	Transcript  string
-	// Subagents is how many subagents the agent started that have not
-	// ended: a turn that ends while one runs in the background goes on
-	// when it reports.
-	Subagents int
+	Activity
 
 	hooked   bool
 	lastHook time.Time
@@ -209,7 +217,8 @@ func (s *state) toolDone(h Hook) {
 	}
 }
 
-// title applies a window title the program set.
+// title applies a window title the program set. Only a live agent's
+// status follows it: one that ended stays ended.
 func (s *state) title(t string, now time.Time) bool {
 	before := s.shown()
 
@@ -217,6 +226,8 @@ func (s *state) title(t string, now time.Time) bool {
 	s.Title = rest
 
 	switch {
+	case !s.Status.Live():
+		// E.g. something it left draws on.
 	case isSpinner(glyph):
 		s.spinning = true
 		s.stillAt = time.Time{}
@@ -262,9 +273,9 @@ func (s *state) output(p []byte) {
 	}
 
 	text := s.tail + squash(p)
-	s.tail = text[max(0, len(text)-256):]
+	s.tail = text[max(0, len(text)-tailMax):]
 
-	if !strings.Contains(text, "esctocancel") && !strings.Contains(text, "doyouwantto") {
+	if !strings.Contains(text, screenCancel) && !strings.Contains(text, screenAsk) {
 		return
 	}
 
@@ -275,7 +286,7 @@ func (s *state) output(p []byte) {
 	}
 
 	s.Status, s.Detail = Blocked, detailStartup
-	if strings.Contains(text, "trustthisfolder") {
+	if strings.Contains(text, screenTrust) {
 		s.Detail = detailTrust
 	}
 }
@@ -323,10 +334,11 @@ func (s *state) settle(now time.Time) bool {
 }
 
 type shown struct {
-	status               Status
-	detail, title, ended string
-	turns, subagents     int
-	session              string
+	status           Status
+	detail, title    string
+	ended            End
+	turns, subagents int
+	session          string
 }
 
 func (s *state) shown() shown {
@@ -361,7 +373,7 @@ func toolSummary(h Hook) string {
 
 	for _, k := range []string{"command", "file_path", "pattern", "url", "description", "prompt"} {
 		if v, ok := in[k].(string); ok && v != "" {
-			return h.ToolName + ": " + clip(firstLine(v), toolLineMax)
+			return h.ToolName + ": " + term.Clip(firstLine(v), toolLineMax)
 		}
 	}
 
@@ -372,12 +384,4 @@ func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 
 	return line
-}
-
-func clip(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n]) + "…"
-	}
-
-	return s
 }

@@ -44,12 +44,7 @@ func printJSON(v any) error {
 }
 
 func writeJSON(path string, v any) error {
-	raw, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-
-	return atomicfile.Write(path, append(raw, '\n'), privatePerm)
+	return atomicfile.WriteJSON(path, v, privatePerm)
 }
 
 // tailFile returns the last n lines of a file, for error reports.

@@ -129,6 +129,10 @@ func GitHubTokens(ctx context.Context, s *store.Store) (map[string]string, error
 
 var tokenName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$`)
 
+// notInTokenName is what a token name made from a project's directory
+// leaves out.
+var notInTokenName = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
+
 // CheckTokenName reports whether name can name a GitHub token: letters,
 // digits, '_', '.' and '-', at most 40.
 func CheckTokenName(name string) error {
@@ -418,7 +422,7 @@ func importGitHubToken(ctx context.Context, s *store.Store, project, token strin
 		}
 	}
 
-	base := strings.Trim(regexp.MustCompile(`[^A-Za-z0-9_.-]+`).ReplaceAllString(project, "-"), "-.")
+	base := strings.Trim(notInTokenName.ReplaceAllString(project, "-"), "-.")
 	if base == "" || CheckTokenName(base) != nil {
 		base = "project"
 	}

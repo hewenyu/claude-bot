@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,9 +34,9 @@ func TestAgentInATerminal(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "parent")
 	t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
 
-	changes := make(chan Info, 100)
+	changes := make(chan struct{}, 100)
 	m := NewManager(Config{Program: prog, HookCommand: "claude-bot hook", Allow: []string{"Bash(claude-bot reply:*)"}, Env: map[string]string{"PATH": "/opt/claude-bot", "CLAUDE_BOT_AGENT_URL": "x"}},
-		func(i Info) { changes <- i })
+		func() { changes <- struct{}{} })
 
 	info, err := m.Spawn(SpawnOptions{Cwd: dir, Prompt: "-first task"})
 	if err != nil {
@@ -276,32 +277,40 @@ func TestWithPermissionMode(t *testing.T) {
 	}
 }
 
-func TestResumableNeedsTheSavedConversation(t *testing.T) {
+// TestInfoJSON pins what the gateway saves and the page reads: Activity's
+// fields sit flat in the info, where they always were.
+func TestInfoJSON(t *testing.T) {
 	t.Parallel()
 
-	saved := filepath.Join(t.TempDir(), "s1.jsonl")
-	if err := os.WriteFile(saved, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
+	code := 3
+	info := Info{
+		ID: "a1", Name: "n", Cwd: "/c", Project: 7,
+		SessionID: "s", Transcript: "/t", Status: Idle, Detail: "d", Title: "ti", Turns: 2, Ended: EndStop,
+		LastMessage: "lm", Subagents: 1,
+		Procs: []Proc{{PID: 9, Start: 4}}, PID: 5, ExitCode: &code, Cols: 80, Rows: 24,
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
 	}
 
 	tests := []struct {
-		name string
 		info Info
-		want bool
+		want string
 	}{
-		{"saved", Info{SessionID: "s1", Transcript: saved}, true},
-		{"no transcript yet", Info{SessionID: "s1"}, false},
-		{"transcript never written", Info{SessionID: "s1", Transcript: saved + ".gone"}, false},
-		{"no session", Info{Transcript: saved}, false},
+		{info, `{"id":"a1","name":"n","cwd":"/c","project":7,"session_id":"s","transcript":"/t","status":"idle","detail":"d",` +
+			`"title":"ti","turns":2,"ended":"stop","last_message":"lm","subagents":1,"procs":[{"pid":9,"start":4}],"pid":5,` +
+			`"exit_code":3,"cols":80,"rows":24,"created_at":"1970-01-01T00:00:01Z","updated_at":"1970-01-01T00:00:02Z"}`},
+		{Info{}, `{"id":"","name":"","cwd":"","session_id":"","status":"","turns":0,"cols":0,"rows":0,` +
+			`"created_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"}`},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		got, err := json.Marshal(tt.info)
+		if err != nil || string(got) != tt.want {
+			t.Errorf("json %s, %v\nwant %s", got, err, tt.want)
+		}
 
-			if got := tt.info.Resumable(); got != tt.want {
-				t.Fatalf("Resumable = %v, want %v", got, tt.want)
-			}
-		})
+		var back Info
+		if err := json.Unmarshal(got, &back); err != nil || back.Turns != tt.info.Turns || back.Ended != tt.info.Ended {
+			t.Errorf("read back %+v, %v", back, err)
+		}
 	}
 }

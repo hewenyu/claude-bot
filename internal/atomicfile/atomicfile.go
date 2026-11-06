@@ -3,6 +3,7 @@
 package atomicfile
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -31,8 +32,20 @@ func Write(path string, data []byte, perm fs.FileMode) error {
 	return nil
 }
 
+// WriteJSON replaces path with v as indented JSON and a final newline.
+func WriteJSON(path string, v any, perm fs.FileMode) error {
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
+	}
+
+	return Write(path, append(raw, '\n'), perm)
+}
+
 // WriteTemp writes data to a new file in dir, named after pattern as in
-// os.CreateTemp and readable only by the owner, and returns its path.
+// os.CreateTemp and readable only by the owner, and returns its path. The
+// data is on disk before it returns, so a rename after a crash never
+// leaves an empty file.
 func WriteTemp(dir, pattern string, data []byte) (string, error) {
 	f, err := os.CreateTemp(dir, pattern)
 	if err != nil {
@@ -40,6 +53,10 @@ func WriteTemp(dir, pattern string, data []byte) (string, error) {
 	}
 
 	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
