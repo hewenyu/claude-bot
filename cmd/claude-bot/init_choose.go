@@ -6,18 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
 	"golang.org/x/term"
 
-	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
-	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
-	"github.com/hewenyu/claude-bot/internal/channel/lark"
-	"github.com/hewenyu/claude-bot/internal/channel/slack"
-	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 )
 
@@ -28,72 +22,41 @@ const (
 	dingtalkGuide = "https://github.com/hewenyu/claude-bot/blob/master/docs/channels.md#钉钉"
 )
 
-// channelChoice is one entry of the init menu.
-type channelChoice struct {
-	name  string // channel id prefix, also the --channel value
-	label string
-}
-
-// channelChoices are offered in this order; the first is the default.
-var channelChoices = []channelChoice{
-	{name: lark.Name, label: "飞书 / Lark（在浏览器里确认即可创建应用）"},
-	{name: discord.Name, label: "Discord（需要 bot token）"},
-	{name: telegram.Name, label: "Telegram（需要 @BotFather 给的 token）"},
-	{name: slack.Name, label: "Slack（需要 app token 和 bot token）"},
-	{name: github.Name, label: "GitHub（仓库的 issue、PR 和评论，需要 token）"},
-	{name: dingtalk.Name, label: "钉钉 / DingTalk（企业内部应用的机器人，需要 Client ID 和 Client Secret）"},
-}
-
-func knownChannel(name string) bool {
-	return slices.ContainsFunc(channelChoices, func(c channelChoice) bool { return c.name == name })
-}
-
-// channelNames lists the channels in menu order, joined by sep.
-func channelNames(sep string) string {
-	names := make([]string, len(channelChoices))
-	for i, c := range channelChoices {
-		names[i] = c.name
-	}
-
-	return strings.Join(names, sep)
-}
-
 var errNoInput = errors.New("no answer (stdin closed)")
 
 // prompter asks the person running init; secret reads without echo.
 type prompter struct {
 	in     *bufio.Reader
-	out    io.Writer
+	out    printer
 	secret func() (string, error)
 }
 
-// terminalPrompter asks on the terminal; ok is false when stdin is not one
-// (a script, Claude Code's Bash tool), where init must not wait for answers.
-func terminalPrompter() (p *prompter, ok bool) {
+// terminalPrompter asks on the terminal, telling out; nil when stdin is not
+// one (a script, Claude Code's Bash tool), where init must not wait for
+// answers.
+func terminalPrompter(out printer) *prompter {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return nil, false
+		return nil
 	}
 
-	in := bufio.NewReader(os.Stdin)
-
 	return &prompter{
-		in:  in,
-		out: os.Stdout,
+		in:  bufio.NewReader(os.Stdin),
+		out: out,
 		secret: func() (string, error) {
 			b, err := term.ReadPassword(fd)
 
-			fmt.Println() // the Enter was not echoed
+			out.println() // the Enter was not echoed
 
 			return string(b), err
 		},
-	}, true
+	}
 }
 
 // say writes to the person running init; a broken terminal shows up when
 // reading the answer.
 func (p *prompter) say(format string, args ...any) {
-	_, _ = fmt.Fprintf(p.out, format, args...)
+	p.out.printf(format, args...)
 }
 
 func (p *prompter) line() (string, error) {
@@ -116,17 +79,19 @@ func (p *prompter) line() (string, error) {
 func (p *prompter) chooseChannel(cfg config.Config, onGitHub bool) (string, error) {
 	p.say("选择要接入的渠道（之后可以再运行 init --channel <渠道> 接入其他渠道）：\n")
 
-	for i, c := range channelChoices {
+	choices := config.Kinds()
+
+	for i, k := range choices {
 		mark := ""
 
 		switch {
-		case cfg.Has(c.name):
+		case cfg.Has(k.Name):
 			mark = "  [已配置]"
-		case c.name == github.Name && !onGitHub:
+		case k.Name == github.Name && !onGitHub:
 			mark = "  [这个仓库没有 GitHub 上的 remote，不可选]"
 		}
 
-		p.say("  %d) %s%s\n", i+1, c.label, mark)
+		p.say("  %d) %s（%s）%s\n", i+1, k.Label, channelInits[k.Name].hint, mark)
 	}
 
 	for {
@@ -138,20 +103,20 @@ func (p *prompter) chooseChannel(cfg config.Config, onGitHub bool) (string, erro
 		}
 
 		if answer == "" {
-			return channelChoices[0].name, nil
+			return choices[0].Name, nil
 		}
 
-		if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(channelChoices) {
-			if channelChoices[n-1].name == github.Name && !onGitHub {
+		if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(choices) {
+			if choices[n-1].Name == github.Name && !onGitHub {
 				p.say("这个仓库没有 GitHub 上的 remote，没有可监听的 issue 和 PR；请选别的渠道（要监听别的仓库，用 --github-token 加 --github-repo）。\n")
 
 				continue
 			}
 
-			return channelChoices[n-1].name, nil
+			return choices[n-1].Name, nil
 		}
 
-		p.say("请输入 1 到 %d 之间的编号。\n", len(channelChoices))
+		p.say("请输入 1 到 %d 之间的编号。\n", len(choices))
 	}
 }
 
@@ -175,50 +140,51 @@ func (p *prompter) ask(what string) (string, error) {
 // askTokens fills in the tokens the chosen channel needs and the flags did
 // not give. Without a prompter it names the missing flag instead.
 func askTokens(o *initOptions, p *prompter) error {
-	switch o.channel {
-	case discord.Name:
-		return askToken(p, o.channel, "--discord-token", "", "Discord bot token（Developer Portal → Bot → Reset Token）", &o.discordToken)
-	case telegram.Name:
-		return askToken(p, o.channel, "--telegram-token", "", "Telegram bot token（@BotFather → /newbot）", &o.telegramToken)
-	case github.Name:
-		return askGitHubToken(o, p)
-	case slack.Name:
-		if o.slackBotToken != "" {
-			return nil
-		}
-
-		if p == nil {
-			return fmt.Errorf("%w: --channel slack needs --slack-app-token and --slack-bot-token", errUsage)
-		}
-
-		p.say("先按文档里的 manifest 创建 Slack 应用：%s\n", slackGuide)
-
-		var err error
-		if o.slackAppToken, err = p.ask("App-Level Token（xapp-…）"); err == nil {
-			o.slackBotToken, err = p.ask("Bot User OAuth Token（xoxb-…）")
-		}
-
-		return err
-	case dingtalk.Name:
-		if o.dingtalkID != "" {
-			return nil
-		}
-
-		if p == nil {
-			return fmt.Errorf("%w: --channel dingtalk needs --dingtalk-client-id and --dingtalk-client-secret", errUsage)
-		}
-
-		p.say("先按文档创建钉钉应用并开启 Stream 模式的机器人：%s\n", dingtalkGuide)
-
-		var err error
-		if o.dingtalkID, err = p.ask("Client ID（AppKey）"); err == nil {
-			o.dingtalkSecret, err = p.ask("Client Secret（AppSecret）")
-		}
-
-		return err
+	if ask := channelInits[o.channel].ask; ask != nil {
+		return ask(o, p)
 	}
 
 	return nil
+}
+
+// askSlackTokens asks for both tokens of a Slack app.
+func askSlackTokens(o *initOptions, p *prompter) error {
+	if o.slackBotToken != "" {
+		return nil
+	}
+
+	if p == nil {
+		return fmt.Errorf("%w: --channel slack needs --slack-app-token and --slack-bot-token", errUsage)
+	}
+
+	p.say("先按文档里的 manifest 创建 Slack 应用：%s\n", slackGuide)
+
+	var err error
+	if o.slackAppToken, err = p.ask("App-Level Token（xapp-…）"); err == nil {
+		o.slackBotToken, err = p.ask("Bot User OAuth Token（xoxb-…）")
+	}
+
+	return err
+}
+
+// askDingTalkCredentials asks for a DingTalk app's id and secret.
+func askDingTalkCredentials(o *initOptions, p *prompter) error {
+	if o.dingtalkID != "" {
+		return nil
+	}
+
+	if p == nil {
+		return fmt.Errorf("%w: --channel dingtalk needs --dingtalk-client-id and --dingtalk-client-secret", errUsage)
+	}
+
+	p.say("先按文档创建钉钉应用并开启 Stream 模式的机器人：%s\n", dingtalkGuide)
+
+	var err error
+	if o.dingtalkID, err = p.ask("Client ID（AppKey）"); err == nil {
+		o.dingtalkSecret, err = p.ask("Client Secret（AppSecret）")
+	}
+
+	return err
 }
 
 // askGitHubToken takes the GitHub token every project shares, or asks for
@@ -228,9 +194,9 @@ func askGitHubToken(o *initOptions, p *prompter) error {
 		o.githubToken = o.sharedGitHubToken
 
 		if o.githubTokenName != "" {
-			fmt.Printf("沿用 gateway 里的 GitHub token「%s」（要换就加 --github-token）\n", o.githubTokenName)
+			o.out.printf("沿用 gateway 里的 GitHub token「%s」（要换就加 --github-token）\n", o.githubTokenName)
 		} else {
-			fmt.Println("沿用 gateway 里的默认 GitHub token（要换就加 --github-token；另一个账号的项目加 --github-token <token> --github-token-name <名字>）")
+			o.out.println("沿用 gateway 里的默认 GitHub token（要换就加 --github-token；另一个账号的项目加 --github-token <token> --github-token-name <名字>）")
 		}
 
 		return nil

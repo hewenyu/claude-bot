@@ -135,10 +135,10 @@ func spawn(dir, logPath string, args ...string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// waitStarted waits until up reports the spawned cmd ready, failing if it
-// exits first or takes longer than listenerStartup; notReady starts the
-// error then.
-func waitStarted(ctx context.Context, cmd *exec.Cmd, logPath, notReady string, up func() bool) error {
+// waitStarted waits until up reports the spawned cmd, the listener or the
+// gateway as what says, ready, failing if it exits first or takes longer
+// than listenerStartup.
+func waitStarted(ctx context.Context, cmd *exec.Cmd, logPath, what string, up func() bool) error {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
@@ -153,9 +153,9 @@ func waitStarted(ctx context.Context, cmd *exec.Cmd, logPath, notReady string, u
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-exited:
-			return fmt.Errorf("exited (%w):\n%s", err, tailFile(logPath, logTailLines))
+			return fmt.Errorf("%s exited (%w):\n%s", what, err, tailFile(logPath, logTailLines))
 		case <-deadline.C:
-			return fmt.Errorf("%s within %s; recent log (%s):\n%s", notReady, listenerStartup, logPath, tailFile(logPath, logTailLines))
+			return fmt.Errorf("%s did not start within %s; recent log (%s):\n%s", what, listenerStartup, logPath, tailFile(logPath, logTailLines))
 		case <-tick.C:
 			if up() {
 				return nil

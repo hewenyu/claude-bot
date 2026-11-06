@@ -1,156 +1,15 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"context"
-	"errors"
-	"flag"
-	"io"
-	"log/slog"
-	"os"
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/hewenyu/claude-bot/internal/channel"
-	"github.com/hewenyu/claude-bot/internal/channel/telegram"
-	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 )
-
-// fakeChannel records calls; it stands in for a real platform adapter.
-type fakeChannel struct {
-	mu      sync.Mutex
-	acked   []string
-	replies []string // "<id>: <text>"
-}
-
-func (f *fakeChannel) Name() string { return "fake" }
-
-func (f *fakeChannel) Listen(context.Context, func(channel.Message) error, func()) error { return nil }
-
-func (f *fakeChannel) Reply(_ context.Context, m channel.Message, text string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.replies = append(f.replies, m.ID+": "+text)
-
-	return nil
-}
-
-func (f *fakeChannel) Send(context.Context, string, string) error { return nil }
-
-func (f *fakeChannel) Get(context.Context, string) (channel.Message, error) {
-	return channel.Message{}, nil
-}
-
-func (f *fakeChannel) Download(context.Context, channel.Message, channel.Attachment, string) (string, error) {
-	return "", nil
-}
-
-func (f *fakeChannel) Ack(_ context.Context, m channel.Message) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.acked = append(f.acked, m.ID)
-
-	return nil
-}
-
-func (f *fakeChannel) ackCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return len(f.acked)
-}
-
-func TestDeliverer(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	fc := &fakeChannel{}
-	a := &app{dir: dir, inbox: inbox.New(filepath.Join(dir, "inbox")), log: slog.New(slog.DiscardHandler)}
-	deliver := a.deliverer(t.Context(), fc)
-
-	m := channel.Message{ID: "fake:1", Channel: "fake", ChatType: channel.ChatDirect, CreatedAt: time.Now()}
-
-	for range 3 { // the platform re-delivers unacknowledged events
-		if err := deliver(m); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for fc.ackCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	time.Sleep(20 * time.Millisecond)
-
-	if n := fc.ackCount(); n != 1 {
-		t.Errorf("acked %d times, want exactly once", n)
-	}
-
-	incoming, err := a.inbox.Incoming()
-	if err != nil || len(incoming) != 1 {
-		t.Errorf("incoming = %d, %v; want 1, held for screening", len(incoming), err)
-	}
-}
-
-func TestEnsureLine(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), ".gitignore")
-	if err := os.WriteFile(path, []byte("bin/"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	for range 2 {
-		if err := ensureLine(path, ".claude-bot/"); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if want := "bin/\n.claude-bot/\n"; string(got) != want {
-		t.Errorf(".gitignore = %q, want %q", got, want)
-	}
-}
-
-func TestWriteIfAbsent(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), ".claude", "commands", "bot.md")
-
-	if err := writeIfAbsent(path, []byte("v1"), false); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := writeIfAbsent(path, []byte("v2"), false); err != nil {
-		t.Fatal(err)
-	}
-
-	if got, _ := os.ReadFile(path); string(got) != "v1" {
-		t.Errorf("existing file overwritten without --force: %q", got)
-	}
-
-	if err := writeIfAbsent(path, []byte("v3"), true); err != nil {
-		t.Fatal(err)
-	}
-
-	if got, _ := os.ReadFile(path); string(got) != "v3" {
-		t.Errorf("--force did not overwrite: %q", got)
-	}
-}
 
 func TestTextArg(t *testing.T) {
 	t.Parallel()
@@ -158,6 +17,52 @@ func TestTextArg(t *testing.T) {
 	got, err := textArg([]string{"fixed", "in", "v1.2.3"})
 	if err != nil || got != "fixed in v1.2.3" {
 		t.Errorf("textArg(args) = %q, %v", got, err)
+	}
+}
+
+// The usage and the commands come from one table: every command is listed
+// but the hook, which is for the agents the gateway runs.
+func TestUsage_listsEveryCommand(t *testing.T) {
+	t.Parallel()
+
+	text := usage()
+
+	for _, s := range sections() {
+		for _, c := range s.commands {
+			listed := strings.Contains(text, "claude-bot "+c.name) || strings.Contains(text, "| "+c.name+" ")
+			if listed == (c.name == "hook") {
+				t.Errorf("command %s listed: %v", c.name, listed)
+			}
+
+			if run, ok := commandNamed(c.name); !ok || run == nil {
+				t.Errorf("command %s does not run", c.name)
+			}
+		}
+	}
+
+	for _, want := range []string{"gateway open", "gateway serve", "github mine"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("usage lacks %q", want)
+		}
+	}
+}
+
+func TestCommands_rejectStrayArguments(t *testing.T) {
+	t.Parallel()
+
+	for _, args := range [][]string{
+		{"inbox", "now"},
+		{"status", "x"},
+		{"get"},
+		{"get", "a", "b"},
+		{"serve", "x"},
+		{"gateway", "status", "x"},
+		{"gateway", "remove"},
+		{"init", "lark"},
+	} {
+		if code := run(t.Context(), args); code != exitUsage {
+			t.Errorf("%q: exit %d, want %d", args, code, exitUsage)
+		}
 	}
 }
 
@@ -170,14 +75,6 @@ func TestRun_usage(t *testing.T) {
 
 	if code := run(t.Context(), []string{"done"}); code != 2 {
 		t.Errorf("done without ids exit = %d, want 2", code)
-	}
-}
-
-func TestBotCommandEmbedded(t *testing.T) {
-	t.Parallel()
-
-	if len(botCommand) == 0 {
-		t.Fatal("bot.md slash command not embedded")
 	}
 }
 
@@ -224,369 +121,6 @@ func TestDone_continuesPastUnknownID(t *testing.T) {
 
 	if pending, err := b.PendingTasks(); err != nil || len(pending) != 0 {
 		t.Errorf("pending = %d, %v; the known task must still be closed", len(pending), err)
-	}
-}
-
-func TestBeat_waitsForReady(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	a := assemble(dir, slog.New(slog.DiscardHandler), &fakeChannel{})
-	ready := make(chan struct{})
-
-	go a.beat(t.Context(), ready, nil)
-
-	time.Sleep(20 * time.Millisecond)
-
-	if _, alive := readHeartbeat(dir); alive {
-		t.Fatal("heartbeat written before every channel was ready")
-	}
-
-	close(ready)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hb, alive := readHeartbeat(dir); alive {
-			if !reflect.DeepEqual(hb.Channels, []string{"fake"}) {
-				t.Errorf("heartbeat channels = %v", hb.Channels)
-			}
-
-			return
-		}
-
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	t.Error("no heartbeat after ready")
-}
-
-// liveChannel is a channel whose Listen connects and then waits for ctx or fail.
-type liveChannel struct {
-	fakeChannel
-
-	name string
-	fail chan error
-}
-
-func (l *liveChannel) Name() string { return l.name }
-
-func (l *liveChannel) Listen(ctx context.Context, _ func(channel.Message) error, ready func()) error {
-	ready()
-
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-l.fail:
-		return err
-	}
-}
-
-func TestListen_stopsOnlyTheFailedChannel(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	lark := &liveChannel{name: "lark", fail: make(chan error)}
-	gh := &liveChannel{name: "github", fail: make(chan error)}
-	a := assemble(dir, slog.New(slog.DiscardHandler), lark, gh)
-
-	done := make(chan error, 1)
-
-	go func() { done <- a.listen(t.Context(), new(sync.WaitGroup)) }()
-
-	waitBeat := func(want heartbeat) {
-		t.Helper()
-
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if hb, alive := readHeartbeat(dir); alive && reflect.DeepEqual(hb.Channels, want.Channels) && reflect.DeepEqual(hb.Stopped, want.Stopped) {
-				return
-			}
-
-			time.Sleep(5 * time.Millisecond)
-		}
-
-		hb, _ := readHeartbeat(dir)
-		t.Fatalf("heartbeat channels = %v, stopped = %v; want %v, %v", hb.Channels, hb.Stopped, want.Channels, want.Stopped)
-	}
-
-	waitBeat(heartbeat{Channels: []string{"github", "lark"}})
-
-	gh.fail <- errors.New("401 Bad credentials")
-
-	waitBeat(heartbeat{Channels: []string{"lark"}, Stopped: []string{"github"}})
-
-	select {
-	case err := <-done:
-		t.Fatalf("listen returned %v after one of two channels failed", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-
-	lark.fail <- errors.New("lark long connection: closed")
-
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "github: 401") || !strings.Contains(err.Error(), "lark: lark long connection") {
-			t.Errorf("listen() = %v, want both channel errors", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("listen still running after every channel failed")
-	}
-}
-
-// A channel that fails before it ever connects must not hold up the
-// heartbeat of the others.
-func TestListen_failsBeforeConnecting(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	bad := &failing{liveChannel{name: "github"}}
-	a := assemble(dir, slog.New(slog.DiscardHandler), &liveChannel{name: "lark"}, bad)
-
-	go func() { _ = a.listen(t.Context(), new(sync.WaitGroup)) }()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if hb, alive := readHeartbeat(dir); alive {
-			if !reflect.DeepEqual(hb.Channels, []string{"lark"}) || !reflect.DeepEqual(hb.Stopped, []string{"github"}) {
-				t.Errorf("heartbeat channels = %v, stopped = %v; want [lark], [github]", hb.Channels, hb.Stopped)
-			}
-
-			return
-		}
-
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	t.Error("no heartbeat while lark is connected")
-}
-
-// failing is a channel whose Listen fails at once, e.g. on a revoked token.
-type failing struct{ liveChannel }
-
-func (f *failing) Listen(context.Context, func(channel.Message) error, func()) error {
-	return errors.New("401 Bad credentials")
-}
-
-func TestParseInitFlags_settlesChannel(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		args    []string
-		channel string // "" with ok: chosen later (menu or Lark)
-		ok      bool
-	}{
-		{args: nil, ok: true},
-		{args: []string{"--channel", "slack"}, channel: "slack", ok: true},
-		{args: []string{"--telegram-token", "1:t"}, channel: "telegram", ok: true},
-		{args: []string{"--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}, channel: "slack", ok: true},
-		{args: []string{"--app-id", "cli_1", "--app-secret", "s"}, channel: "lark", ok: true},
-		{args: []string{"--channel", "telegram", "--telegram-token", "1:t"}, channel: "telegram", ok: true},
-		{args: []string{"--bot-md"}, ok: true},
-		{args: []string{"--github-token", "g", "--github-repo", "o/r"}, channel: "github", ok: true},
-		{args: []string{"--channel", "github"}, channel: "github", ok: true},
-		{args: []string{"--dingtalk-client-id", "ding1", "--dingtalk-client-secret", "s"}, channel: "dingtalk", ok: true},
-		{args: []string{"--dingtalk-client-id", "ding1"}},
-		{args: []string{"--dingtalk-client-id", "ding1", "--dingtalk-client-secret", "s", "--github-token", "g"}},
-		{args: []string{"--channel", "wechat"}},
-		{args: []string{"--channel", "discord", "--telegram-token", "1:t"}},
-		{args: []string{"--slack-bot-token", "xoxb-1"}},
-		{args: []string{"--telegram-token", "1:t", "--discord-token", "d"}},
-		{args: []string{"--app-id", "cli_1", "--app-secret", "s", "--slack-app-token", "xapp-1", "--slack-bot-token", "xoxb-1"}},
-		{args: []string{"--bot-md", "--channel", "lark"}},
-		{args: []string{"--github-token", "g", "--discord-token", "d"}},
-	}
-
-	for _, tt := range tests {
-		o, err := parseInitFlags(tt.args)
-		if (err == nil) != tt.ok {
-			t.Errorf("parseInitFlags(%q) error = %v, want ok %v", tt.args, err, tt.ok)
-
-			continue
-		}
-
-		if err != nil && !errors.Is(err, errUsage) {
-			t.Errorf("parseInitFlags(%q) error = %v, want a usage error", tt.args, err)
-		}
-
-		if err == nil && o.channel != tt.channel {
-			t.Errorf("parseInitFlags(%q) channel = %q, want %q", tt.args, o.channel, tt.channel)
-		}
-	}
-}
-
-func testPrompter(input string, secrets ...string) (*prompter, *strings.Builder) {
-	out := &strings.Builder{}
-
-	return &prompter{
-		in:  bufio.NewReader(strings.NewReader(input)),
-		out: out,
-		secret: func() (string, error) {
-			if len(secrets) == 0 {
-				return "", io.EOF
-			}
-
-			s := secrets[0]
-			secrets = secrets[1:]
-
-			return s, nil
-		},
-	}, out
-}
-
-func TestChooseChannel(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input, want string
-	}{
-		{input: "\n", want: "lark"},
-		{input: "3\n", want: "telegram"},
-		{input: "4", want: "slack"}, // no trailing newline
-		{input: "x\n9\n2\n", want: "discord"},
-		{input: "5\n", want: "github"},
-		{input: "6\n", want: "dingtalk"},
-	}
-
-	for _, tt := range tests {
-		p, _ := testPrompter(tt.input)
-
-		got, err := p.chooseChannel(config.Config{}, true)
-		if err != nil || got != tt.want {
-			t.Errorf("chooseChannel(%q) = %q, %v; want %q", tt.input, got, err, tt.want)
-		}
-	}
-
-	p, _ := testPrompter("x\n")
-	if _, err := p.chooseChannel(config.Config{}, true); !errors.Is(err, errNoInput) {
-		t.Errorf("chooseChannel at end of input = %v, want errNoInput", err)
-	}
-}
-
-func TestChooseChannel_marksConfigured(t *testing.T) {
-	t.Parallel()
-
-	p, out := testPrompter("\n")
-	if _, err := p.chooseChannel(config.Config{Telegram: &telegram.Config{Token: "t"}}, true); err != nil {
-		t.Fatal(err)
-	}
-
-	for line := range strings.SplitSeq(out.String(), "\n") {
-		if strings.Contains(line, "Telegram") != strings.Contains(line, "已配置") {
-			t.Errorf("menu line %q: only Telegram should be marked configured", line)
-		}
-	}
-}
-
-func TestChooseChannel_noGitHubRemote(t *testing.T) {
-	t.Parallel()
-
-	// GitHub cannot be picked in a repository that is not on GitHub.
-	p, out := testPrompter("5\n2\n")
-
-	got, err := p.chooseChannel(config.Config{}, false)
-	if err != nil || got != "discord" {
-		t.Errorf("chooseChannel = %q, %v; want discord after refusing github", got, err)
-	}
-
-	if !strings.Contains(out.String(), "没有 GitHub 上的 remote") {
-		t.Errorf("menu does not say why GitHub cannot be picked:\n%s", out)
-	}
-}
-
-func TestRepoOfRemotes(t *testing.T) {
-	t.Parallel()
-
-	cases := map[string]string{
-		"": "",
-		"origin\tgit@gitlab.com:a/b.git (fetch)\norigin\tgit@gitlab.com:a/b.git (push)\n": "",
-		"origin\thttps://github.com/a/b.git (fetch)\n":                                    "a/b",
-		"fork\tgit@github.com:me/b.git (fetch)\norigin\tgit@github.com:a/b.git (fetch)\n": "a/b",
-		"origin\t/srv/git/b.git (fetch)\nupstream\tgit@github.com:a/b.git (fetch)\n":      "a/b",
-	}
-
-	for in, want := range cases {
-		if got := repoOfRemotes(in); got != want {
-			t.Errorf("repoOfRemotes(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestAskTokens(t *testing.T) {
-	t.Parallel()
-
-	p, _ := testPrompter("", " xapp-1 ", "xoxb-1")
-
-	o := initOptions{channel: "slack"}
-	if err := askTokens(&o, p); err != nil {
-		t.Fatal(err)
-	}
-
-	if o.slackAppToken != "xapp-1" || o.slackBotToken != "xoxb-1" {
-		t.Errorf("tokens = %q, %q", o.slackAppToken, o.slackBotToken)
-	}
-
-	given := initOptions{channel: "telegram", telegramToken: "1:t"}
-	if err := askTokens(&given, nil); err != nil || given.telegramToken != "1:t" {
-		t.Errorf("askTokens with the flag given = %v, %q", err, given.telegramToken)
-	}
-
-	if err := askTokens(&initOptions{channel: "discord"}, nil); !errors.Is(err, errUsage) {
-		t.Errorf("askTokens without terminal or flag = %v, want a usage error naming the flag", err)
-	}
-
-	gh, out := testPrompter("", "ghp_1")
-	o = initOptions{channel: "github"}
-
-	if err := askTokens(&o, gh); err != nil || o.githubToken != "ghp_1" || !strings.Contains(out.String(), githubGuide) {
-		t.Errorf("askTokens(github) = %v, token %q, said %q", err, o.githubToken, out.String())
-	}
-
-	if err := askTokens(&initOptions{channel: "github"}, nil); !errors.Is(err, errUsage) {
-		t.Errorf("askTokens(github) without terminal or flag = %v, want a usage error", err)
-	}
-
-	empty, _ := testPrompter("", "  ")
-	if err := askTokens(&initOptions{channel: "telegram"}, empty); !errors.Is(err, errUsage) {
-		t.Errorf("askTokens with an empty answer = %v, want a usage error", err)
-	}
-}
-
-func TestParseInterleaved(t *testing.T) {
-	t.Parallel()
-
-	fs := flag.NewFlagSet("t", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	notPlanned := fs.Bool("not-planned", false, "")
-	method := fs.String("method", "squash", "")
-
-	pos, err := parseInterleaved(fs, []string{"github:o/r/1", "--not-planned", "-", "--method", "rebase", "x"})
-	if err != nil || !*notPlanned || *method != "rebase" || !reflect.DeepEqual(pos, []string{"github:o/r/1", "-", "x"}) {
-		t.Errorf("parseInterleaved = %q, %v; not-planned %v, method %q", pos, err, *notPlanned, *method)
-	}
-
-	if _, err := parseInterleaved(fs, []string{"id", "--bogus"}); !errors.Is(err, errUsage) {
-		t.Errorf("parseInterleaved with an unknown flag = %v, want a usage error", err)
-	}
-}
-
-func TestRewriteBotCommand(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	path := botCommandPath(root)
-
-	if err := writeIfAbsent(path, []byte("edited by hand"), false); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := rewriteBotCommand(root); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(got, botCommand) {
-		t.Errorf("bot.md after rewrite = %.40q…, %v; want the embedded command", got, err)
 	}
 }
 

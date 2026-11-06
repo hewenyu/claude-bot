@@ -173,7 +173,7 @@ func (w *web) putGitHubToken(r *http.Request) (any, error) {
 		return nil, err
 	}
 
-	if err := w.store.SetSetting(ctx, store.SettingGitHubTokenPrefix+name, token); err != nil {
+	if err := config.SetGitHubToken(ctx, w.store, name, token); err != nil {
 		return nil, err
 	}
 
@@ -234,40 +234,12 @@ func (w *web) assignGitHubToken(ctx context.Context, projects []githubProject, n
 			continue
 		}
 
-		if err := w.setGitHubTokenName(ctx, p.ID, want); err != nil {
+		if err := config.UseGitHubToken(ctx, w.store, p.ID, want); err != nil {
 			return fmt.Errorf("project %s: %w", p.Name, err)
 		}
 	}
 
 	return nil
-}
-
-// setGitHubTokenName has a project's GitHub channel use the token called
-// name.
-func (w *web) setGitHubTokenName(ctx context.Context, project int64, name string) error {
-	chans, err := w.store.Channels(ctx, project)
-	if err != nil {
-		return err
-	}
-
-	i := slices.IndexFunc(chans, func(c store.Channel) bool { return c.Name == github.Name })
-	if i < 0 {
-		return store.ErrNotFound
-	}
-
-	cfg, err := config.ChannelConfig(github.Name, chans[i].Config)
-	if err != nil {
-		return err
-	}
-
-	cfg.GitHubTokenName = name
-
-	rows, err := cfg.Channels()
-	if err != nil {
-		return err
-	}
-
-	return w.store.PutChannel(ctx, project, rows[0])
 }
 
 // deleteGitHubToken removes a named token no project uses.
@@ -291,7 +263,7 @@ func (w *web) deleteGitHubToken(r *http.Request) (any, error) {
 		return nil, conflict(fmt.Errorf("GitHub token %q still serves %s: give them another token first", name, strings.Join(users, ", ")))
 	}
 
-	if err := w.store.SetSetting(r.Context(), store.SettingGitHubTokenPrefix+name, ""); err != nil {
+	if err := config.DeleteGitHubToken(r.Context(), w.store, name); err != nil {
 		return nil, err
 	}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -96,88 +98,71 @@ func cmdGateway(ctx context.Context, project string, args []string) error {
 	return fmt.Errorf("%w: unknown gateway command %q\n%s", errUsage, sub, gatewayUsage)
 }
 
-// gatewayFile returns a file in the gateway home.
-func gatewayFile(name string) (string, error) {
-	home, err := config.Home()
-	if err != nil {
-		return "", err
-	}
+// gatewayHome is the gateway's directory, with its database, lock,
+// heartbeat and log.
+type gatewayHome string
 
-	return filepath.Join(home, name), nil
+// currentHome is the gateway home config.Home names.
+func currentHome() (gatewayHome, error) {
+	home, err := config.Home()
+
+	return gatewayHome(home), err
 }
 
-// gatewayLogPath is where the gateway logs, for messages.
-func gatewayLogPath() string {
-	path, err := gatewayFile(gatewayLog)
-	if err != nil {
-		return "~/" + config.DirName + "/" + gatewayLog
-	}
+// path returns a file in the gateway home.
+func (h gatewayHome) path(name string) string {
+	return filepath.Join(string(h), name)
+}
 
-	return path
+// pid returns the pid of the running gateway, 0 if there is none.
+func (h gatewayHome) pid() (int, error) {
+	return lockHolder(h.path(gatewayLock), func() int { return 0 })
+}
+
+// heartbeat reads the gateway's heartbeat and reports whether it is alive.
+func (h gatewayHome) heartbeat() (gatewayHeartbeat, bool) {
+	var hb gatewayHeartbeat
+
+	alive := readBeat(h.path(gatewayBeat), &hb)
+
+	return hb, alive
 }
 
 // gatewayPID returns the pid of the running gateway, 0 if there is none.
 func gatewayPID() (int, error) {
-	lock, err := gatewayFile(gatewayLock)
+	home, err := currentHome()
 	if err != nil {
 		return 0, err
 	}
 
-	return lockHolder(lock, func() int { return 0 })
+	return home.pid()
 }
 
-// gatewayHeartbeat is written to the gateway home while the gateway runs.
-type gatewayHeartbeat struct {
-	PID       int          `json:"pid"`
-	StartedAt time.Time    `json:"started_at"`
-	BeatAt    time.Time    `json:"beat_at"`
-	Version   string       `json:"version"`
-	UI        string       `json:"ui,omitempty"` // the page, without its token
-	Projects  []runOutcome `json:"projects"`
-}
-
-// runOutcome is how the gateway is doing with one project.
-type runOutcome struct {
-	ID    int64        `json:"id"`
-	State projectState `json:"state"`
-	Error string       `json:"error,omitempty"`
-}
-
-func readGatewayHeartbeat() (gatewayHeartbeat, bool) {
-	var hb gatewayHeartbeat
-
-	path, err := gatewayFile(gatewayBeat)
+// gatewayLogPath is where the gateway logs, for messages.
+func gatewayLogPath() string {
+	home, err := currentHome()
 	if err != nil {
-		return hb, false
+		return "~/" + config.DirName + "/" + gatewayLog
 	}
 
-	raw, err := os.ReadFile(path) //nolint:gosec // fixed file in the gateway home
-	if err != nil || json.Unmarshal(raw, &hb) != nil {
-		return hb, false
-	}
-
-	return hb, time.Since(hb.BeatAt) < heartbeatStale
+	return home.path(gatewayLog)
 }
 
 func gatewayServe(ctx context.Context, args []string) error {
-	if _, err := parseArgs("gateway serve", args); err != nil {
+	if _, err := parseCommand(nil, args, exactly(0), "gateway serve"); err != nil {
 		return err
 	}
 
-	home, err := config.Home()
+	dir, err := config.EnsureHome()
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", home, err)
-	}
+	home := gatewayHome(dir)
 
-	lock := filepath.Join(home, gatewayLock)
-
-	unlock, err := holdLock(lock)
+	unlock, err := holdLock(home.path(gatewayLock))
 	if errors.Is(err, errLocked) {
-		pid, _ := gatewayPID()
+		pid, _ := home.pid()
 
 		return fmt.Errorf("gateway already running (pid %d): %w", pid, err)
 	}
@@ -187,40 +172,54 @@ func gatewayServe(ctx context.Context, args []string) error {
 	}
 
 	defer unlock()
-	defer func() { _ = os.Remove(filepath.Join(home, gatewayBeat)) }()
+	defer func() { _ = os.Remove(home.path(gatewayBeat)) }()
 
-	s, err := store.Open(ctx, home)
+	s, err := store.Open(ctx, dir)
 	if err != nil {
 		return err
 	}
 	defer s.Close() //nolint:errcheck // the gateway only reads
 
 	g := newGateway(s, newLogger())
-	g.newBots = func(ctx context.Context, url string) (*bots, error) {
-		program, args := agentCommand()
+	g.log.Info("gateway started", "pid", os.Getpid(), "version", Version, "home", dir)
 
-		return startBots(ctx, home, url, g.log, program, args)
-	}
-	g.log.Info("gateway started", "pid", os.Getpid(), "version", Version, "home", home)
-
-	// The page is a view: without it the projects are served all the same.
 	// Its requests end before the database closes.
-	webDone := func() {}
-
-	if addr, token, err := uiSettings(ctx, s); err != nil {
-		g.log.Error("page not served", "err", err)
-	} else if g.ui, webDone, err = g.serveWeb(ctx, addr, token); err != nil {
-		g.log.Error("page not served", "err", err)
-	} else {
-		g.log.Info("page", "url", g.ui)
-	}
-
-	defer webDone()
+	defer g.startPage(ctx, home)()
 
 	// The agents end with the gateway, after it let go of the projects.
 	defer g.bots.wait()
 
-	return g.loop(ctx, filepath.Join(home, gatewayBeat))
+	return g.loop(ctx, home.path(gatewayBeat))
+}
+
+// startPage serves the page and starts the runner, whose agents report to
+// the page's server. The page is a view: without it the projects are served
+// all the same, though no agents run. It returns a wait for the page's
+// server to shut down once ctx ends.
+func (g *gateway) startPage(ctx context.Context, home gatewayHome) (wait func()) {
+	addr, token, err := uiSettings(ctx, g.store)
+	if err != nil {
+		g.log.Error("page not served", "err", err)
+
+		return func() {}
+	}
+
+	ln, hosts, err := listenPage(ctx, addr)
+	if err != nil {
+		g.log.Error("page not served", "err", err)
+
+		return func() {}
+	}
+
+	g.ui = pageURL(ln)
+	g.log.Info("page", "url", g.ui)
+
+	program, args := agentCommand()
+	if g.bots, err = startBots(ctx, string(home), g.ui, g.log, program, args); err != nil {
+		g.log.Error("runner not started", "err", err)
+	}
+
+	return g.servePage(ctx, ln, newWeb(g.store, g.bots, home, token, hosts, g.log))
 }
 
 // gateway serves the registered projects.
@@ -235,9 +234,7 @@ type gateway struct {
 	started time.Time
 	tick    time.Duration // how often it reconciles
 	ui      string        // the page's URL, "" if it is not served
-	// newBots starts the runner once the page is served; nil runs none.
-	newBots func(ctx context.Context, url string) (*bots, error)
-	bots    *bots // nil if it runs no agents
+	bots    *bots         // nil if it runs no agents
 
 	mu   sync.Mutex
 	runs map[int64]*projectRun
@@ -273,6 +270,8 @@ func (g *gateway) loop(ctx context.Context, beatPath string) error {
 
 	last := int64(-1)
 
+	var written gatewayHeartbeat
+
 	t := time.NewTicker(g.tick)
 	defer t.Stop()
 
@@ -294,10 +293,7 @@ func (g *gateway) loop(ctx context.Context, beatPath string) error {
 			}
 		}
 
-		hb := gatewayHeartbeat{PID: os.Getpid(), StartedAt: g.started, BeatAt: time.Now().UTC(), Version: Version, UI: g.ui, Projects: g.outcomes()}
-		if err := writeJSON(beatPath, hb); err != nil {
-			g.log.Warn("write heartbeat", "err", err)
-		}
+		g.beat(beatPath, &written)
 
 		select {
 		case <-ctx.Done():
@@ -305,6 +301,25 @@ func (g *gateway) loop(ctx context.Context, beatPath string) error {
 		case <-t.C:
 		}
 	}
+}
+
+// beat writes the gateway's heartbeat to path when what it says differs from
+// written, the one written last, else only every heartbeatEvery: as often
+// as readers need to see the gateway alive.
+func (g *gateway) beat(path string, written *gatewayHeartbeat) {
+	hb := gatewayHeartbeat{PID: os.Getpid(), StartedAt: g.started, BeatAt: time.Now().UTC(), Version: Version, UI: g.ui, Projects: g.outcomes()}
+
+	if hb.BeatAt.Sub(written.BeatAt) < heartbeatEvery && hb.UI == written.UI && slices.Equal(hb.Projects, written.Projects) {
+		return
+	}
+
+	if err := writeBeat(path, hb); err != nil {
+		g.log.Warn("write heartbeat", "err", err)
+
+		return
+	}
+
+	*written = hb
 }
 
 // syncBots applies the runner's settings, if it runs.
@@ -393,8 +408,6 @@ func (g *gateway) reconcile(ctx context.Context) error {
 
 // fingerprint identifies what a project is served with: a change restarts it.
 func fingerprint(p store.Project, cfg config.Config, err error) string {
-	cfg.Gateway = nil
-
 	raw, _ := json.Marshal(struct {
 		Project store.Project
 		Config  config.Config
@@ -470,7 +483,7 @@ func (g *gateway) run(ctx context.Context, p store.Project, cfg config.Config, c
 	}
 
 	if info, err := os.Stat(p.Dir); err != nil || !info.IsDir() {
-		return stateFailed, fmt.Sprintf("project directory %s is gone: register it again with `claude-bot init` where it is now, or `claude-bot gateway remove %s`", p.Dir, p.Name)
+		return stateFailed, fmt.Sprintf("project directory %s is gone: register it again with %s where it is now, or `claude-bot gateway remove %s`", p.Dir, hintInit, p.Name)
 	}
 
 	if cfg.TypeSafe == nil {
@@ -478,16 +491,15 @@ func (g *gateway) run(ctx context.Context, p store.Project, cfg config.Config, c
 	}
 
 	a, err := g.build(botDir(p), cfg, g.log.With("project", p.Name))
-	if errors.Is(err, errNotConfigured) {
-		return stateIdle, "no channels: run `claude-bot init` in the project"
+	if errors.Is(err, config.ErrNotConfigured) {
+		return stateIdle, "no channels: run " + hintInit + " in the project"
 	}
 
 	if err != nil {
 		return stateFailed, err.Error()
 	}
 
-	a.locked = locked
-	err = a.serve(ctx, g.ask(cfg.TypeSafe.APIKey))
+	err = a.serve(ctx, g.ask(cfg.TypeSafe.APIKey), locked)
 
 	var busy *busyError
 
@@ -503,25 +515,30 @@ func (g *gateway) run(ctx context.Context, p store.Project, cfg config.Config, c
 	return stateFailed, err.Error()
 }
 
-// outcomes reports every project being served, "running" once its
-// listener beats.
+// outcomes reports every project being served, by id, "running" once its
+// listener beats. The heartbeats are read after letting go of the lock.
 func (g *gateway) outcomes() []runOutcome {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-
 	out := make([]runOutcome, 0, len(g.runs))
+	dirs := make(map[int64]string, len(g.runs))
 
 	for id, r := range g.runs {
-		o := runOutcome{ID: id, State: r.state, Error: r.err}
+		out = append(out, runOutcome{ID: id, State: r.state, Error: r.err})
+		dirs[id] = botDir(r.project)
+	}
+	g.mu.Unlock()
 
-		if o.State == stateStarting {
-			if hb, alive := readHeartbeat(botDir(r.project)); alive && hb.PID == os.Getpid() {
-				o.State = stateRunning
-			}
+	for i, o := range out {
+		if o.State != stateStarting {
+			continue
 		}
 
-		out = append(out, o)
+		if hb, alive := readHeartbeat(dirs[o.ID]); alive && hb.PID == os.Getpid() {
+			out[i].State = stateRunning
+		}
 	}
+
+	slices.SortFunc(out, func(a, b runOutcome) int { return cmp.Compare(a.ID, b.ID) })
 
 	return out
 }

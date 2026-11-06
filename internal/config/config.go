@@ -6,7 +6,6 @@ package config
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -29,15 +28,14 @@ import (
 // DirName is the per-project state directory (git-ignored).
 const DirName = ".claude-bot"
 
+// BotDir is the .claude-bot directory of the repository at root.
+func BotDir(root string) string { return filepath.Join(root, DirName) }
+
 // FilePath is the config.json of the bot directory dir, which ReadFile reads
 // and WriteFile writes.
 func FilePath(dir string) string { return filepath.Join(dir, configFile) }
 
-const (
-	configFile  = "config.json"
-	dirPerm     = 0o750
-	privatePerm = 0o600 // the file holds app secrets
-)
+const configFile = "config.json"
 
 // Environment variables.
 const (
@@ -53,7 +51,8 @@ const (
 	dingtalkSecretEnv = "DINGTALK_CLIENT_SECRET"
 )
 
-// Config is .claude-bot/config.json. Each configured channel is enabled.
+// Config is .claude-bot/config.json. Each configured channel is enabled;
+// Kinds says what each is.
 type Config struct {
 	Lark     *lark.Config     `json:"lark,omitempty"`
 	Discord  *discord.Config  `json:"discord,omitempty"`
@@ -64,9 +63,6 @@ type Config struct {
 	// TypeSafe, if set, has the listener screen messages with Jev before
 	// they reach the inbox. Only config.json sets it, never the environment.
 	TypeSafe *jev.Config `json:"typesafe,omitempty"`
-	// Gateway is the project's registration when its configuration lives
-	// in the gateway database rather than in config.json.
-	Gateway *store.Project `json:"-"`
 	// GitHubTokenName names the gateway's GitHub token the project uses;
 	// "" is the default token.
 	GitHubTokenName string `json:"-"`
@@ -88,14 +84,14 @@ func Dir(ctx context.Context, project string) (string, error) {
 	}
 
 	if top := gitTop(ctx, wd); top != "" {
-		return filepath.Join(top, DirName), nil
+		return BotDir(top), nil
 	}
 
 	if root := os.Getenv(claudeProjectEnv); root != "" {
-		return filepath.Join(root, DirName), nil
+		return BotDir(root), nil
 	}
 
-	return filepath.Join(wd, DirName), nil
+	return BotDir(wd), nil
 }
 
 // projectDir resolves an explicitly chosen project to its repository root.
@@ -113,7 +109,7 @@ func projectDir(ctx context.Context, root string) (string, error) {
 		abs = top
 	}
 
-	return filepath.Join(abs, DirName), nil
+	return BotDir(abs), nil
 }
 
 func gitTop(ctx context.Context, dir string) string {
@@ -128,39 +124,29 @@ func gitTop(ctx context.Context, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// Has reports whether c sets up the channel of that name.
-func (c Config) Has(name string) bool {
-	switch name {
-	case lark.Name:
-		return c.Lark != nil
-	case discord.Name:
-		return c.Discord != nil
-	case telegram.Name:
-		return c.Telegram != nil
-	case slack.Name:
-		return c.Slack != nil
-	case github.Name:
-		return c.GitHub != nil
-	case dingtalk.Name:
-		return c.DingTalk != nil
-	}
-
-	return false
-}
-
 // Read returns the project's configuration without the environment: what
 // init rewrites, so credentials given through the environment are not saved.
 // A project registered with the gateway reads it from the gateway database,
 // any other from dir/config.json (as before the gateway). The settings every
 // project shares, the TypeSafe API key, come from the gateway either way.
 func Read(ctx context.Context, dir string) (Config, error) {
+	cfg, _, err := read(ctx, dir)
+
+	return cfg, err
+}
+
+// read is Read, with the project's registration with the gateway; nil if
+// it is not registered.
+func read(ctx context.Context, dir string) (Config, *store.Project, error) {
 	s, ok, err := openGateway(ctx)
 	if err != nil {
-		return Config{}, err
+		return Config{}, nil, err
 	}
 
 	if !ok {
-		return ReadFile(dir)
+		cfg, err := ReadFile(dir)
+
+		return cfg, nil, err
 	}
 
 	defer s.Close() //nolint:errcheck // read-only use
@@ -169,20 +155,22 @@ func Read(ctx context.Context, dir string) (Config, error) {
 
 	switch {
 	case err == nil:
-		return FromStore(ctx, s, p)
+		cfg, err := FromStore(ctx, s, p)
+
+		return cfg, &p, err
 	case !errors.Is(err, store.ErrNotFound):
-		return Config{}, err
+		return Config{}, nil, err
 	}
 
 	cfg, err := ReadFile(dir)
 	if err != nil {
-		return cfg, err
+		return cfg, nil, err
 	}
 
 	if cfg.TypeSafe == nil {
 		key, err := s.Setting(ctx, store.SettingTypeSafeKey)
 		if err != nil {
-			return cfg, err
+			return cfg, nil, err
 		}
 
 		if key != "" {
@@ -190,7 +178,7 @@ func Read(ctx context.Context, dir string) (Config, error) {
 		}
 	}
 
-	return cfg, nil
+	return cfg, nil, nil
 }
 
 // ReadFile reads dir/config.json alone, the configuration of a project that
@@ -198,15 +186,8 @@ func Read(ctx context.Context, dir string) (Config, error) {
 func ReadFile(dir string) (Config, error) {
 	var cfg Config
 
-	raw, err := os.ReadFile(filepath.Join(dir, configFile)) //nolint:gosec // fixed file in the project bot dir
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		return cfg, fmt.Errorf("read config: %w", err)
-	default:
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return cfg, fmt.Errorf("parse %s: %w", filepath.Join(dir, configFile), err)
-		}
+	if err := atomicfile.ReadJSON(FilePath(dir), &cfg); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return Config{}, err
 	}
 
 	return cfg, nil
@@ -218,62 +199,34 @@ func ReadFile(dir string) (Config, error) {
 // and DINGTALK_CLIENT_SECRET from the environment. They replace the stored
 // credentials; the other settings (proxy, domain) stay.
 func Load(ctx context.Context, dir string) (Config, error) {
-	cfg, err := Read(ctx, dir)
+	cfg, _, err := LoadProject(ctx, dir)
+
+	return cfg, err
+}
+
+// LoadProject is Load, with the project's registration with the gateway,
+// which then holds its configuration and serves it; nil for a project
+// configured by its own config.json.
+func LoadProject(ctx context.Context, dir string) (Config, *store.Project, error) {
+	cfg, p, err := read(ctx, dir)
 	if err != nil {
-		return cfg, err
+		return cfg, p, err
 	}
 
 	applyEnv(&cfg)
 
-	return cfg, nil
-}
-
-func applyEnv(cfg *Config) {
-	if id, secret := os.Getenv(larkAppIDEnv), os.Getenv(larkSecretEnv); id != "" && secret != "" {
-		override(&cfg.Lark, func(c *lark.Config) {
-			c.AppID, c.AppSecret = id, secret
-			if domain := os.Getenv(larkDomainEnv); domain != "" {
-				c.Domain = domain
-			}
-		})
-	}
-
-	if token := os.Getenv(discordTokenEnv); token != "" {
-		override(&cfg.Discord, func(c *discord.Config) { c.Token = token })
-	}
-
-	if token := os.Getenv(telegramTokenEnv); token != "" {
-		override(&cfg.Telegram, func(c *telegram.Config) { c.Token = token })
-	}
-
-	if app, bot := os.Getenv(slackAppTokenEnv), os.Getenv(slackBotTokenEnv); app != "" && bot != "" {
-		override(&cfg.Slack, func(c *slack.Config) { c.AppToken, c.BotToken = app, bot })
-	}
-
-	if id, secret := os.Getenv(dingtalkIDEnv), os.Getenv(dingtalkSecretEnv); id != "" && secret != "" {
-		override(&cfg.DingTalk, func(c *dingtalk.Config) { c.ClientID, c.ClientSecret = id, secret })
-	}
-}
-
-// override applies set to the channel config *c points at, creating it if
-// config.json has none.
-func override[C any](c **C, set func(*C)) {
-	if *c == nil {
-		*c = new(C)
-	}
-
-	set(*c)
+	return cfg, p, nil
 }
 
 // WriteFile writes cfg to dir/config.json, readable only by the owner, the
 // way projects were configured before the gateway. The file is replaced
 // atomically, so a crash never leaves half-written credentials.
 func WriteFile(dir string, cfg Config) error {
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
+	if err := os.MkdirAll(dir, atomicfile.ProjectDir); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 
-	if err := atomicfile.WriteJSON(filepath.Join(dir, configFile), cfg, privatePerm); err != nil {
+	if err := atomicfile.WriteJSON(FilePath(dir), cfg, atomicfile.PrivateFile); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 

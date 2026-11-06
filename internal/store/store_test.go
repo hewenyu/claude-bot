@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hewenyu/claude-bot/internal/atomicfile"
 )
 
 func openTemp(t *testing.T) (*Store, string) {
@@ -33,7 +35,7 @@ func TestOpen_private(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for path, want := range map[string]os.FileMode{home: dirPerm, Path(home): filePerm, Path(home) + "-wal": filePerm} {
+	for path, want := range map[string]os.FileMode{home: atomicfile.PrivateDir, dbPath(home): atomicfile.PrivateFile, dbPath(home) + "-wal": atomicfile.PrivateFile} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -54,8 +56,8 @@ func TestOpenExisting(t *testing.T) {
 		t.Fatalf("OpenExisting() without a database = %v, %v; want not ok, nil", ok, err)
 	}
 
-	if _, err := os.Stat(Path(home)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("OpenExisting created %s", Path(home))
+	if _, err := os.Stat(dbPath(home)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("OpenExisting created %s", dbPath(home))
 	}
 
 	s, err := Open(t.Context(), home)
@@ -144,23 +146,23 @@ func TestSettingsWithPrefix(t *testing.T) {
 	}
 }
 
-func TestAddProject(t *testing.T) {
+func TestSaveProject_names(t *testing.T) {
 	t.Parallel()
 
 	s, _ := openTemp(t)
 	ctx := t.Context()
 
-	a, err := s.AddProject(ctx, "/src/api")
+	a, err := s.SaveProject(ctx, "/src/api", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	again, err := s.AddProject(ctx, "/src/api")
+	again, err := s.SaveProject(ctx, "/src/api", nil)
 	if err != nil || again.ID != a.ID {
 		t.Fatalf("registering again = %+v, %v; want project %d", again, err, a.ID)
 	}
 
-	b, err := s.AddProject(ctx, "/other/api")
+	b, err := s.SaveProject(ctx, "/other/api", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,10 +195,10 @@ func TestChannels_oneAppOneProject(t *testing.T) {
 	s, _ := openTemp(t)
 	ctx := t.Context()
 
-	a, _ := s.AddProject(ctx, "/src/a")
-	b, _ := s.AddProject(ctx, "/src/b")
+	a, _ := s.SaveProject(ctx, "/src/a", nil)
+	b, _ := s.SaveProject(ctx, "/src/b", nil)
 
-	if err := s.SetChannels(ctx, a.ID, []Channel{ch("lark", "lark:cli_1", `{"app_id":"cli_1"}`), ch("github", "github:o/a", `{"repo":"o/a"}`)}); err != nil {
+	if _, err := s.SaveProject(ctx, a.Dir, []Channel{ch("lark", "lark:cli_1", `{"app_id":"cli_1"}`), ch("github", "github:o/a", `{"repo":"o/a"}`)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,17 +214,17 @@ func TestChannels_oneAppOneProject(t *testing.T) {
 		t.Fatalf("updating own channel: %v", err)
 	}
 
-	// A failed SetChannels changes nothing.
-	if err := s.SetChannels(ctx, b.ID, []Channel{ch("telegram", "telegram:1", `{}`), ch("lark", "lark:cli_1", `{}`)}); err == nil {
-		t.Fatal("SetChannels with a taken app succeeded")
+	// A failed SaveProject changes nothing.
+	if _, err := s.SaveProject(ctx, b.Dir, []Channel{ch("telegram", "telegram:1", `{}`), ch("lark", "lark:cli_1", `{}`)}); err == nil {
+		t.Fatal("SaveProject with a taken app succeeded")
 	}
 
 	if got, _ := s.Channels(ctx, b.ID); len(got) != 0 {
-		t.Errorf("project b has %d channels after a failed SetChannels, want 0", len(got))
+		t.Errorf("project b has %d channels after a failed SaveProject, want 0", len(got))
 	}
 
-	// SetChannels drops channels not listed.
-	if err := s.SetChannels(ctx, a.ID, []Channel{ch("github", "github:o/a", `{"repo":"o/a"}`)}); err != nil {
+	// SaveProject drops channels not listed.
+	if _, err := s.SaveProject(ctx, a.Dir, []Channel{ch("github", "github:o/a", `{"repo":"o/a"}`)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,21 +255,25 @@ func TestRemoveProject_forgetsItsRunner(t *testing.T) {
 	s, _ := openTemp(t)
 	ctx := t.Context()
 
-	p, err := s.AddProject(ctx, "/src/a")
+	p, err := s.SaveProject(ctx, "/src/a", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.SetSetting(ctx, RunnerKey(p.ID), "on"); err != nil {
+	if err := s.SetRunnerOn(ctx, p.ID, true); err != nil {
 		t.Fatal(err)
+	}
+
+	if on, err := s.RunnersOn(ctx); err != nil || !on[p.ID] || len(on) != 1 {
+		t.Fatalf("RunnersOn = %v, %v; want only %d", on, err, p.ID)
 	}
 
 	if err := s.RemoveProject(ctx, p.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	if v, _ := s.Setting(ctx, RunnerKey(p.ID)); v != "" {
-		t.Errorf("runner setting of a removed project = %q, want none", v)
+	if on, _ := s.RunnersOn(ctx); on[p.ID] {
+		t.Errorf("runner of a removed project still on")
 	}
 }
 

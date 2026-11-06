@@ -8,11 +8,8 @@ import (
 	"testing"
 
 	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
-	"github.com/hewenyu/claude-bot/internal/channel/discord"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/channel/lark"
-	"github.com/hewenyu/claude-bot/internal/channel/slack"
-	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/jev"
 	"github.com/hewenyu/claude-bot/internal/store"
 )
@@ -58,8 +55,8 @@ func TestSave_registersAndShares(t *testing.T) { //nolint:paralleltest // sets t
 	// The second project gets the shared key and token without setting them.
 	must(Save(ctx, web, Config{GitHub: &github.Config{Repo: "o/web"}, DingTalk: &dingtalk.Config{ClientID: "ding1", ClientSecret: "s2"}}))(t)
 
-	got := must(Load(ctx, web))(t)
-	expect(t, got.Gateway != nil && got.Gateway.Name == "web", "Load().Gateway = %+v, want project web", got.Gateway)
+	got, reg, err := LoadProject(ctx, web)
+	expect(t, err == nil && reg != nil && reg.Name == "web", "LoadProject() = %+v, %v; want project web", reg, err)
 	expect(t, got.GitHub != nil && got.GitHub.Token == "ghp_shared" && got.GitHub.Repo == "o/web", "Load().GitHub = %+v, want the shared token on o/web", got.GitHub)
 	expect(t, got.TypeSafe != nil && got.TypeSafe.APIKey == "ts-shared", "Load().TypeSafe = %+v, want the shared key", got.TypeSafe)
 	expect(t, got.Lark == nil, "web got api's lark app: %+v", got.Lark)
@@ -93,8 +90,8 @@ func TestSave_appBelongsToOneProject(t *testing.T) { //nolint:paralleltest // se
 	}
 
 	// The failed save registered nothing: web keeps reading its config.json.
-	if got, err := Read(ctx, web); err != nil || got.Gateway != nil {
-		t.Errorf("Read(web) = %+v, %v; want unregistered", got.Gateway, err)
+	if _, reg, err := read(ctx, web); err != nil || reg != nil {
+		t.Errorf("read(web) = %+v, %v; want unregistered", reg, err)
 	}
 }
 
@@ -121,20 +118,20 @@ func TestImport(t *testing.T) { //nolint:paralleltest // sets the environment
 	}
 
 	// Unregistered, a project reads its config.json.
-	got := must(Read(ctx, api))(t)
-	expect(t, got.Gateway == nil && got.Lark != nil, "before import Read = %+v", got)
+	got, reg, err := read(ctx, api)
+	expect(t, err == nil && reg == nil && got.Lark != nil, "before import read = %+v, %+v, %v", got, reg, err)
 
 	imp := must(Import(ctx, api))(t)
 	expect(t, strings.Join(imp.Channels, ",") == "lark,github,dingtalk" && len(imp.Kept) == 0, "Import(api) = %+v", imp)
 
-	_, err := os.Stat(filepath.Join(api, "config.json"))
+	_, err = os.Stat(filepath.Join(api, "config.json"))
 	expect(t, errors.Is(err, os.ErrNotExist), "config.json still there after import")
 
 	_, err = os.Stat(imp.Backup)
 	expect(t, err == nil, "no backup: %v", err)
 
-	got = must(Read(ctx, api))(t)
-	expect(t, got.Gateway != nil && *got.Lark == *legacy.Lark && *got.DingTalk == *legacy.DingTalk &&
+	got, reg, err = read(ctx, api)
+	expect(t, err == nil && reg != nil && *got.Lark == *legacy.Lark && *got.DingTalk == *legacy.DingTalk &&
 		*got.GitHub == *legacy.GitHub && *got.TypeSafe == *legacy.TypeSafe, "after import Read = %+v", got)
 
 	imp = must(Import(ctx, web))(t)
@@ -211,8 +208,8 @@ func TestRead_unregisteredGetsSharedKey(t *testing.T) { //nolint:paralleltest //
 		t.Fatal(err)
 	}
 
-	got, err := Read(ctx, newProjectDir(t, "new"))
-	if err != nil || got.TypeSafe == nil || got.TypeSafe.APIKey != "ts-shared" || got.Gateway != nil {
+	got, reg, err := read(ctx, newProjectDir(t, "new"))
+	if err != nil || got.TypeSafe == nil || got.TypeSafe.APIKey != "ts-shared" || reg != nil {
 		t.Errorf("Read(new project) = %+v, %v; want the shared key, unregistered", got, err)
 	}
 }
@@ -227,31 +224,5 @@ func TestRead_noGatewayCreatesNothing(t *testing.T) { //nolint:paralleltest // s
 
 	if _, err := os.Stat(home); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("Load created the gateway home: %v", err)
-	}
-}
-
-func TestAppKey(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct{ name, id, want string }{
-		{lark.Name, "cli_a1", "lark:cli_a1"},
-		{dingtalk.Name, "dingabc", "dingtalk:dingabc"},
-		{telegram.Name, "123456:AAE-secret", "telegram:123456"},
-		{discord.Name, "MTIzNDU2.Gx.secret", "discord:MTIzNDU2"},
-		{slack.Name, "xapp-1-A0123-456-secret", "slack:A0123"},
-		{github.Name, "Hewenyu/Claude-Bot", "github:hewenyu/claude-bot"},
-	} {
-		if got := AppKey(tc.name, tc.id); got != tc.want {
-			t.Errorf("AppKey(%s, %s) = %s, want %s", tc.name, tc.id, got, tc.want)
-		}
-	}
-
-	// An unparsable credential is hashed, never stored as is.
-	if got := AppKey(telegram.Name, "garbage-secret"); strings.Contains(got, "garbage") || !strings.HasPrefix(got, "telegram:sha256-") {
-		t.Errorf("AppKey(unparsable) = %s", got)
-	}
-
-	if AppKey(discord.Name, "a") == AppKey(discord.Name, "b") {
-		t.Error("different credentials share a key")
 	}
 }

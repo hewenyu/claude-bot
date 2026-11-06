@@ -11,17 +11,68 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 )
 
-const (
-	reviewUsage = "github review <id> approve|request-changes|comment [text|-]"
-	githubUsage = "github close <id> [--not-planned] | merge <id> [--method squash|merge|rebase] | " + reviewUsage +
-		" | mine <id>"
-)
-
 // errNotMine is the verdict of "github mine" on a PR the bot did not open.
 var errNotMine = errors.New("not the bot's own PR: audit it as someone else's")
 
+// githubAction is one of what `claude-bot github` does: its arguments, and
+// what it does with them.
+type githubAction struct {
+	name  string
+	usage string // after "github "
+	args  arity
+	// literal is how many positional arguments come before the text,
+	// which is taken as written; 0 if the action takes no text.
+	literal int
+	// flags defines the action's flags in fs and returns what it does.
+	flags func(fs *flag.FlagSet) func(ctx context.Context, ch *github.Channel, pos []string) error
+}
+
 // githubActions are what `claude-bot github` does.
-var githubActions = []string{"close", "merge", "review", "mine"}
+var githubActions = []githubAction{
+	{name: "close", usage: "close <id> [--not-planned]", args: exactly(1), flags: func(fs *flag.FlagSet) func(context.Context, *github.Channel, []string) error {
+		notPlanned := fs.Bool("not-planned", false, "the issue will not be done (rather than completed)")
+
+		return func(ctx context.Context, ch *github.Channel, pos []string) error {
+			if err := ch.Close(ctx, pos[0], *notPlanned); err != nil {
+				return err
+			}
+
+			fmt.Println("closed", pos[0])
+
+			return nil
+		}
+	}},
+	{name: "merge", usage: "merge <id> [--method squash|merge|rebase]", args: exactly(1), flags: func(fs *flag.FlagSet) func(context.Context, *github.Channel, []string) error {
+		method := fs.String("method", github.MergeSquash, "squash, merge or rebase")
+
+		return func(ctx context.Context, ch *github.Channel, pos []string) error {
+			sha, err := ch.Merge(ctx, pos[0], *method)
+			if err != nil {
+				return err
+			}
+
+			fmt.Println("merged", pos[0], sha)
+
+			return nil
+		}
+	}},
+	{name: "review", usage: "review <id> approve|request-changes|comment [text|-]", args: atLeast(2), literal: 2, flags: func(*flag.FlagSet) func(context.Context, *github.Channel, []string) error {
+		return review
+	}},
+	{name: "mine", usage: "mine <id>", args: exactly(1), flags: func(*flag.FlagSet) func(context.Context, *github.Channel, []string) error {
+		return mine
+	}},
+}
+
+// githubUsage lists the actions.
+func githubUsage() string {
+	usages := make([]string, len(githubActions))
+	for i, a := range githubActions {
+		usages[i] = "github " + a.usage
+	}
+
+	return strings.Join(usages, " | ")
+}
 
 // Review verdicts as typed on the command line.
 var reviewEvents = map[string]string{
@@ -34,24 +85,26 @@ var reviewEvents = map[string]string{
 // touches the inbox: reply (or done) settles the message.
 func cmdGitHub(ctx context.Context, project string, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: %s", errUsage, githubUsage)
+		return fmt.Errorf("%w: %s", errUsage, githubUsage())
 	}
 
-	if !slices.Contains(githubActions, args[0]) {
-		return fmt.Errorf("%w: unknown action %q: %s", errUsage, args[0], githubUsage)
+	i := slices.IndexFunc(githubActions, func(a githubAction) bool { return a.name == args[0] })
+	if i < 0 {
+		return fmt.Errorf("%w: unknown action %q: %s", errUsage, args[0], githubUsage())
 	}
 
-	fs := flag.NewFlagSet("github "+args[0], flag.ContinueOnError)
-	notPlanned := fs.Bool("not-planned", false, "close: the issue will not be done (rather than completed)")
-	method := fs.String("method", github.MergeSquash, "merge: squash, merge or rebase")
+	action := githubActions[i]
 
-	pos, err := parseInterleaved(fs, args[1:])
+	fs := flag.NewFlagSet("github "+action.name, flag.ContinueOnError)
+	do := action.flags(fs)
+
+	pos, err := parseInterleaved(fs, args[1:], action.literal)
 	if err != nil {
 		return err
 	}
 
-	if len(pos) == 0 {
-		return fmt.Errorf("%w: %s", errUsage, githubUsage)
+	if !action.args.allows(pos) {
+		return fmt.Errorf("%w: github %s", errUsage, action.usage)
 	}
 
 	a, err := newApp(ctx, project)
@@ -64,64 +117,43 @@ func cmdGitHub(ctx context.Context, project string, args []string) error {
 		return errors.New("github channel not configured: run `claude-bot init --channel github`")
 	}
 
-	id := pos[0]
-
-	switch args[0] {
-	case "close":
-		if err := ch.Close(ctx, id, *notPlanned); err != nil {
-			return err
-		}
-
-		fmt.Println("closed", id)
-	case "merge":
-		sha, err := ch.Merge(ctx, id, *method)
-		if err != nil {
-			return err
-		}
-
-		fmt.Println("merged", id, sha)
-	case "review":
-		return review(ctx, ch, id, pos[1:])
-	default: // "mine"
-		return mine(ctx, ch, id)
-	}
-
-	return nil
+	return do(ctx, ch, pos)
 }
 
-func review(ctx context.Context, ch *github.Channel, id string, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("%w: %s", errUsage, reviewUsage)
-	}
+// review reviews the PR pos[0] with the verdict pos[1] and the text after.
+func review(ctx context.Context, ch *github.Channel, pos []string) error {
+	id, verdict, text := pos[0], pos[1], pos[2:]
 
-	event, ok := reviewEvents[args[0]]
+	event, ok := reviewEvents[verdict]
 	if !ok {
-		return fmt.Errorf("%w: %s", errUsage, reviewUsage)
+		return fmt.Errorf("%w: unknown verdict %q: github review <id> approve|request-changes|comment [text|-]", errUsage, verdict)
 	}
 
 	var body string
 
-	if len(args) > 1 || event != github.ReviewApprove {
-		text, err := textArg(args[1:])
+	if len(text) > 0 || event != github.ReviewApprove {
+		t, err := textArg(text)
 		if err != nil {
 			return err
 		}
 
-		body = strings.TrimSpace(text)
+		body = strings.TrimSpace(t)
 	}
 
 	if err := ch.Review(ctx, id, event, body); err != nil {
 		return err
 	}
 
-	fmt.Println("reviewed", id, args[0])
+	fmt.Println("reviewed", id, verdict)
 
 	return nil
 }
 
 // mine prints who opened the PR and fails unless the bot did: its GitHub
 // account (the token's, "github.login" in status) and with the marker.
-func mine(ctx context.Context, ch *github.Channel, id string) error {
+func mine(ctx context.Context, ch *github.Channel, pos []string) error {
+	id := pos[0]
+
 	a, err := ch.Authorship(ctx, id)
 	if err != nil {
 		return err
@@ -145,24 +177,4 @@ func yesNo(b bool) string {
 	}
 
 	return "no"
-}
-
-// parseInterleaved parses flags given before, between or after the
-// positional arguments, which it returns in order. A lone "-" (stdin) is
-// positional.
-func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
-	var pos []string
-
-	for {
-		if err := parseFlags(fs, args); err != nil {
-			return nil, err
-		}
-
-		if fs.NArg() == 0 {
-			return pos, nil
-		}
-
-		pos = append(pos, fs.Arg(0))
-		args = fs.Args()[1:]
-	}
 }

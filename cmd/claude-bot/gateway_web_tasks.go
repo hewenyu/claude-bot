@@ -11,9 +11,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
-	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
-	"github.com/hewenyu/claude-bot/internal/store"
 	"github.com/hewenyu/claude-bot/internal/term"
 )
 
@@ -138,15 +136,6 @@ func taskLink(t inbox.Task) string {
 	}
 
 	return githubWeb + repo + "/issues/" + number
-}
-
-// botDir is a project's .claude-bot directory.
-func botDir(p store.Project) string {
-	return filepath.Join(p.Dir, config.DirName)
-}
-
-func projectInbox(p store.Project) *inbox.Inbox {
-	return inbox.New(filepath.Join(botDir(p), inboxDir))
 }
 
 func (w *web) tasks(r *http.Request) (any, error) {

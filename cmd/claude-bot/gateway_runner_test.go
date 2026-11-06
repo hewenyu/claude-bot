@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -43,13 +42,9 @@ func newRunnerPage(t *testing.T, program string) *runnerPage {
 
 	f := newGatewayFixture(t)
 	srv := httptest.NewUnstartedServer(nil)
+	host := srv.Listener.Addr().String()
 
-	hosts, err := loopbackHosts(srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	b, err := startBots(t.Context(), t.TempDir(), "http://"+srv.Listener.Addr().String()+"/", slog.New(slog.DiscardHandler), program, nil)
+	b, err := startBots(t.Context(), t.TempDir(), "http://"+host+"/", slog.New(slog.DiscardHandler), program, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,38 +52,17 @@ func newRunnerPage(t *testing.T, program string) *runnerPage {
 	t.Cleanup(b.agents.KillAll)
 
 	f.g.bots = b
-	w := newWeb(f.g.store, b, testPageToken, hosts, slog.New(slog.DiscardHandler))
-	w.checkGitHub = fakeGitHubCheck
-	srv.Config.Handler = w.routes()
+	p := f.page(host, b)
+	srv.Config.Handler = p.h
 	srv.Start()
 	t.Cleanup(srv.Close)
-
-	p := &page{t: t, f: f, h: srv.Config.Handler}
 
 	return &runnerPage{page: p, srv: srv, bots: b}
 }
 
-// host is the Host header the page's server accepts.
-func (p *runnerPage) host() string {
-	return strings.TrimPrefix(p.srv.URL, "http://")
-}
-
-func (p *runnerPage) call(method, path string, body any) (int, []byte) {
-	p.t.Helper()
-
-	var in bytes.Buffer
-	if body != nil {
-		_ = json.NewEncoder(&in).Encode(body)
-	}
-
-	r := httptest.NewRequestWithContext(p.t.Context(), method, path, &in)
-	r.Host = p.host()
-	r.Header.Set("Authorization", "Bearer "+testPageToken)
-
-	rw := httptest.NewRecorder()
-	p.h.ServeHTTP(rw, r)
-
-	return rw.Code, rw.Body.Bytes()
+// agent is how the agent id reaches the page's gateway with token.
+func (p *runnerPage) agent(id, token string) gatewayClient {
+	return gatewayClient{base: p.srv.URL, token: token, id: id}
 }
 
 func writeScript(t *testing.T, script string) string {
@@ -121,8 +95,8 @@ func TestRunner_turnOnAndSettings(t *testing.T) {
 		t.Fatalf("on: %d %s", code, raw)
 	}
 
-	if v, _ := p.f.store.Setting(t.Context(), store.RunnerKey(proj.ID)); v != runnerOn {
-		t.Fatalf("setting = %q", v)
+	if on, _ := p.f.store.RunnersOn(t.Context()); !on[proj.ID] {
+		t.Fatalf("runners on = %v", on)
 	}
 
 	code, raw = p.call(http.MethodPut, path, map[string]bool{"on": false})
@@ -186,18 +160,17 @@ func TestRunner_hooksAndAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	url := p.srv.URL + hookPath
 	event := `{"hook_event_name":"UserPromptSubmit"}`
 
 	// Wrong tokens and other agents are turned away; Claude goes on.
-	forwardHook(t.Context(), url, "nope", a.ID, strings.NewReader(event), io.Discard)
-	forwardHook(t.Context(), url, p.bots.token, "a-other", strings.NewReader(event), io.Discard)
+	p.agent(a.ID, "nope").forwardHook(t.Context(), strings.NewReader(event), io.Discard)
+	p.agent("a-other", p.bots.token).forwardHook(t.Context(), strings.NewReader(event), io.Discard)
 
 	if info, _ := p.bots.agents.AgentInfo(a.ID); info.Status == agent.Working {
 		t.Fatal("a hook with a wrong token or agent was taken")
 	}
 
-	forwardHook(t.Context(), url, p.bots.token, a.ID, strings.NewReader(event), io.Discard)
+	p.agent(a.ID, p.bots.token).forwardHook(t.Context(), strings.NewReader(event), io.Discard)
 
 	if info, _ := p.bots.agents.AgentInfo(a.ID); info.Status != agent.Working {
 		t.Fatalf("status after the hook = %s", info.Status)
@@ -225,18 +198,17 @@ func TestRunner_aRound(t *testing.T) {
 	p, box, task := newRound(t)
 	run := waitRun(t, p.bots, func(r runner.Run) bool { return r.State == runner.Running && r.AgentID != "" && len(r.Round) == 1 })
 	id := run.AgentID
-	finish := p.srv.URL + finishPath
 	stop := func() string { return stopHook(t, p, id) }
 
 	if out := stop(); !strings.Contains(out, `"decision":"block"`) || !strings.Contains(out, "claude-bot finish") {
 		t.Fatalf("stop before finishing: %q", out)
 	}
 
-	if err := agentPost(t.Context(), finish, p.bots.token, id, nil, nil); err == nil || !strings.Contains(err.Error(), "t1") {
+	if err := p.agent(id, p.bots.token).post(t.Context(), finishPath, nil, nil); err == nil || !strings.Contains(err.Error(), "t1") {
 		t.Fatalf("finish before answering: %v", err)
 	}
 
-	if err := agentPost(t.Context(), finish, "nope", id, nil, nil); err == nil {
+	if err := p.agent(id, "nope").post(t.Context(), finishPath, nil, nil); err == nil {
 		t.Fatal("finish with a wrong token")
 	}
 
@@ -246,7 +218,7 @@ func TestRunner_aRound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := agentPost(t.Context(), finish, p.bots.token, id, nil, nil); err != nil {
+	if err := p.agent(id, p.bots.token).post(t.Context(), finishPath, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,7 +252,7 @@ func stopHook(t *testing.T, p *runnerPage, id string) string {
 
 	var out bytes.Buffer
 
-	forwardHook(t.Context(), p.srv.URL+hookPath, p.bots.token, id, strings.NewReader(`{"hook_event_name":"Stop"}`), &out)
+	p.agent(id, p.bots.token).forwardHook(t.Context(), strings.NewReader(`{"hook_event_name":"Stop"}`), &out)
 
 	return out.String()
 }

@@ -2,8 +2,6 @@ package config
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
-	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
-	"github.com/hewenyu/claude-bot/internal/channel/discord"
+	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
-	"github.com/hewenyu/claude-bot/internal/channel/lark"
-	"github.com/hewenyu/claude-bot/internal/channel/slack"
-	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/jev"
 	"github.com/hewenyu/claude-bot/internal/store"
 )
@@ -49,6 +44,21 @@ func Home() (string, error) {
 	return filepath.Join(u, DirName), nil
 }
 
+// EnsureHome returns the gateway home, creating it, private to the user,
+// if needed.
+func EnsureHome() (string, error) {
+	home, err := Home()
+	if err != nil {
+		return "", err
+	}
+
+	if err := os.MkdirAll(home, atomicfile.PrivateDir); err != nil {
+		return "", fmt.Errorf("create %s: %w", home, err)
+	}
+
+	return home, nil
+}
+
 // OpenStore opens the gateway database, creating it if needed.
 func OpenStore(ctx context.Context) (*store.Store, error) {
 	home, err := Home()
@@ -72,7 +82,7 @@ func openGateway(ctx context.Context) (*store.Store, bool, error) {
 // FromStore returns the configuration of a registered project: its channels
 // and the settings every project shares.
 func FromStore(ctx context.Context, s *store.Store, p store.Project) (Config, error) {
-	cfg := Config{Gateway: &p}
+	var cfg Config
 
 	chans, err := s.Channels(ctx, p.ID)
 	if err != nil {
@@ -80,7 +90,7 @@ func FromStore(ctx context.Context, s *store.Store, p store.Project) (Config, er
 	}
 
 	for _, c := range chans {
-		if err := cfg.decode(c); err != nil {
+		if err := cfg.decodeChannel(c.Name, c.Config); err != nil {
 			return cfg, fmt.Errorf("project %s: %w", p.Name, err)
 		}
 	}
@@ -106,16 +116,22 @@ func FromStore(ctx context.Context, s *store.Store, p store.Project) (Config, er
 // ErrNoGitHubToken reports a GitHub token name the gateway does not have.
 var ErrNoGitHubToken = errors.New("no such GitHub token in the gateway")
 
+// githubTokenKey is the setting that holds the GitHub token called name,
+// the default one for "".
+func githubTokenKey(name string) string {
+	if name == "" {
+		return store.SettingGitHubToken
+	}
+
+	return store.SettingGitHubTokenPrefix + name
+}
+
 // GitHubToken returns the gateway's GitHub token called name, the default
 // one for "". A missing default is "", for the channel to report; a missing
 // named token is an error naming it.
 func GitHubToken(ctx context.Context, s *store.Store, name string) (string, error) {
-	if name == "" {
-		return s.Setting(ctx, store.SettingGitHubToken)
-	}
-
-	token, err := s.Setting(ctx, store.SettingGitHubTokenPrefix+name)
-	if err == nil && token == "" {
+	token, err := s.Setting(ctx, githubTokenKey(name))
+	if err == nil && token == "" && name != "" {
 		err = fmt.Errorf("%w: %q", ErrNoGitHubToken, name)
 	}
 
@@ -125,6 +141,49 @@ func GitHubToken(ctx context.Context, s *store.Store, name string) (string, erro
 // GitHubTokens returns the gateway's named GitHub tokens by name.
 func GitHubTokens(ctx context.Context, s *store.Store) (map[string]string, error) {
 	return s.SettingsWithPrefix(ctx, store.SettingGitHubTokenPrefix)
+}
+
+// SetGitHubToken saves the gateway's GitHub token called name, the default
+// one for "".
+func SetGitHubToken(ctx context.Context, s *store.Store, name, token string) error {
+	if token == "" {
+		return errors.New("empty GitHub token: use DeleteGitHubToken")
+	}
+
+	return s.SetSetting(ctx, githubTokenKey(name), token)
+}
+
+// DeleteGitHubToken removes the gateway's GitHub token called name.
+func DeleteGitHubToken(ctx context.Context, s *store.Store, name string) error {
+	return s.SetSetting(ctx, githubTokenKey(name), "")
+}
+
+// UseGitHubToken has the GitHub channel of a project use the gateway's
+// token called name, the default one for "".
+func UseGitHubToken(ctx context.Context, s *store.Store, project int64, name string) error {
+	chans, err := s.Channels(ctx, project)
+	if err != nil {
+		return err
+	}
+
+	i := slices.IndexFunc(chans, func(c store.Channel) bool { return c.Name == github.Name })
+	if i < 0 {
+		return fmt.Errorf("%w: %d has no GitHub channel", store.ErrNotFound, project)
+	}
+
+	cfg, err := ChannelConfig(github.Name, chans[i].Config)
+	if err != nil {
+		return err
+	}
+
+	cfg.GitHubTokenName = name
+
+	rows, err := cfg.Channels()
+	if err != nil {
+		return err
+	}
+
+	return s.PutChannel(ctx, project, rows[0])
 }
 
 var tokenName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$`)
@@ -143,139 +202,41 @@ func CheckTokenName(name string) error {
 	return nil
 }
 
-// storedGitHub is the GitHub channel as the gateway stores it: without the
-// token, with the name of the one it uses.
-type storedGitHub struct {
-	github.Config
-
-	TokenName string `json:"token_name,omitempty"`
-}
-
 // ChannelConfig returns a Config with only the channel name set, from its
 // stored JSON.
 func ChannelConfig(name string, raw json.RawMessage) (Config, error) {
 	var c Config
 
-	err := c.decode(store.Channel{Name: name, Config: raw})
+	err := c.decodeChannel(name, raw)
 
 	return c, err
-}
-
-func (c *Config) decode(ch store.Channel) error {
-	var target any
-
-	switch ch.Name {
-	case lark.Name:
-		c.Lark = new(lark.Config)
-		target = c.Lark
-	case discord.Name:
-		c.Discord = new(discord.Config)
-		target = c.Discord
-	case telegram.Name:
-		c.Telegram = new(telegram.Config)
-		target = c.Telegram
-	case slack.Name:
-		c.Slack = new(slack.Config)
-		target = c.Slack
-	case github.Name:
-		var gh storedGitHub
-		if err := json.Unmarshal(ch.Config, &gh); err != nil {
-			return fmt.Errorf("channel %s: %w", ch.Name, err)
-		}
-
-		c.GitHub, c.GitHubTokenName = &gh.Config, gh.TokenName
-
-		return nil
-	case dingtalk.Name:
-		c.DingTalk = new(dingtalk.Config)
-		target = c.DingTalk
-	default:
-		return fmt.Errorf("unknown channel %q: upgrade claude-bot", ch.Name)
-	}
-
-	if err := json.Unmarshal(ch.Config, target); err != nil {
-		return fmt.Errorf("channel %s: %w", ch.Name, err)
-	}
-
-	return nil
 }
 
 // Channels returns the channels cfg sets up, as the gateway stores them. The
 // GitHub token is left out: the gateway keeps it apart, for all the projects
 // that use it.
 func (c Config) Channels() ([]store.Channel, error) {
-	var out []store.Channel
+	var (
+		out  []store.Channel
+		errs []error
+	)
 
-	add := func(name string, cfg any, key string) error {
-		raw, err := json.Marshal(cfg)
-		if err != nil {
-			return fmt.Errorf("marshal %s config: %w", name, err)
+	for _, k := range kinds {
+		if !k.has(c) {
+			continue
 		}
 
-		out = append(out, store.Channel{Name: name, Config: raw, AppKey: key})
+		raw, key, err := k.encode(c)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("marshal %s config: %w", k.Name, err))
 
-		return nil
-	}
+			continue
+		}
 
-	var errs []error
-
-	if c.Lark != nil {
-		errs = append(errs, add(lark.Name, c.Lark, AppKey(lark.Name, c.Lark.AppID)))
-	}
-
-	if c.Discord != nil {
-		errs = append(errs, add(discord.Name, c.Discord, AppKey(discord.Name, c.Discord.Token)))
-	}
-
-	if c.Telegram != nil {
-		errs = append(errs, add(telegram.Name, c.Telegram, AppKey(telegram.Name, c.Telegram.Token)))
-	}
-
-	if c.Slack != nil {
-		errs = append(errs, add(slack.Name, c.Slack, AppKey(slack.Name, c.Slack.AppToken)))
-	}
-
-	if c.GitHub != nil {
-		gh := storedGitHub{Config: *c.GitHub, TokenName: c.GitHubTokenName}
-		gh.Token = ""
-		errs = append(errs, add(github.Name, gh, AppKey(github.Name, gh.Repo)))
-	}
-
-	if c.DingTalk != nil {
-		errs = append(errs, add(dingtalk.Name, c.DingTalk, AppKey(dingtalk.Name, c.DingTalk.ClientID)))
+		out = append(out, store.Channel{Name: k.Name, Config: raw, AppKey: key})
 	}
 
 	return out, errors.Join(errs...)
-}
-
-// AppKey names the app a channel connects to, from the credential that
-// identifies it: the Lark app id, the DingTalk client id, the bot id in a
-// Telegram token, the bot user in a Discord token, the app id in a Slack app
-// token, the GitHub repository. One app belongs to one project. The key
-// never holds a secret; a credential it cannot parse is hashed.
-func AppKey(name, id string) string {
-	switch name {
-	case telegram.Name:
-		if bot, _, ok := strings.Cut(id, ":"); ok && bot != "" {
-			return name + ":" + bot
-		}
-	case discord.Name:
-		if user, _, ok := strings.Cut(id, "."); ok && user != "" {
-			return name + ":" + user
-		}
-	case slack.Name:
-		if parts := strings.Split(id, "-"); len(parts) >= 3 && parts[0] == "xapp" && parts[2] != "" {
-			return name + ":" + parts[2]
-		}
-	case github.Name:
-		return name + ":" + strings.ToLower(id)
-	case lark.Name, dingtalk.Name:
-		return name + ":" + id
-	}
-
-	sum := sha256.Sum256([]byte(id))
-
-	return name + ":sha256-" + hex.EncodeToString(sum[:8])
 }
 
 // Save registers the project of dir with the gateway, if it is not yet, and
@@ -311,17 +272,12 @@ func save(ctx context.Context, s *store.Store, dir string, cfg Config) (store.Pr
 	}
 
 	if cfg.GitHub != nil && cfg.GitHub.Token != "" {
-		key := store.SettingGitHubToken
-		if cfg.GitHubTokenName != "" {
-			key = store.SettingGitHubTokenPrefix + cfg.GitHubTokenName
-		}
-
-		if err := s.SetSetting(ctx, key, cfg.GitHub.Token); err != nil {
+		if err := SetGitHubToken(ctx, s, cfg.GitHubTokenName, cfg.GitHub.Token); err != nil {
 			return p, err
 		}
 	}
 
-	file := filepath.Join(dir, configFile)
+	file := FilePath(dir)
 	if err := os.Rename(file, file+importedSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return p, fmt.Errorf("retire %s: %w", file, err)
 	}
@@ -352,7 +308,7 @@ var ErrNothingToImport = errors.New("no config.json to import")
 // name, so that the project keeps its account. Importing again after
 // restoring config.json overwrites the project's channels.
 func Import(ctx context.Context, dir string) (Imported, error) {
-	file := filepath.Join(dir, configFile)
+	file := FilePath(dir)
 	if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
 		return Imported{}, fmt.Errorf("%w in %s", ErrNothingToImport, dir)
 	}
@@ -461,4 +417,37 @@ func GatewayGitHubToken(ctx context.Context, name string) (string, error) {
 	}
 
 	return token, err
+}
+
+// Unregister removes a project from the gateway after writing its
+// configuration back to its config.json, so that it can still run on its
+// own, and returns that file; "" if the project's directory is gone, with
+// nothing to write back to.
+func Unregister(ctx context.Context, s *store.Store, p store.Project) (string, error) {
+	cfg, err := FromStore(ctx, s, p)
+	if err != nil {
+		return "", err
+	}
+
+	dir := BotDir(p.Dir)
+	path := FilePath(dir)
+
+	_, err = os.Stat(p.Dir)
+
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		path = ""
+	case err != nil:
+		return "", fmt.Errorf("unregister %s: %w", p.Name, err)
+	default:
+		if err := WriteFile(dir, cfg); err != nil {
+			return "", err
+		}
+	}
+
+	if err := s.RemoveProject(ctx, p.ID); err != nil {
+		return "", err
+	}
+
+	return path, nil
 }
