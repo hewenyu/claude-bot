@@ -1,0 +1,320 @@
+//go:build unix
+
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/hewenyu/claude-bot/internal/agent"
+	"github.com/hewenyu/claude-bot/internal/inbox"
+	"github.com/hewenyu/claude-bot/internal/runner"
+	"github.com/hewenyu/claude-bot/internal/store"
+)
+
+// echoAgent stands for Claude Code: it says hello and echoes what it is
+// typed.
+const echoAgent = "#!/bin/sh\nprintf 'hello\\r\\n'\nexec cat\n"
+
+// runnerPage is a gateway page served on a real port, with a runner whose
+// agents run program.
+type runnerPage struct {
+	*page
+
+	srv  *httptest.Server
+	bots *bots
+}
+
+func newRunnerPage(t *testing.T, program string) *runnerPage {
+	t.Helper()
+
+	f := newGatewayFixture(t)
+	srv := httptest.NewUnstartedServer(nil)
+
+	hosts, err := loopbackHosts(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := startBots(t.Context(), t.TempDir(), "http://"+srv.Listener.Addr().String()+"/", slog.New(slog.DiscardHandler), program, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(b.agents.KillAll)
+
+	f.g.bots = b
+	w := &web{g: f.g, token: testPageToken, hosts: hosts, log: slog.New(slog.DiscardHandler), checkGitHub: fakeGitHubCheck}
+	srv.Config.Handler = w.routes()
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	p := &page{t: t, f: f, h: srv.Config.Handler}
+
+	return &runnerPage{page: p, srv: srv, bots: b}
+}
+
+// host is the Host header the page's server accepts.
+func (p *runnerPage) host() string {
+	return strings.TrimPrefix(p.srv.URL, "http://")
+}
+
+func (p *runnerPage) call(method, path string, body any) (int, []byte) {
+	p.t.Helper()
+
+	var in bytes.Buffer
+	if body != nil {
+		_ = json.NewEncoder(&in).Encode(body)
+	}
+
+	r := httptest.NewRequestWithContext(p.t.Context(), method, path, &in)
+	r.Host = p.host()
+	r.Header.Set("Authorization", "Bearer "+testPageToken)
+
+	rw := httptest.NewRecorder()
+	p.h.ServeHTTP(rw, r)
+
+	return rw.Code, rw.Body.Bytes()
+}
+
+func writeScript(t *testing.T, script string) string {
+	t.Helper()
+
+	prog := filepath.Join(t.TempDir(), "agent")
+	if err := os.WriteFile(prog, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	return prog
+}
+
+func TestRunner_turnOnAndSettings(t *testing.T) {
+	t.Parallel()
+
+	p := newRunnerPage(t, "true")
+	proj := p.f.register("alpha", "cli_a")
+	path := "/api/projects/" + strconv.FormatInt(proj.ID, 10) + "/runner"
+
+	var run runView
+
+	code, raw := p.call(http.MethodGet, path, nil)
+	if p.decode(raw, &run); code != http.StatusOK || run.State != runner.Off {
+		t.Fatalf("before: %d %s", code, raw)
+	}
+
+	code, raw = p.call(http.MethodPut, path, map[string]bool{"on": true})
+	if p.decode(raw, &run); code != http.StatusOK || run.State != runner.Resting {
+		t.Fatalf("on: %d %s", code, raw)
+	}
+
+	if v, _ := p.f.store.Setting(t.Context(), runnerKey(proj.ID)); v != runnerOn {
+		t.Fatalf("setting = %q", v)
+	}
+
+	code, raw = p.call(http.MethodPut, path, map[string]bool{"on": false})
+	if p.decode(raw, &run); code != http.StatusOK || run.State != runner.Off {
+		t.Fatalf("off: %d %s", code, raw)
+	}
+
+	if code, raw := p.call(http.MethodPost, path+"/resume", nil); code != http.StatusConflict {
+		t.Fatalf("resume off: %d %s", code, raw)
+	}
+}
+
+func TestRunner_maxParallel(t *testing.T) {
+	t.Parallel()
+
+	p := newRunnerPage(t, "true")
+	proj := p.f.register("alpha", "cli_a")
+
+	if code, raw := p.call(http.MethodPut, "/api/projects/"+strconv.FormatInt(proj.ID, 10)+"/runner", map[string]bool{"on": true}); code != http.StatusOK {
+		t.Fatalf("on: %d %s", code, raw)
+	}
+
+	if code, raw := p.call(http.MethodPut, "/api/runner", map[string]int{"max_parallel": 0}); code != http.StatusBadRequest {
+		t.Fatalf("max 0: %d %s", code, raw)
+	}
+
+	if code, raw := p.call(http.MethodPut, "/api/runner", map[string]int{"max_parallel": 5}); code != http.StatusOK {
+		t.Fatalf("max 5: %d %s", code, raw)
+	}
+
+	var ov overviewResponse
+
+	code, raw := p.call(http.MethodGet, "/api/overview", nil)
+	if p.decode(raw, &ov); code != http.StatusOK || ov.Runner == nil || ov.Runner.MaxParallel != 5 || len(ov.Runner.Runs) != 1 {
+		t.Fatalf("overview: %d %s", code, raw)
+	}
+
+	if code, raw := p.call(http.MethodPost, "/api/projects/999/runner/resume", nil); code != http.StatusNotFound {
+		t.Fatalf("resume unknown: %d %s", code, raw)
+	}
+}
+
+func TestRunner_withoutRunner(t *testing.T) {
+	t.Parallel()
+
+	p := newPage(t)
+	proj := p.f.register("alpha", "cli_a")
+
+	if code, raw := p.call(http.MethodPut, "/api/projects/"+strconv.FormatInt(proj.ID, 10)+"/runner", map[string]bool{"on": true}); code != http.StatusServiceUnavailable {
+		t.Fatalf("on: %d %s", code, raw)
+	}
+}
+
+func TestRunner_hooksAndAgents(t *testing.T) {
+	t.Parallel()
+
+	p := newRunnerPage(t, writeScript(t, echoAgent))
+
+	a, err := p.bots.agents.Spawn(agent.SpawnOptions{Name: "alpha", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	url := p.srv.URL + hookPath
+	event := `{"hook_event_name":"UserPromptSubmit"}`
+
+	// Wrong tokens and other agents are turned away; Claude goes on.
+	forwardHook(t.Context(), url, "nope", a.ID, strings.NewReader(event))
+	forwardHook(t.Context(), url, p.bots.token, "a-other", strings.NewReader(event))
+
+	if info, _ := p.bots.agents.AgentInfo(a.ID); info.Status == agent.Working {
+		t.Fatal("a hook with a wrong token or agent was taken")
+	}
+
+	forwardHook(t.Context(), url, p.bots.token, a.ID, strings.NewReader(event))
+
+	if info, _ := p.bots.agents.AgentInfo(a.ID); info.Status != agent.Working {
+		t.Fatalf("status after the hook = %s", info.Status)
+	}
+
+	if code, raw := p.call(http.MethodPost, "/api/agents/nope/interrupt", nil); code != http.StatusNotFound {
+		t.Fatalf("unknown agent: %d %s", code, raw)
+	}
+
+	if code, raw := p.call(http.MethodPost, "/api/agents/"+a.ID+"/explode", nil); code != http.StatusNotFound {
+		t.Fatalf("unknown action: %d %s", code, raw)
+	}
+
+	if code, raw := p.call(http.MethodPost, "/api/agents/"+a.ID+"/kill", nil); code != http.StatusOK {
+		t.Fatalf("kill: %d %s", code, raw)
+	}
+}
+
+func TestRunner_terminal(t *testing.T) {
+	t.Parallel()
+
+	p := newRunnerPage(t, writeScript(t, echoAgent))
+
+	a, err := p.bots.agents.Spawn(agent.SpawnOptions{Name: "alpha", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	url := "ws" + strings.TrimPrefix(p.srv.URL, "http") + "/api/agents/" + a.ID + "/term"
+	header := http.Header{"Origin": {p.srv.URL}}
+
+	// The page token goes as a subprotocol; without it, no terminal.
+	_, resp, err := (&websocket.Dialer{Subprotocols: []string{wsProtocol}}).DialContext(t.Context(), url, header)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("without the token: %v", err)
+	}
+
+	_ = resp.Body.Close()
+
+	d := &websocket.Dialer{Subprotocols: []string{wsProtocol, wsTokenPrefix + testPageToken}}
+
+	c, resp, err := d.DialContext(t.Context(), url, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer c.Close() //nolint:errcheck // test cleanup
+
+	_ = resp.Body.Close()
+
+	if resp.Header.Get("Sec-WebSocket-Protocol") != wsProtocol {
+		t.Fatalf("protocol = %q", resp.Header.Get("Sec-WebSocket-Protocol"))
+	}
+
+	expectTerm(t, c, "hello")
+
+	if err := c.WriteMessage(websocket.BinaryMessage, []byte("ping\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	expectTerm(t, c, "ping")
+}
+
+// expectTerm reads the terminal until it printed want.
+func expectTerm(t *testing.T, c *websocket.Conn, want string) {
+	t.Helper()
+
+	var seen []byte
+
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	for !bytes.Contains(seen, []byte(want)) {
+		_, p, err := c.ReadMessage()
+		if err != nil {
+			t.Fatalf("terminal printed %q, not %q: %v", seen, want, err)
+		}
+
+		seen = append(seen, p...)
+	}
+}
+
+func TestPendingCountsPeople(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	b := projectInbox(store.Project{Dir: dir})
+
+	task := inbox.Task{ID: "t1", Entries: []inbox.Entry{{Kind: inbox.EntryUser, Text: "hi"}, {Kind: inbox.EntryBot, Text: "on it"}}}
+	if err := b.SaveTask(task, true); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := pendingIn(dir)
+	if err != nil || len(got) != 1 || got[0] != (runner.Pending{ID: "t1", Entries: 1}) {
+		t.Fatalf("pending = %v, %v", got, err)
+	}
+}
+
+func TestCheckBotCommand(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	home, _ := os.UserHomeDir()
+	if _, err := os.Stat(filepath.Join(home, ".claude", "commands", "bot.md")); err != nil {
+		if err := checkBotCommand(dir); err == nil {
+			t.Fatal("a project without /bot passed")
+		}
+	}
+
+	cmd := filepath.Join(dir, ".claude", "commands")
+	if err := os.MkdirAll(cmd, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(cmd, "bot.md"), []byte("bot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checkBotCommand(dir); err != nil {
+		t.Fatal(err)
+	}
+}

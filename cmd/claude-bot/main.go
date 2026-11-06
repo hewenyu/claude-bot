@@ -147,6 +147,8 @@ func run(ctx context.Context, args []string) int {
 		"github":   cmdGitHub,
 		"status":   cmdStatus,
 		"gateway":  cmdGateway,
+		// hook is for the agents the gateway runs; it is not listed.
+		"hook": cmdHook,
 		"version": func(context.Context, string, []string) error {
 			fmt.Println(Version)
 

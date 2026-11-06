@@ -239,7 +239,7 @@ func TestSpawnInAMissingFolderFails(t *testing.T) {
 func TestSpawnOfAMissingProgramKeepsNoAgent(t *testing.T) {
 	t.Parallel()
 
-	m := NewManager(Config{Program: "rla-no-such-program"}, nil)
+	m := NewManager(Config{Program: "claude-bot-no-such-program"}, nil)
 
 	if _, err := m.Spawn(SpawnOptions{Cwd: t.TempDir()}); err == nil {
 		t.Fatal("spawned a missing program")

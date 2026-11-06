@@ -44,6 +44,8 @@ const (
 	SettingGitHubToken = "github_token" // the default GitHub token
 	SettingUIToken     = "ui_token"
 	SettingUIAddr      = "ui_addr"
+	// SettingRunnerMaxParallel is how many agents the runner runs at once.
+	SettingRunnerMaxParallel = "runner_max_parallel"
 )
 
 // ErrNotFound reports a project that is not registered.
@@ -264,6 +266,10 @@ func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 
 	return v, nil
 }
+
+// SettingRunnerPrefix starts the key, followed by the project id, that
+// turns a project's runner on.
+const SettingRunnerPrefix = "runner:"
 
 // SettingGitHubTokenPrefix starts the key of each named GitHub token, for
 // projects that use another account than the default token's.
