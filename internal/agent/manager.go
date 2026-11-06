@@ -28,10 +28,10 @@ var hookEvents = []string{
 }
 
 const (
-	// DefaultProgram is the agent command when none is configured.
-	DefaultProgram = "claude"
-	// DefaultRingSize is how much output a terminal keeps for replay.
-	DefaultRingSize = 4 << 20
+	// defaultProgram is the agent command when none is configured.
+	defaultProgram = "claude"
+	// defaultRingSize is how much output a terminal keeps for replay.
+	defaultRingSize = 4 << 20
 	// hookTimeout is how many seconds Claude gives a hook command.
 	hookTimeout = 5
 )
@@ -122,11 +122,11 @@ type Manager struct {
 // agent it still has.
 func NewManager(cfg Config, onChange func()) *Manager {
 	if cfg.Program == "" {
-		cfg.Program = DefaultProgram
+		cfg.Program = defaultProgram
 	}
 
 	if cfg.RingSize <= 0 {
-		cfg.RingSize = DefaultRingSize
+		cfg.RingSize = defaultRingSize
 	}
 
 	return &Manager{cfg: cfg, onChange: onChange, agents: map[string]*Agent{}}

@@ -39,3 +39,12 @@ var responses = regexp.MustCompile(`^(?:` +
 func IsResponse(p []byte) bool {
 	return responses.Match(p)
 }
+
+// ansi is every escape sequence: CSI, OSC, and the two-byte ones.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]`)
+
+// StripANSI returns s without escape sequences: the text a program drew,
+// without its colors, cursor moves and titles.
+func StripANSI(s string) string {
+	return ansi.ReplaceAllString(s, "")
+}
