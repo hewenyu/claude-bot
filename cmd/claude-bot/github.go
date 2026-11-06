@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/hewenyu/claude-bot/internal/channel/github"
@@ -19,6 +20,9 @@ const (
 // errNotMine is the verdict of "github mine" on a PR the bot did not open.
 var errNotMine = errors.New("not the bot's own PR: audit it as someone else's")
 
+// githubActions are what `claude-bot github` does.
+var githubActions = []string{"close", "merge", "review", "mine"}
+
 // Review verdicts as typed on the command line.
 var reviewEvents = map[string]string{
 	"approve":         github.ReviewApprove,
@@ -31,6 +35,10 @@ var reviewEvents = map[string]string{
 func cmdGitHub(ctx context.Context, project string, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("%w: %s", errUsage, githubUsage)
+	}
+
+	if !slices.Contains(githubActions, args[0]) {
+		return fmt.Errorf("%w: unknown action %q: %s", errUsage, args[0], githubUsage)
 	}
 
 	fs := flag.NewFlagSet("github "+args[0], flag.ContinueOnError)
@@ -74,21 +82,22 @@ func cmdGitHub(ctx context.Context, project string, args []string) error {
 		fmt.Println("merged", id, sha)
 	case "review":
 		return review(ctx, ch, id, pos[1:])
-	case "mine":
+	default: // "mine"
 		return mine(ctx, ch, id)
-	default:
-		return fmt.Errorf("%w: unknown action %q: %s", errUsage, args[0], githubUsage)
 	}
 
 	return nil
 }
 
 func review(ctx context.Context, ch *github.Channel, id string, args []string) error {
-	if len(args) == 0 || reviewEvents[args[0]] == "" {
+	if len(args) == 0 {
 		return fmt.Errorf("%w: %s", errUsage, reviewUsage)
 	}
 
-	event := reviewEvents[args[0]]
+	event, ok := reviewEvents[args[0]]
+	if !ok {
+		return fmt.Errorf("%w: %s", errUsage, reviewUsage)
+	}
 
 	var body string
 
@@ -145,8 +154,8 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 
 	for {
-		if err := fs.Parse(args); err != nil {
-			return nil, fmt.Errorf("%w: %w", errUsage, err)
+		if err := parseFlags(fs, args); err != nil {
+			return nil, err
 		}
 
 		if fs.NArg() == 0 {

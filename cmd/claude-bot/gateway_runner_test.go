@@ -57,7 +57,8 @@ func newRunnerPage(t *testing.T, program string) *runnerPage {
 	t.Cleanup(b.agents.KillAll)
 
 	f.g.bots = b
-	w := &web{g: f.g, token: testPageToken, hosts: hosts, log: slog.New(slog.DiscardHandler), checkGitHub: fakeGitHubCheck}
+	w := newWeb(f.g.store, b, testPageToken, hosts, slog.New(slog.DiscardHandler))
+	w.checkGitHub = fakeGitHubCheck
 	srv.Config.Handler = w.routes()
 	srv.Start()
 	t.Cleanup(srv.Close)
@@ -120,7 +121,7 @@ func TestRunner_turnOnAndSettings(t *testing.T) {
 		t.Fatalf("on: %d %s", code, raw)
 	}
 
-	if v, _ := p.f.store.Setting(t.Context(), runnerKey(proj.ID)); v != runnerOn {
+	if v, _ := p.f.store.Setting(t.Context(), store.RunnerKey(proj.ID)); v != runnerOn {
 		t.Fatalf("setting = %q", v)
 	}
 

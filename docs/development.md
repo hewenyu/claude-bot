@@ -40,7 +40,7 @@ internal/runner/            「自动处理」的调度：每个项目什么时�
 internal/agent/             在伪终端里运行 Claude Code，通过 hook、终端标题和屏幕判断它在做什么，保存和恢复会话
 internal/term/              终端输出的环形缓冲、标题解析，以及替还没连上的终端回答终端查询
 internal/webui/            gateway 网页的静态文件（go:embed），由 web/ 构建后提交，所以 go install 不需要 Node
-web/                        gateway 网页的源码：React + TypeScript + Vite，接口在 cmd/claude-bot/gateway_web.go 和 gateway_web_runner.go
+web/                        gateway 网页的源码：React + TypeScript + Vite，接口在 cmd/claude-bot/gateway_web*.go（gateway_web.go 是服务、鉴权和错误处理，其余按任务、渠道、设置、GitHub token、runner 分文件）
 desktop/                    桌面 App：网页的 Electron 窗口，确保 gateway 在跑
 ```
 

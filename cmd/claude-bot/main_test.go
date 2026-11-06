@@ -291,7 +291,7 @@ func TestListen_stopsOnlyTheFailedChannel(t *testing.T) {
 
 	done := make(chan error, 1)
 
-	go func() { done <- a.listen(t.Context()) }()
+	go func() { done <- a.listen(t.Context(), new(sync.WaitGroup)) }()
 
 	waitBeat := func(want heartbeat) {
 		t.Helper()
@@ -342,7 +342,7 @@ func TestListen_failsBeforeConnecting(t *testing.T) {
 	bad := &failing{liveChannel{name: "github"}}
 	a := assemble(dir, slog.New(slog.DiscardHandler), &liveChannel{name: "lark"}, bad)
 
-	go func() { _ = a.listen(t.Context()) }()
+	go func() { _ = a.listen(t.Context(), new(sync.WaitGroup)) }()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

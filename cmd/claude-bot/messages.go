@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,8 +21,8 @@ func cmdInbox(ctx context.Context, project string, args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	wait := fs.Duration("wait", 0, "block up to this long until a task is pending (e.g. 55m)")
 
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w: %w", errUsage, err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	a, err := newApp(ctx, project)
@@ -77,6 +76,10 @@ func (a *app) pendingTasks(ctx context.Context, wait time.Duration) ([]inbox.Tas
 			tasks, err = a.inbox.PendingTasks()
 		}
 
+		if err == nil && len(tasks) == 0 {
+			err = ctx.Err() // interrupted is not "inbox empty"
+		}
+
 		if err != nil || len(tasks) == 0 {
 			return nil, err
 		}
@@ -117,20 +120,6 @@ func (a *app) show(tasks []inbox.Task) ([]taskLine, error) {
 	return lines, err
 }
 
-// writeLines prints values as JSON lines.
-func writeLines[T any](values []T) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetEscapeHTML(false)
-
-	for _, v := range values {
-		if err := enc.Encode(v); err != nil {
-			return fmt.Errorf("write inbox: %w", err)
-		}
-	}
-
-	return nil
-}
-
 // replyArgs is a parsed `reply [--keep] <id> [text|-]`.
 type replyArgs struct {
 	id   string
@@ -144,8 +133,8 @@ func parseReplyArgs(args []string) (replyArgs, error) {
 	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
 	fs.BoolVar(&r.keep, "keep", false, "leave the message pending (e.g. for an interim \"looking into it\" reply)")
 
-	if err := fs.Parse(args); err != nil {
-		return r, fmt.Errorf("%w: %w", errUsage, err)
+	if err := parseFlags(fs, args); err != nil {
+		return r, err
 	}
 
 	if fs.NArg() < 1 {

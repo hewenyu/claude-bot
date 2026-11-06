@@ -114,6 +114,14 @@ Operations:
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	// Once the first signal starts the shutdown, a second one kills the
+	// process the default way, in case the shutdown hangs.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+
 	code := run(ctx, os.Args[1:])
 
 	stop()
@@ -194,8 +202,8 @@ func run(ctx context.Context, args []string) int {
 // prints help and a stray flag is a usage error rather than an id.
 func parseArgs(name string, args []string) ([]string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return nil, fmt.Errorf("%w: %w", errUsage, err)
+	if err := parseFlags(fs, args); err != nil {
+		return nil, err
 	}
 
 	return fs.Args(), nil

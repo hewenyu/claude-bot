@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
@@ -37,14 +36,17 @@ const (
 	settleWait = 20 * time.Second
 )
 
-// Project states, as the gateway reports them.
+// projectState is how a project is being served, as the gateway reports it.
+type projectState string
+
+// Project states.
 const (
-	stateStarting = "starting" // its channels are connecting
-	stateRunning  = "running"  // every channel connected (some may have stopped since)
-	stateBusy     = "busy"     // a listener of its own holds the project; retried until it stops
-	stateFailed   = "failed"   // see the error; retried when its configuration changes
-	stateIdle     = "idle"     // no channels configured
-	stateStopped  = "stopped"  // the gateway is not running
+	stateStarting projectState = "starting" // its channels are connecting
+	stateRunning  projectState = "running"  // every channel connected (some may have stopped since)
+	stateBusy     projectState = "busy"     // a listener of its own holds the project; retried until it stops
+	stateFailed   projectState = "failed"   // see the error; retried when its configuration changes
+	stateIdle     projectState = "idle"     // no channels configured
+	stateStopped  projectState = "stopped"  // the gateway is not running
 )
 
 const gatewayUsage = `Usage: claude-bot gateway <command>
@@ -136,9 +138,9 @@ type gatewayHeartbeat struct {
 
 // runOutcome is how the gateway is doing with one project.
 type runOutcome struct {
-	ID    int64  `json:"id"`
-	State string `json:"state"`
-	Error string `json:"error,omitempty"`
+	ID    int64        `json:"id"`
+	State projectState `json:"state"`
+	Error string       `json:"error,omitempty"`
 }
 
 func readGatewayHeartbeat() (gatewayHeartbeat, bool) {
@@ -173,18 +175,18 @@ func gatewayServe(ctx context.Context, args []string) error {
 
 	lock := filepath.Join(home, gatewayLock)
 
-	unlock, err := lockFile(lock)
-	if err != nil {
+	unlock, err := holdLock(lock)
+	if errors.Is(err, errLocked) {
 		pid, _ := gatewayPID()
 
 		return fmt.Errorf("gateway already running (pid %d): %w", pid, err)
 	}
-	defer unlock()
 
-	if err := os.WriteFile(lock, []byte(strconv.Itoa(os.Getpid())), privatePerm); err != nil {
-		return fmt.Errorf("write gateway pid: %w", err)
+	if err != nil {
+		return err
 	}
 
+	defer unlock()
 	defer func() { _ = os.Remove(filepath.Join(home, gatewayBeat)) }()
 
 	s, err := store.Open(ctx, home)
@@ -202,13 +204,18 @@ func gatewayServe(ctx context.Context, args []string) error {
 	g.log.Info("gateway started", "pid", os.Getpid(), "version", Version, "home", home)
 
 	// The page is a view: without it the projects are served all the same.
+	// Its requests end before the database closes.
+	webDone := func() {}
+
 	if addr, token, err := uiSettings(ctx, s); err != nil {
 		g.log.Error("page not served", "err", err)
-	} else if g.ui, err = g.serveWeb(ctx, addr, token); err != nil {
+	} else if g.ui, webDone, err = g.serveWeb(ctx, addr, token); err != nil {
 		g.log.Error("page not served", "err", err)
 	} else {
 		g.log.Info("page", "url", g.ui)
 	}
+
+	defer webDone()
 
 	// The agents end with the gateway, after it let go of the projects.
 	defer g.bots.wait()
@@ -243,7 +250,8 @@ type projectRun struct {
 	fingerprint string
 	cancel      context.CancelFunc
 	done        chan struct{}
-	state, err  string // under gateway.mu
+	state       projectState // under gateway.mu
+	err         string       // under gateway.mu
 }
 
 func newGateway(s *store.Store, log *slog.Logger) *gateway {
@@ -456,7 +464,7 @@ func (g *gateway) stopAll() {
 // run serves one project until ctx ends or it cannot go on, and says how it
 // ended.
 // locked is called once the project is the gateway's to serve.
-func (g *gateway) run(ctx context.Context, p store.Project, cfg config.Config, cfgErr error, locked func()) (state, why string) {
+func (g *gateway) run(ctx context.Context, p store.Project, cfg config.Config, cfgErr error, locked func()) (state projectState, why string) {
 	if cfgErr != nil {
 		return stateFailed, cfgErr.Error()
 	}
@@ -469,7 +477,7 @@ func (g *gateway) run(ctx context.Context, p store.Project, cfg config.Config, c
 		return stateFailed, "no TypeSafe API key: every message goes through Jev; run `claude-bot init --typesafe-key <key>`"
 	}
 
-	a, err := g.build(filepath.Join(p.Dir, config.DirName), cfg, g.log.With("project", p.Name))
+	a, err := g.build(botDir(p), cfg, g.log.With("project", p.Name))
 	if errors.Is(err, errNotConfigured) {
 		return stateIdle, "no channels: run `claude-bot init` in the project"
 	}
@@ -507,7 +515,7 @@ func (g *gateway) outcomes() []runOutcome {
 		o := runOutcome{ID: id, State: r.state, Error: r.err}
 
 		if o.State == stateStarting {
-			if hb, alive := readHeartbeat(filepath.Join(r.project.Dir, config.DirName)); alive && hb.PID == os.Getpid() {
+			if hb, alive := readHeartbeat(botDir(r.project)); alive && hb.PID == os.Getpid() {
 				o.State = stateRunning
 			}
 		}

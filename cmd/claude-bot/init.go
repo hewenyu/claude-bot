@@ -327,8 +327,8 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.BoolVar(&o.noVerify, "no-verify", false, "skip the send-a-message connection check")
 	fs.BoolVar(&o.force, "force", false, "overwrite an existing .claude/commands/bot.md")
 
-	if err := fs.Parse(args); err != nil {
-		return o, fmt.Errorf("%w: %w", errUsage, err)
+	if err := parseFlags(fs, args); err != nil {
+		return o, err
 	}
 
 	if (o.appID == "") != (o.secret == "") {
