@@ -35,9 +35,9 @@ claude-bot 只做一件事：给在项目仓库里跑 `/bot` 的 Claude Code 提
 
 ### 1.1 Jev 筛选
 
-每条消息都要先经过 [TypeSafe](https://typesafe.ai) 的 Jev 模型，才会交给 Claude。TypeSafe API key 由 `claude-bot init --typesafe-key` 写进 `config.json`（不读环境变量）；没有 key，监听进程不启动，`inbox` 也报错。
+每条消息都要先经过 [TypeSafe](https://typesafe.ai) 的 Jev 模型，才会交给 Claude。TypeSafe API key 由 `claude-bot init --typesafe-key`（或 gateway 网页的「共用设置」）存进 `~/.claude-bot/gateway.db`，所有项目共用（还没迁进 gateway 的项目在它的 `config.json` 里），不读环境变量；没有 key，项目的渠道不会连上，`inbox` 也报错。
 
-监听进程收到消息后，先把它放进 `inbox/incoming/`（Claude 看不到），等这个会话停顿 3 秒（最多等 15 秒，好让连着发的几条一起处理），然后：
+gateway（或还没迁进 gateway 的项目自己的监听进程，下面统称监听进程）收到消息后，先把它放进 `inbox/incoming/`（Claude 看不到），等这个会话停顿 3 秒（最多等 15 秒，好让连着发的几条一起处理），然后：
 
 1. **下载附件**到 `.claude-bot/files/<消息>/`。
 2. **归组**：同一会话（同一 `channel` + `chat_id` + `thread_id`）的这批消息，**一条消息（连同它的附件）总是整条归进一件事，不会拆开**。为了让 Jev 比较短的片段，消息按句子和逗号切成片段（代码块不拆；太短的分句并到下一句），附件也各是一个片段，文本文件让 Jev 读开头 1500 字节，图片只给文件名；片段超过 40 个时改成只按句子切，还多就按整条消息。同一条消息的片段直接连在一起，不问 Jev；不同消息的片段，Jev 两两判断是不是同一件事（同一个 bug、需求或问题），概率 ≥ 0.7 的连在一起，连通的就是一件事。
@@ -67,7 +67,7 @@ claude-bot 只做一件事：给在项目仓库里跑 `/bot` 的 Claude Code 提
 
 `reply <task:id>` 回在这件事最新的那条用户消息下，回复记进 `entries`，然后把 `inbox` 上次给出的 entry 标记为已处理；Claude 处理期间又来了新的 entry，这件事留在待处理里（`reply` 输出 `still pending`），下次 `inbox` 再给出来。会话在平台上被关掉的（GitHub 的 issue 被关闭、PR 被关闭或合并，不管是谁在哪儿关的），这件事直接算已处理：监听进程启动时和之后每分钟查一遍待处理的事，`inbox` 给出之前也会再查一次；关闭之后又有人说了话的，照样留在待处理里。所有读写都在 `inbox/tasks.lock` 上加锁，监听进程和命令不会互相覆盖。旧版本留下的 `inbox/pending/` 消息，监听进程启动时会挪回 `incoming/` 重新筛选。
 
-Jev 调用失败（网络、限流、key 失效）时，消息留在 `incoming/`，监听进程退避重试（最长 5 分钟一次），错误写进 `serve.log`，`status` 的 `screening` 显示还有几条在等。没筛过的内容不会交给 Claude。注意聊天内容和文本附件的开头会发给 TypeSafe 的服务器。
+Jev 调用失败（网络、限流、key 失效）时，消息留在 `incoming/`，监听进程退避重试（最长 5 分钟一次），错误写进日志（`~/.claude-bot/gateway.log`，项目自己的监听进程是 `serve.log`），`status` 的 `screening` 显示还有几条在等。没筛过的内容不会交给 Claude。注意聊天内容和文本附件的开头会发给 TypeSafe 的服务器。
 
 ## 2. CLI 约定
 
@@ -83,6 +83,8 @@ Jev 调用失败（网络、限流、key 失效）时，消息留在 `incoming/`
 | `gateway start` / `stop` / `restart` | 在后台启动、停止、重启 gateway（一个进程服务所有登记过的项目），由用户在自己的终端里运行 |
 | `gateway status` / `import` / `remove` | 查看 gateway 和各项目的状态 / 把以前的 `config.json` 迁进 gateway / 把项目从 gateway 里去掉 |
 | `start` / `stop` / `restart` / `serve` | 还没迁进 gateway 的项目自己的监听进程 |
+| `finish` | 只给 gateway 启动的 Claude 用：这一批做完了。批里还有没回复、没 `done`、也没 `reply --keep` 说明进度的事时拒绝并列出来（退出码 `1`）；不在 gateway 启动的 Claude 里运行时什么也不做 |
+| `hook` | 只给 gateway 启动的 Claude 用：Claude Code 的 hook 运行它，把事件报给 gateway。不用自己运行 |
 | `status` | 查看这个项目的状态 |
 
 数据输出到 stdout，日志和提示输出到 stderr。退出码：`0` 成功，`1` 失败，`2` 用法错误。文本参数可以直接写在命令行上，也可以写 `-` 或者不写，从 stdin 读取（适合多行内容配合 heredoc 使用）。
@@ -118,7 +120,14 @@ type Channel interface {
 - `channel`：消息只能在会话内定位的平台，用 `ScopedID` / `LocateScoped` 拼、拆 `<会话>/<消息>` 形式的 ID；`MentionsSender` 判断回复要不要 @ 发送者（私聊以外都要）；`Memo` 缓存第一次成功取到的身份；`Names` 缓存显示名，`NameSender` 给消息补上发送者名字。附件用 `KindOf` 按 MIME 分图片和文件，`UniqueNames` 让一条消息里的附件不重名；下载用 `SaveURL`（或拿到 `io.Reader` 时用 `SaveStream`）边收边写进临时文件，超过 512 MiB 报错、不留残缺文件，命名同 `FileName`（没有扩展名时按开头的内容补上）。
 - `markdown.Split`：按平台的长度上限拆分回复，被切开的代码块会补上闭合和重新开启的 fence；长度不按字符算的平台用 `SplitFunc` 传自己的计数函数；`SendParts` 逐条发送并在出错时说明发出了几条；`markdown.Truncate` 截断到指定长度并加「…」（「…」算在长度里）。
 
-然后在 `internal/config` 里加上这个渠道的配置字段（以及它在 gateway 数据库里的读写和 `AppKey`：标识这个应用、不含密钥的 key，用来保证一个应用只属于一个项目），在 `cmd/claude-bot/app.go` 的 `newApp` 里注册，在 `cmd/claude-bot/init_token.go`（或单独的文件）里加上 `init` 的接入流程。Claude 那一侧的用法完全不用改。
+然后把它接进来：
+
+1. **适配器的配置**：在 `internal/channel/<name>/` 里给 `Config` 加上 `AppKey()`（`appkey.go`）：标识这个应用、不含密钥的 key，用来保证一个应用只属于一个项目。
+2. **渠道表**：在 `internal/config` 的 `Config` 里加一个字段，在 `kinds.go` 的 `kinds` 里加一行（名字、显示名、配置字段、`AppKey`、构造函数、可以覆盖凭证的环境变量）。读写 `config.json` 和 gateway 数据库、环境变量、打开适配器、`init --channel` 的选项都从这张表来。
+3. **命令**：在 `cmd/claude-bot/init.go` 的 `channelInits` 里加上它的菜单提示、参数和接入流程（token 类的渠道写在 `init_token.go`）；在 `status.go` 的 `statusProbes` 里加上怎么查 bot 的身份。
+4. **网页**：在 `cmd/claude-bot/gateway_web_channels.go` 里写它的表单字段，在 `web/src/channelKinds.ts` 和 `logos.tsx` 里加上它的名字、后台链接、文档锚点和图标，然后 `make web`。
+
+Claude 那一侧的用法完全不用改。
 
 ## 4. 项目里的文件
 
