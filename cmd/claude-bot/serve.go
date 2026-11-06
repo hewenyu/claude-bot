@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +26,8 @@ const (
 	startupPoll      = 200 * time.Millisecond
 	ackTimeout       = 10 * time.Second
 	logTailLines     = 10 // log lines quoted when the listener fails
+
+	restartHint = "`claude-bot restart`"
 )
 
 // channelResult is how a channel's Listen ended.
@@ -88,18 +89,19 @@ func (a *app) serve(ctx context.Context, ask screen.Asker) error {
 		return fmt.Errorf("create %s: %w", a.dir, err)
 	}
 
-	unlock, err := lockFile(a.path(listenerLock))
-	if err != nil {
+	// stop finds the listener by the pid in the lock it holds.
+	unlock, err := holdLock(a.path(listenerLock))
+	if errors.Is(err, errLocked) {
 		pid, _ := a.listenerPID()
 
 		return &busyError{Dir: filepath.Dir(a.dir), PID: pid}
 	}
-	defer unlock()
 
-	// stop finds the listener by the pid in the lock it holds.
-	if err := os.WriteFile(a.path(listenerLock), []byte(strconv.Itoa(os.Getpid())), privatePerm); err != nil {
-		return fmt.Errorf("write listener pid: %w", err)
+	if err != nil {
+		return err
 	}
+
+	defer unlock()
 
 	a.log.Info("listening", "channels", a.names())
 
@@ -108,9 +110,14 @@ func (a *app) serve(ctx context.Context, ask screen.Asker) error {
 	}
 
 	// The heartbeat means "connected": it starts once every channel has
-	// connected and disappears when the listener exits. Deferred before
-	// cancel, so it runs after beat has been told to stop.
+	// connected and disappears when the listener exits. The deferred calls
+	// run in reverse: cancel, wait until every goroutine below has returned
+	// (no channel still connected, no beat still writing), and only then
+	// remove the heartbeat and let go of the lock for the next listener.
 	defer func() { _ = os.Remove(a.path(heartbeatFile)) }()
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -125,23 +132,24 @@ func (a *app) serve(ctx context.Context, ask screen.Asker) error {
 
 	// Every message waits in incoming/ until Jev has screened it; leftovers
 	// from a previous run are screened first.
-	a.screen = make(chan struct{}, 1)
-	a.screen <- struct{}{}
+	a.wake = make(chan struct{}, 1)
+	a.wake <- struct{}{}
 
-	go a.screener(ctx, ask, a.screen)
+	wg.Go(func() { a.screener(ctx, ask, a.wake) })
 
 	if a.closable() {
-		go a.watchClosed(ctx)
+		wg.Go(func() { a.watchClosed(ctx) })
 	}
 
-	return a.listen(ctx)
+	return a.listen(ctx, &wg)
 }
 
 // listen runs every channel until ctx ends. A channel that fails is logged
 // and dropped from the heartbeat, which lists it as stopped so that inbox
 // asks for a restart; the other channels keep running. listen returns only
-// once every channel has stopped.
-func (a *app) listen(ctx context.Context) error {
+// once every channel has stopped, or ctx has ended; the goroutines it starts
+// are counted in wg.
+func (a *app) listen(ctx context.Context, wg *sync.WaitGroup) error {
 	allReady := make(chan struct{})
 
 	var waiting atomic.Int64
@@ -160,10 +168,10 @@ func (a *app) listen(ctx context.Context) error {
 		})
 		readies[name] = ready
 
-		go func() { results <- channelResult{name, ch.Listen(ctx, a.deliverer(ctx, ch), ready)} }()
+		wg.Go(func() { results <- channelResult{name, ch.Listen(ctx, a.deliverer(ctx, ch), ready)} })
 	}
 
-	go a.beat(ctx, allReady, stopped)
+	wg.Go(func() { a.beat(ctx, allReady, stopped) })
 
 	var errs []error
 
@@ -211,7 +219,7 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 		a.log.Info("message", "id", m.ID, "chat", m.ChatType, "from", m.Sender.ID)
 
 		select {
-		case a.screen <- struct{}{}:
+		case a.wake <- struct{}{}:
 		default: // a wake-up is already due
 		}
 
@@ -306,7 +314,7 @@ func cmdStart(ctx context.Context, project string, args []string) error {
 
 	if pid, err := a.listenerPID(); pid != 0 || err != nil {
 		if err == nil {
-			fmt.Printf("listener already running (pid %d); `claude-bot restart` replaces it\n", pid)
+			fmt.Printf("listener already running (pid %d); %s replaces it\n", pid, restartHint)
 		}
 
 		return err
@@ -361,8 +369,15 @@ func cmdStop(ctx context.Context, project string, args []string) error {
 	}
 
 	if gw, err := gatewayPID(); err == nil && gw == pid {
+		// Right after `gateway remove` the project is no longer registered,
+		// though the gateway still lets go of it.
+		name := filepath.Dir(a.dir)
+		if a.gateway != nil {
+			name = a.gateway.Name
+		}
+
 		return fmt.Errorf("the gateway (pid %d) serves this project: `claude-bot gateway stop` stops it for every project, `claude-bot gateway remove %s` takes only this one out",
-			pid, a.gateway.Name)
+			pid, name)
 	}
 
 	if err := a.stopListener(ctx, pid); err != nil {
@@ -413,7 +428,7 @@ func (a *app) checkListener() error {
 		return a.listenerDown(gw)
 	}
 
-	restart := "`claude-bot restart`"
+	restart := restartHint
 
 	switch {
 	case a.gateway != nil && hb.PID == gw:
@@ -500,7 +515,7 @@ func (a *app) startListener(ctx context.Context) error {
 	err = waitStarted(ctx, cmd, logPath, "listener did not connect", func() bool {
 		hb, alive := readHeartbeat(a.dir)
 		if alive && hb.PID == pid && len(hb.Stopped) > 0 {
-			a.warnStopped(hb, "`claude-bot restart`")
+			a.warnStopped(hb, restartHint)
 		}
 
 		return alive && hb.PID == pid

@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -56,7 +54,7 @@ type runView struct {
 // runnerOverview reports the runner, without the runs' logs; nil if it
 // does not run.
 func (w *web) runnerOverview() *runnerOverview {
-	b := w.g.bots
+	b := w.bots
 	if b == nil {
 		return nil
 	}
@@ -76,7 +74,7 @@ func (w *web) viewRun(run runner.Run) runView {
 	v := runView{Run: run}
 
 	if run.AgentID != "" {
-		if info, err := w.g.bots.agents.AgentInfo(run.AgentID); err == nil {
+		if info, err := w.bots.agents.AgentInfo(run.AgentID); err == nil {
 			v.Agent = &info
 		}
 	}
@@ -86,129 +84,113 @@ func (w *web) viewRun(run runner.Run) runView {
 
 // projectRun is a project's run with its log; a project whose runner was
 // never on is off.
-func (w *web) projectRun(rw http.ResponseWriter, r *http.Request) {
+func (w *web) projectRun(r *http.Request) (any, error) {
 	p, err := w.project(r)
 	if err != nil {
-		w.fail(rw, err)
-
-		return
+		return nil, err
 	}
 
-	if w.g.bots == nil {
-		w.fail(rw, errNoRunner)
-
-		return
+	if w.bots == nil {
+		return nil, errNoRunner
 	}
 
-	for _, run := range w.g.bots.runner.Saved().Runs {
+	for _, run := range w.bots.runner.Saved().Runs {
 		if run.Project == p.ID {
-			writeAPI(rw, http.StatusOK, w.viewRun(run))
-
-			return
+			return w.viewRun(run), nil
 		}
 	}
 
-	writeAPI(rw, http.StatusOK, runView{Project: p.ID, Name: p.Name, Dir: p.Dir, State: runner.Off})
+	return runView{Project: p.ID, Name: p.Name, Dir: p.Dir, State: runner.Off}, nil
 }
 
 // putProjectRunner turns a project's runner on or off.
-func (w *web) putProjectRunner(rw http.ResponseWriter, r *http.Request) {
+func (w *web) putProjectRunner(r *http.Request) (any, error) {
 	var in struct {
 		On bool `json:"on"`
 	}
 
 	p, err := w.project(r)
-	if err == nil {
-		err = decodeBody(r, &in)
-	}
-
-	if err == nil {
-		v := ""
-		if in.On {
-			v = runnerOn
-		}
-
-		err = w.g.store.SetSetting(r.Context(), runnerKey(p.ID), v)
-	}
-
-	if err == nil {
-		err = w.syncBots(r.Context())
-	}
-
 	if err != nil {
-		w.fail(rw, err)
-
-		return
+		return nil, err
 	}
 
-	w.projectRun(rw, r)
+	if err := decodeBody(r, &in); err != nil {
+		return nil, err
+	}
+
+	// Without a runner the setting would be saved for nothing.
+	if w.bots == nil {
+		return nil, errNoRunner
+	}
+
+	v := ""
+	if in.On {
+		v = runnerOn
+	}
+
+	if err := w.store.SetSetting(r.Context(), store.RunnerKey(p.ID), v); err != nil {
+		return nil, err
+	}
+
+	if err := w.bots.sync(r.Context(), w.store); err != nil {
+		return nil, err
+	}
+
+	return w.projectRun(r)
 }
 
 // resumeProjectRunner gives a project's agent /bot again.
-func (w *web) resumeProjectRunner(rw http.ResponseWriter, r *http.Request) {
+func (w *web) resumeProjectRunner(r *http.Request) (any, error) {
 	p, err := w.project(r)
-	if err == nil && w.g.bots == nil {
-		err = errNoRunner
-	}
-
-	if err == nil {
-		if err = w.g.bots.runner.Resume(p.ID); err != nil {
-			err = fmt.Errorf("%w: %w", errConflict, err)
-		}
-	}
-
 	if err != nil {
-		w.fail(rw, err)
-
-		return
+		return nil, err
 	}
 
-	w.projectRun(rw, r)
+	if w.bots == nil {
+		return nil, errNoRunner
+	}
+
+	if err := w.bots.runner.Resume(p.ID); err != nil {
+		return nil, conflict(err)
+	}
+
+	return w.projectRun(r)
 }
 
 // putRunner sets how many agents run at once.
-func (w *web) putRunner(rw http.ResponseWriter, r *http.Request) {
+func (w *web) putRunner(r *http.Request) (any, error) {
 	var in struct {
 		MaxParallel int `json:"max_parallel"`
 	}
 
-	err := decodeBody(r, &in)
-	if err == nil && (in.MaxParallel < 1 || in.MaxParallel > runner.MaxParallelLimit) {
-		err = fmt.Errorf("%w: 同时运行的 agent 数要在 1 到 %d 之间", errBadRequest, runner.MaxParallelLimit)
+	if err := decodeBody(r, &in); err != nil {
+		return nil, err
 	}
 
-	if err == nil {
-		err = w.g.store.SetSetting(r.Context(), store.SettingRunnerMaxParallel, strconv.Itoa(in.MaxParallel))
+	if !validMaxParallel(in.MaxParallel) {
+		return nil, badRequestf("同时运行的 agent 数要在 1 到 %d 之间", runner.MaxParallelLimit)
 	}
 
-	if err == nil {
-		err = w.syncBots(r.Context())
+	if w.bots == nil {
+		return nil, errNoRunner
 	}
 
-	if err != nil {
-		w.fail(rw, err)
-
-		return
+	if err := w.store.SetSetting(r.Context(), store.SettingRunnerMaxParallel, strconv.Itoa(in.MaxParallel)); err != nil {
+		return nil, err
 	}
 
-	writeAPI(rw, http.StatusOK, w.runnerOverview())
-}
-
-func (w *web) syncBots(ctx context.Context) error {
-	if w.g.bots == nil {
-		return errNoRunner
+	if err := w.bots.sync(r.Context(), w.store); err != nil {
+		return nil, err
 	}
 
-	return w.g.bots.sync(ctx, w.g.store)
+	return w.runnerOverview(), nil
 }
 
 // agentAction interrupts or ends an agent, or types to it.
-func (w *web) agentAction(rw http.ResponseWriter, r *http.Request) {
+func (w *web) agentAction(r *http.Request) (any, error) {
 	a, err := w.agent(r)
 	if err != nil {
-		w.fail(rw, err)
-
-		return
+		return nil, err
 	}
 
 	var in struct {
@@ -217,9 +199,7 @@ func (w *web) agentAction(rw http.ResponseWriter, r *http.Request) {
 
 	if r.ContentLength != 0 {
 		if err := decodeBody(r, &in); err != nil {
-			w.fail(rw, err)
-
-			return
+			return nil, err
 		}
 	}
 
@@ -233,29 +213,26 @@ func (w *web) agentAction(rw http.ResponseWriter, r *http.Request) {
 	case "send":
 		err = a.Send(in.Text, false)
 	default:
-		apiError(rw, http.StatusNotFound, "no such action")
-
-		return
+		return nil, notFound(errors.New("no such action"))
 	}
 
 	if err != nil {
-		w.fail(rw, fmt.Errorf("%w: %w", errConflict, err))
-
-		return
+		return nil, conflict(err)
 	}
 
-	w.g.bots.runner.Kick()
-	writeAPI(rw, http.StatusOK, a.Info())
+	w.bots.runner.Kick()
+
+	return a.Info(), nil
 }
 
 func (w *web) agent(r *http.Request) (*agent.Agent, error) {
-	if w.g.bots == nil {
+	if w.bots == nil {
 		return nil, errNoRunner
 	}
 
-	a, err := w.g.bots.agents.Get(r.PathValue("agent"))
+	a, err := w.bots.agents.Get(r.PathValue("agent"))
 	if errors.Is(err, agent.ErrNotFound) {
-		return nil, fmt.Errorf("%w: %w", errNotFound, err)
+		return nil, notFound(err)
 	}
 
 	return a, err
@@ -351,15 +328,14 @@ func termInput(cancel func(), c *websocket.Conn, a *agent.Agent) {
 // agentBots is the runner and its agents, for a request of an agent with
 // the agents' token, not the page's; nil after it answered.
 func (w *web) agentBots(rw http.ResponseWriter, r *http.Request) *bots {
-	b := w.g.bots
+	b := w.bots
 	if b == nil {
 		apiError(rw, http.StatusNotFound, errNoRunner.Error())
 
 		return nil
 	}
 
-	want := []byte("Bearer " + b.token)
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+	if !bearerIs(r.Header.Get(headerAuthorization), b.token) {
 		apiError(rw, http.StatusUnauthorized, "wrong agent token")
 
 		return nil
@@ -444,17 +420,9 @@ func wsToken(r *http.Request) string {
 
 	for _, p := range websocket.Subprotocols(r) {
 		if t, ok := strings.CutPrefix(p, wsTokenPrefix); ok {
-			return "Bearer " + t
+			return bearerPrefix + t
 		}
 	}
 
 	return ""
-}
-
-func decodeBody(r *http.Request, v any) error {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		return fmt.Errorf("%w: %w", errBadRequest, err)
-	}
-
-	return nil
 }

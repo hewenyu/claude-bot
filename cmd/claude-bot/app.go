@@ -35,8 +35,9 @@ type app struct {
 	// holds its configuration and serves it; nil for a project configured
 	// by its own config.json.
 	gateway *store.Project
-	// screen, in the listener, wakes the screener when a message arrives.
-	screen chan struct{}
+	// wake, in the listener, wakes the screener when a message arrives;
+	// nil elsewhere.
+	wake chan struct{}
 	// locked, if set, is called once serve holds the project's lock.
 	locked func()
 }

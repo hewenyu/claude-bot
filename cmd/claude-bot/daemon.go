@@ -16,6 +16,39 @@ import (
 // while they run, with their pid in it, and log to a file. These helpers
 // start, find and stop them.
 
+const (
+	// lockTries and lockRetry let holdLock wait out lockHolder, which takes
+	// the lock for a moment to see whether anyone holds it.
+	lockTries = 5
+	lockRetry = 20 * time.Millisecond
+)
+
+// errLocked is lockFile's error when another process holds the lock.
+var errLocked = errors.New("held by another process")
+
+// holdLock takes lock for this process and writes its pid into it, for
+// lockHolder to find. It fails with errLocked if another process holds it.
+func holdLock(lock string) (func(), error) {
+	unlock, err := lockFile(lock)
+	for try := 1; errors.Is(err, errLocked) && try < lockTries; try++ {
+		time.Sleep(lockRetry)
+
+		unlock, err = lockFile(lock)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.WriteFile(lock, []byte(strconv.Itoa(os.Getpid())), privatePerm); err != nil {
+		unlock()
+
+		return nil, fmt.Errorf("write pid to %s: %w", lock, err)
+	}
+
+	return unlock, nil
+}
+
 // lockHolder returns the pid of the process holding lock, 0 if none does.
 // legacy, if the lock holds no pid, names it some other way.
 func lockHolder(lock string, legacy func() int) (int, error) {
@@ -28,6 +61,10 @@ func lockHolder(lock string, legacy func() int) (int, error) {
 		unlock()
 
 		return 0, nil
+	}
+
+	if !errors.Is(err, errLocked) {
+		return 0, err
 	}
 
 	raw, _ := os.ReadFile(lock) //nolint:gosec // fixed file in a bot dir

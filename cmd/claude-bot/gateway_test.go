@@ -166,7 +166,7 @@ func (f *gatewayFixture) pipe(p store.Project) *pipeChannel {
 }
 
 // waitState waits until the gateway reports the project in state.
-func (f *gatewayFixture) waitState(p store.Project, state string) runOutcome {
+func (f *gatewayFixture) waitState(p store.Project, state projectState) runOutcome {
 	f.t.Helper()
 
 	var last runOutcome
@@ -206,8 +206,6 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 	t.Fatalf("timed out waiting for %s", what)
 }
-
-func botDir(p store.Project) string { return filepath.Join(p.Dir, config.DirName) }
 
 func TestGateway_eachProjectGetsItsMessages(t *testing.T) {
 	t.Parallel()

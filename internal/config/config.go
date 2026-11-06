@@ -29,6 +29,10 @@ import (
 // DirName is the per-project state directory (git-ignored).
 const DirName = ".claude-bot"
 
+// FilePath is the config.json of the bot directory dir, which ReadFile reads
+// and WriteFile writes.
+func FilePath(dir string) string { return filepath.Join(dir, configFile) }
+
 const (
 	configFile  = "config.json"
 	dirPerm     = 0o750

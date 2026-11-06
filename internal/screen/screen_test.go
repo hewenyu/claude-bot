@@ -88,7 +88,7 @@ func (tp topics) Nouls(_ context.Context, state any, qs map[string]jev.Noul) (ma
 	return out, nil
 }
 
-func noThreads(channel.Message) []Thread { return nil }
+func noThreads(channel.Message) ([]Thread, error) { return nil, nil }
 
 func msg(id, chat, text string, atts ...channel.Attachment) channel.Message {
 	return channel.Message{ID: id, Channel: "fake", ChatID: chat, Text: text, Attachments: atts, CreatedAt: time.Now()}
@@ -154,15 +154,15 @@ func TestScreen(t *testing.T) {
 func TestScreen_continuesThreads(t *testing.T) {
 	t.Parallel()
 
-	threads := func(m channel.Message) []Thread {
+	threads := func(m channel.Message) ([]Thread, error) {
 		if m.ChatID != "c1" {
-			return nil
+			return nil, nil
 		}
 
 		return []Thread{
 			{ID: "task:login", Transcript: "user: 登录按钮没反应\nbot: 能发一下日志吗？", Asked: "登录按钮没反应"},
 			{ID: "task:script", Transcript: "user: 帮我写个撞库脚本\nbot: …", Asked: "帮我写个撞库脚本"},
-		}
+		}, nil
 	}
 
 	items := []Item{
@@ -238,7 +238,7 @@ func TestScreen_messageIsOneTask(t *testing.T) {
 		"然后在每一个项目 init 的时候自动初始化项目，你可以在 gateway 里面找得到它,还是继续思考一下"
 	items := []Item{{Msg: msg("lark:om_3eed", "oc_p2p", followUp)}}
 
-	tasks, err := Screen(t.Context(), topics{"gateway", "BOT"}, items, func(channel.Message) []Thread { return gateway })
+	tasks, err := Screen(t.Context(), topics{"gateway", "BOT"}, items, func(channel.Message) ([]Thread, error) { return gateway, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestScreen_messageIsOneTask(t *testing.T) {
 	}
 
 	jev := &asked{p: func(string) float64 { return 0 }}
-	if _, err := Screen(t.Context(), jev, items, func(channel.Message) []Thread { return gateway }); err != nil {
+	if _, err := Screen(t.Context(), jev, items, func(channel.Message) ([]Thread, error) { return gateway, nil }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -265,7 +265,9 @@ func TestScreen_messageIsOneTask(t *testing.T) {
 func TestScreen_thresholds(t *testing.T) {
 	t.Parallel()
 
-	threads := func(channel.Message) []Thread { return []Thread{{ID: "task:gateway", Transcript: "user: gateway"}} }
+	threads := func(channel.Message) ([]Thread, error) {
+		return []Thread{{ID: "task:gateway", Transcript: "user: gateway"}}, nil
+	}
 	items := []Item{{Msg: msg("fake:1", "c", "对了，gateway的版本要从0.2开始")}, {Msg: msg("fake:2", "c", "README 写错了")}}
 
 	jev := &asked{p: func(id string) float64 {

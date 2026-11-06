@@ -245,6 +245,32 @@ func TestChannels_oneAppOneProject(t *testing.T) {
 	}
 }
 
+// A project's runner setting goes with it: SQLite gives a later project
+// the id of the last one removed.
+func TestRemoveProject_forgetsItsRunner(t *testing.T) {
+	t.Parallel()
+
+	s, _ := openTemp(t)
+	ctx := t.Context()
+
+	p, err := s.AddProject(ctx, "/src/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetSetting(ctx, RunnerKey(p.ID), "on"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RemoveProject(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if v, _ := s.Setting(ctx, RunnerKey(p.ID)); v != "" {
+		t.Errorf("runner setting of a removed project = %q, want none", v)
+	}
+}
+
 func TestMigrate_newerSchema(t *testing.T) {
 	t.Parallel()
 
