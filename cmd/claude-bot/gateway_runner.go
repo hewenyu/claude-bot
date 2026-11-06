@@ -200,6 +200,10 @@ func (b *bots) changed() {
 }
 
 func (b *bots) save() {
+	if b.runner == nil {
+		return // restoring the agents, before the runner is made
+	}
+
 	b.saveMu.Lock()
 	defer b.saveMu.Unlock()
 
