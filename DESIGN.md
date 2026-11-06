@@ -401,6 +401,12 @@ A read-only log. The header is a title, actions and a **pass**: one 14px-radius 
 ### Dock and jump palette (signature component)
 The dock is a 52px surface pill with the float shadow, a search icon, a prompt and a ⌘K kbd; on hover it rises 1px to the pop shadow. ⌘K (or the dock, the rail field, the mobile search) opens the palette: 640px, 22px radius, pop shadow, dropped 14vh from the top. A 58px input row over grouped results (12px group labels), each item a 12px-radius row with a logo, mark or icon, a title, a secondary sub-line and an arrow on the highlighted item.
 
+### Switch
+The one on/off control, used for a project's 自动处理. A 34 × 20px track (strong hairline grey, periwinkle when on) with a 16px white knob that slides 14px with the easing, beside a 13.5px weight-550 word (已打开 / 已关闭). It is a real checkbox with `role="switch"` under the track, so the keyboard and screen readers get it for free; focus draws the periwinkle outline on the track.
+
+### Agent terminal (signature component)
+Claude Code's own terminal, as the gateway hosts it. A 14px-radius panel with the raise shadow, 10px × 12px padding, up to 70vh tall. It stays **dark in both themes** (#111113, periwinkle cursor, a quiet periwinkle selection): Claude Code draws for a dark terminal, and a light one would fight its colours. The mono stack is the page's. It replays what the agent printed, then follows it live; keys typed into it go to the agent. Above it, the agent card gives the run's state text, its detail, the last thing Claude said in a sunken quote with a hairline on its left, and small pills (再跑一轮, 中断, a danger-text 结束 agent). Under it, a 记录 disclosure lists what happened to the run, newest first, with mono times. The project's 自动处理 tab carries the run's mark, which breathes while it works.
+
 ### Banners, dialogs and toasts
 - **Banner:** 14px radius, 12px × 16px, the state's wash and ink with a 16px icon; bad banners are `role="alert"`.
 - **Dialog:** 540px (660px wide), 22px radius, pop shadow, rises in (0.26s); hairline above the footer.

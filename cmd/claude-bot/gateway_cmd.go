@@ -462,5 +462,10 @@ func unregister(ctx context.Context, s *store.Store, p store.Project) (string, e
 		return "", err
 	}
 
+	// A project registered later under its id starts with its runner off.
+	if err := s.SetSetting(ctx, runnerKey(p.ID), ""); err != nil {
+		return "", err
+	}
+
 	return path, nil
 }

@@ -26,6 +26,49 @@ export interface Overview {
   github_token: boolean;
   projects: ProjectStatus[];
   self: string;
+  /** Absent when the gateway runs no agents. */
+  runner?: RunnerOverview;
+}
+
+// The runner (internal/runner): Claude Code with /bot in each project that has it on.
+
+export type RunState = "queued" | "running" | "blocked" | "waiting" | "idle" | "resting" | "failed" | "off";
+
+export type AgentStatus = "starting" | "working" | "blocked" | "idle" | "exited" | "lost";
+
+export interface AgentInfo {
+  id: string;
+  name: string;
+  cwd: string;
+  status: AgentStatus;
+  detail?: string;
+  title?: string;
+  turns: number;
+  ended?: string;
+  last_message?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Run {
+  project: number;
+  name: string;
+  dir: string;
+  state: RunState;
+  detail?: string;
+  error?: string;
+  agent_id?: string;
+  pending: number;
+  summary?: string;
+  starts: number;
+  updated_at: string;
+  log?: { at: string; text: string }[];
+  agent?: AgentInfo;
+}
+
+export interface RunnerOverview {
+  max_parallel: number;
+  runs: Run[];
 }
 
 export type TaskState = "pending" | "working" | "replied" | "closed";

@@ -2,7 +2,7 @@
 
 import { allProblems } from "./diagnose";
 import { channel, projectStateLabel } from "./format";
-import type { Overview, ProjectStatus } from "./types";
+import type { Overview, ProjectStatus, RunState } from "./types";
 import type { Tone } from "./ui";
 
 export function projectTone(p: ProjectStatus): Tone {
@@ -18,6 +18,34 @@ export function projectTone(p: ProjectStatus): Tone {
       return "off";
   }
 }
+
+export function runTone(s: RunState): Tone {
+  switch (s) {
+    case "running":
+    case "queued":
+      return "info";
+    case "idle":
+      return "ok";
+    case "blocked":
+    case "waiting":
+      return "warn";
+    case "failed":
+      return "bad";
+    default:
+      return "off";
+  }
+}
+
+export const runLabel: Record<RunState, string> = {
+  queued: "排队中",
+  running: "处理中",
+  blocked: "等你确认",
+  waiting: "需要你看看",
+  idle: "值守中",
+  resting: "休息中",
+  failed: "启动不了",
+  off: "已关闭",
+};
 
 const severity: Record<Tone, number> = { bad: 0, warn: 1, info: 2, ok: 3, off: 4 };
 

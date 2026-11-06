@@ -1,0 +1,60 @@
+# claude-bot 的 CI：每个 PR 和 master 上检查。发版见 release.yml。
+# - macOS（Mac mini，darwin/arm64）：lint、race tests，以及提交的网页（internal/webui/static）和 web/ 构建出来的一致。
+# - Linux（linux/arm64）：tests，Linux 的二进制也在发布之列。host executor 没有 cgo，跑不了 -race；
+#   race 已在 macOS 上查过，这里和发布的二进制一样用 CGO_ENABLED=0，测的正是发出去的构建。
+# - 工作区没有 .git：网页的检查比较目录，不用 git diff（make web-check）。
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch: {}
+jobs:
+  macos:
+    runs-on: darwin/arm64
+    runtimes: [go, node]
+    inputs: ["**"]
+    network: true            # go mod download、npm ci、安装 golangci-lint
+    resources: { cpu: 4, memory: 8Gi }
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: "4"
+      GOFLAGS: "-p=4"
+    toolcache:
+      - { name: gomod, env: GOMODCACHE }
+      - { name: gocache-macos, env: GOCACHE }
+      - { name: npm-macos, env: npm_config_cache }
+    steps:
+      - name: lint
+        run: |
+          mkdir -p .ci/bin
+          GOBIN="$PWD/.ci/bin" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+          .ci/bin/golangci-lint run
+      - name: race tests
+        run: go test -race ./...
+      - name: 提交的网页和 web/ 构建出来的一致
+        run: |
+          cp -R internal/webui/static .ci/static-committed
+          make web
+          diff -r .ci/static-committed internal/webui/static || { echo "internal/webui/static 和 web/ 不一致：运行 make web 并提交"; exit 1; }
+      - name: 桌面 App 类型检查
+        run: cd desktop && npm ci && npm run typecheck
+  linux:
+    runs-on: linux/arm64
+    runtimes: [go]
+    inputs: ["**"]
+    network: true            # go mod download
+    resources: { cpu: 2, memory: 4Gi }
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: "2"
+      GOFLAGS: "-p=2"
+      CGO_ENABLED: "0"
+    toolcache:
+      - { name: gomod, env: GOMODCACHE }
+      - { name: gocache, env: GOCACHE }
+    steps:
+      - name: tests（CGO_ENABLED=0，和发布的二进制一样）
+        run: go test ./...

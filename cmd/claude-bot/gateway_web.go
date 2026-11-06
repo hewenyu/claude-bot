@@ -185,6 +185,15 @@ func (g *gateway) serveWeb(ctx context.Context, addr, token string) (string, err
 		return "", fmt.Errorf("page: %w", err)
 	}
 
+	url := "http://" + ln.Addr().String() + "/"
+
+	// The runner's agents report to the page's server: it starts with it.
+	if g.newBots != nil {
+		if g.bots, err = g.newBots(ctx, url); err != nil {
+			g.log.Error("runner not started", "err", err)
+		}
+	}
+
 	w := &web{g: g, token: token, hosts: hosts, log: g.log, checkGitHub: checkGitHubAccess}
 	srv := &http.Server{Handler: w.routes(), ReadHeaderTimeout: webTimeout}
 
@@ -203,7 +212,7 @@ func (g *gateway) serveWeb(ctx context.Context, addr, token string) (string, err
 		}
 	}()
 
-	return "http://" + ln.Addr().String() + "/", nil
+	return url, nil
 }
 
 func (w *web) routes() http.Handler {
@@ -219,12 +228,19 @@ func (w *web) routes() http.Handler {
 	api.HandleFunc("DELETE /api/projects/{id}", w.deleteProject)
 	api.HandleFunc("GET /api/settings", w.settings)
 	api.HandleFunc("PUT /api/settings", w.putSettings)
+	api.HandleFunc("GET /api/projects/{id}/runner", w.projectRun)
+	api.HandleFunc("PUT /api/projects/{id}/runner", w.putProjectRunner)
+	api.HandleFunc("POST /api/projects/{id}/runner/resume", w.resumeProjectRunner)
+	api.HandleFunc("PUT /api/runner", w.putRunner)
+	api.HandleFunc("POST /api/agents/{agent}/{action}", w.agentAction)
+	api.HandleFunc("GET /api/agents/{agent}/term", w.term)
 	api.HandleFunc("PUT /api/github-tokens/{name}", w.putGitHubToken)
 	api.HandleFunc("DELETE /api/github-tokens/{name}", w.deleteGitHubToken)
 	api.HandleFunc("/api/", func(rw http.ResponseWriter, _ *http.Request) { apiError(rw, http.StatusNotFound, "no such API") })
 
 	root := http.NewServeMux()
 	root.Handle("/api/", w.authorize(api))
+	root.HandleFunc("POST "+hookPath, w.agentHook)
 	root.Handle("/", webui.Handler())
 
 	return w.guard(root)
@@ -258,7 +274,12 @@ func (w *web) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Cache-Control", "no-store")
 
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+		got := r.Header.Get("Authorization")
+		if got == "" {
+			got = wsToken(r)
+		}
+
+		if subtle.ConstantTimeCompare([]byte(got), want) != 1 {
 			apiError(rw, http.StatusUnauthorized, "missing or wrong token: open the page with `claude-bot gateway open`")
 
 			return
@@ -290,8 +311,14 @@ func (w *web) fail(rw http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound), errors.Is(err, inbox.ErrNoTask):
 		apiError(rw, http.StatusNotFound, err.Error())
+	case errors.Is(err, errNotFound):
+		apiError(rw, http.StatusNotFound, strings.TrimPrefix(err.Error(), errNotFound.Error()+": "))
 	case errors.As(err, &conflict):
 		apiError(rw, http.StatusConflict, err.Error())
+	case errors.Is(err, errConflict):
+		apiError(rw, http.StatusConflict, strings.TrimPrefix(err.Error(), errConflict.Error()+": "))
+	case errors.Is(err, errNoRunner):
+		apiError(rw, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, errBadRequest):
 		apiError(rw, http.StatusBadRequest, strings.TrimPrefix(err.Error(), errBadRequest.Error()+": "))
 	default:
@@ -300,7 +327,11 @@ func (w *web) fail(rw http.ResponseWriter, err error) {
 	}
 }
 
-var errBadRequest = errors.New("bad request")
+var (
+	errBadRequest = errors.New("bad request")
+	errNotFound   = errors.New("not found")
+	errConflict   = errors.New("conflict")
+)
 
 func (w *web) project(r *http.Request) (store.Project, error) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -315,7 +346,8 @@ func (w *web) project(r *http.Request) (store.Project, error) {
 type overviewResponse struct {
 	gatewayStatus
 
-	Self string `json:"self"` // this binary's version
+	Self   string          `json:"self"`             // this binary's version
+	Runner *runnerOverview `json:"runner,omitempty"` // nil if the gateway runs no agents
 }
 
 func (w *web) overview(rw http.ResponseWriter, r *http.Request) {
@@ -333,7 +365,7 @@ func (w *web) overview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeAPI(rw, http.StatusOK, overviewResponse{gatewayStatus: st, Self: Version})
+	writeAPI(rw, http.StatusOK, overviewResponse{gatewayStatus: st, Self: Version, Runner: w.runnerOverview()})
 }
 
 // taskSummary is a task as the list shows it.

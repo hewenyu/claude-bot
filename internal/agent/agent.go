@@ -1,0 +1,442 @@
+package agent
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/creack/pty"
+
+	"github.com/hewenyu/claude-bot/internal/term"
+)
+
+// Errors.
+var (
+	ErrBusy    = errors.New("agent is not idle")
+	ErrNotLive = errors.New("agent is not running")
+	ErrLive    = errors.New("agent is still running")
+)
+
+const (
+	// pasteGap is the pause between pasting text and pressing Enter, so the
+	// program sees a paste followed by a submit, not one long paste.
+	pasteGap = 150 * time.Millisecond
+	// killGrace is how long a program gets to end after each signal.
+	killGrace = 3 * time.Second
+	// defaultRows and defaultCols size a terminal no viewer has sized yet.
+	defaultRows, defaultCols = 40, 120
+	// maxSize bounds the rows and columns a viewer may ask for.
+	maxSize = 1000
+	// readSize is how much terminal output is read at once.
+	readSize = 32 << 10
+	// viewerBuffer is how many reads a viewer may fall behind before it is
+	// dropped and has to replay.
+	viewerBuffer = 512
+)
+
+// Bracketed paste markers. Text pasted into the terminal must not carry
+// them: an end marker inside it would turn the rest into typed keys.
+const (
+	pasteStart = "\x1b[200~"
+	pasteEnd   = "\x1b[201~"
+)
+
+// Info is what the outside sees of an agent. It is also what the gateway
+// saves, so an agent can be resumed after a restart.
+type Info struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Cwd        string `json:"cwd"`
+	Project    int64  `json:"project,omitempty"`
+	SessionID  string `json:"session_id"`
+	Transcript string `json:"transcript,omitempty"`
+	Status     Status `json:"status"`
+	Detail     string `json:"detail,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Turns      int    `json:"turns"`
+	// Ended is how the latest turn ended: EndStop, EndInterrupt or
+	// EndDeclined.
+	Ended       string    `json:"ended,omitempty"`
+	LastMessage string    `json:"last_message,omitempty"`
+	PID         int       `json:"pid,omitempty"`
+	ExitCode    *int      `json:"exit_code,omitempty"`
+	Cols        int       `json:"cols"`
+	Rows        int       `json:"rows"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// Resumable reports whether the agent's session can be resumed: Claude
+// saved its conversation. One that ended before its session began, e.g.
+// at a dialog before it, has none, and resuming it fails at once.
+func (i Info) Resumable() bool {
+	if i.SessionID == "" || i.Transcript == "" {
+		return false
+	}
+
+	_, err := os.Stat(i.Transcript)
+
+	return err == nil
+}
+
+// Agent is one coding agent in a terminal. The terminal stays with the
+// gateway: viewers attach and detach without stopping it.
+type Agent struct {
+	mu       sync.Mutex
+	info     Info
+	st       state
+	cmd      *exec.Cmd
+	pty      *os.File
+	ring     *term.Ring
+	titles   term.TitleParser
+	viewers  map[chan []byte]struct{}
+	onChange func(id string)
+	done     chan struct{}
+}
+
+func newAgent(info Info, ringSize int, onChange func(id string)) *Agent {
+	return &Agent{
+		info:     info,
+		st:       state{Status: info.Status, SessionID: info.SessionID, Transcript: info.Transcript, Turns: info.Turns, Ended: info.Ended, LastMessage: info.LastMessage, Title: info.Title},
+		ring:     term.NewRing(ringSize),
+		viewers:  map[chan []byte]struct{}{},
+		onChange: onChange,
+	}
+}
+
+// start runs cmd in a new terminal and follows it until it exits.
+func (a *Agent) start(cmd *exec.Cmd) error {
+	a.mu.Lock()
+
+	if a.st.Status.Live() && a.cmd != nil {
+		a.mu.Unlock()
+
+		return ErrLive
+	}
+
+	rows, cols := a.info.Rows, a.info.Cols
+	if rows <= 0 || cols <= 0 || rows > maxSize || cols > maxSize {
+		rows, cols = defaultRows, defaultCols
+	}
+
+	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	if err != nil {
+		a.mu.Unlock()
+
+		return fmt.Errorf("start %s: %w", cmd.Path, err)
+	}
+
+	a.cmd, a.pty = cmd, f
+	a.done = make(chan struct{})
+	a.st = state{Status: Starting, SessionID: a.st.SessionID, Transcript: a.st.Transcript, Turns: a.st.Turns, Ended: a.st.Ended, LastMessage: a.st.LastMessage, Title: a.st.Title}
+	a.info.PID = cmd.Process.Pid
+	a.info.ExitCode = nil
+	a.info.Rows, a.info.Cols = rows, cols
+	a.sync()
+	a.mu.Unlock()
+
+	go a.pump(cmd, f)
+
+	return nil
+}
+
+// pump copies the terminal's output to the ring and the viewers until the
+// program ends.
+func (a *Agent) pump(cmd *exec.Cmd, f *os.File) {
+	buf := make([]byte, readSize)
+
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			a.output(buf[:n])
+		}
+
+		if err != nil {
+			break
+		}
+	}
+
+	err := cmd.Wait()
+
+	code := 0
+	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
+		code = ee.ExitCode()
+	} else if err != nil {
+		code = -1
+	}
+
+	_ = f.Close()
+
+	a.mu.Lock()
+	a.info.ExitCode = &code
+	a.info.PID = 0
+	a.st.Status, a.st.Detail = Exited, ""
+	a.pty = nil
+	close(a.done)
+
+	for ch := range a.viewers {
+		close(ch)
+		delete(a.viewers, ch)
+	}
+
+	a.sync()
+	a.mu.Unlock()
+}
+
+func (a *Agent) output(p []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Under the lock, so a viewer attaching now gets p either in its
+	// replay or on its channel, never both.
+	_, _ = a.ring.Write(p)
+
+	now := time.Now()
+	before := a.st.shown()
+
+	for _, t := range a.titles.Feed(p) {
+		a.st.title(t, now)
+
+		if !a.st.stillAt.IsZero() {
+			a.settleLater()
+		}
+	}
+
+	a.st.output(p)
+	changed := a.st.shown() != before
+
+	for ch := range a.viewers {
+		select {
+		case ch <- append([]byte(nil), p...):
+		default:
+			// A viewer this far behind reattaches and replays the ring.
+			close(ch)
+			delete(a.viewers, ch)
+		}
+	}
+
+	if changed {
+		a.sync()
+	}
+}
+
+// sync copies the state into the info and tells the owner, who reads the
+// latest info itself. Call it with the lock held.
+func (a *Agent) sync() {
+	a.info.Status = a.st.Status
+	a.info.Detail = a.st.Detail
+	a.info.Title = a.st.Title
+	a.info.Turns = a.st.Turns
+	a.info.Ended = a.st.Ended
+	a.info.LastMessage = a.st.LastMessage
+	a.info.SessionID = a.st.SessionID
+	a.info.Transcript = a.st.Transcript
+	a.info.UpdatedAt = time.Now()
+
+	if a.onChange != nil {
+		go a.onChange(a.info.ID)
+	}
+}
+
+func (a *Agent) settleLater() {
+	time.AfterFunc(settleDelay+50*time.Millisecond, func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+
+		if a.st.settle(time.Now()) {
+			a.sync()
+		}
+	})
+}
+
+// Hook applies a hook event the agent's program reported.
+func (a *Agent) Hook(h Hook) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.st.Status.Live() {
+		return
+	}
+
+	if a.st.hook(h, time.Now()) {
+		a.sync()
+	}
+}
+
+// Info returns what the agent is doing now.
+func (a *Agent) Info() Info {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return a.info
+}
+
+// Attach returns what the terminal printed so far and a channel of what it
+// prints next. The channel closes when the program ends or the viewer falls
+// behind; call detach when done.
+func (a *Agent) Attach() (replay []byte, out <-chan []byte, detach func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Queries in the history were asked long ago; the viewer's terminal
+	// must not answer them again into the program.
+	replay = term.StripQueries(a.ring.Bytes())
+	ch := make(chan []byte, viewerBuffer)
+
+	if a.pty == nil {
+		close(ch)
+
+		return replay, ch, func() {}
+	}
+
+	a.viewers[ch] = struct{}{}
+
+	return replay, ch, func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+
+		if _, ok := a.viewers[ch]; ok {
+			delete(a.viewers, ch)
+			close(ch)
+		}
+	}
+}
+
+// Write types what a person typed into the terminal.
+func (a *Agent) Write(p []byte) error {
+	a.mu.Lock()
+	f := a.pty
+	// A viewer's terminal answering a query, or reporting focus, is not
+	// a person answering the prompt.
+	if a.st.Status == Blocked && !term.IsResponse(p) {
+		a.st.input(time.Now())
+		a.settleLater()
+	}
+	a.mu.Unlock()
+
+	if f == nil {
+		return ErrNotLive
+	}
+
+	_, err := f.Write(p)
+
+	return err
+}
+
+// Resize sets the terminal size.
+func (a *Agent) Resize(rows, cols int) error {
+	if rows <= 0 || cols <= 0 || rows > maxSize || cols > maxSize {
+		return fmt.Errorf("bad size %dx%d", cols, rows)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.info.Rows, a.info.Cols = rows, cols
+
+	if a.pty == nil {
+		return nil
+	}
+
+	return pty.Setsize(a.pty, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+}
+
+// Send pastes text and submits it, as a person would. It refuses unless
+// the agent is idle, or force is set: text typed into a running turn or a
+// permission prompt would be read as an answer.
+func (a *Agent) Send(text string, force bool) error {
+	a.mu.Lock()
+	f, st := a.pty, a.st.Status
+	a.mu.Unlock()
+
+	if f == nil {
+		return ErrNotLive
+	}
+
+	if st != Idle && !force {
+		return fmt.Errorf("%w: %s", ErrBusy, st)
+	}
+
+	if _, err := io.WriteString(f, pasteStart+pasteSafe(text)+pasteEnd); err != nil {
+		return err
+	}
+
+	time.Sleep(pasteGap)
+
+	_, err := io.WriteString(f, "\r")
+
+	return err
+}
+
+// pasteSafe drops escape characters from text to paste: text from a chat or
+// an issue must not end the paste early and go on as keys.
+func pasteSafe(text string) string {
+	return strings.ReplaceAll(text, "\x1b", "")
+}
+
+// Interrupt stops the current turn, not the program.
+func (a *Agent) Interrupt() error {
+	a.mu.Lock()
+	f := a.pty
+	a.mu.Unlock()
+
+	if f == nil {
+		return ErrNotLive
+	}
+
+	_, err := f.Write([]byte{0x1b})
+
+	return err
+}
+
+// Kill ends the program: a hangup first, then a kill if it lingers. It
+// gives up if even that does not end it, e.g. a child holding the terminal.
+func (a *Agent) Kill() error {
+	a.mu.Lock()
+	cmd, done := a.cmd, a.done
+	live := a.pty != nil
+	a.mu.Unlock()
+
+	if !live || cmd == nil || cmd.Process == nil {
+		return ErrNotLive
+	}
+
+	pid := cmd.Process.Pid
+	_ = syscall.Kill(-pid, syscall.SIGHUP)
+
+	select {
+	case <-done:
+		return nil
+	case <-time.After(killGrace):
+	}
+
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+
+	select {
+	case <-done:
+		return nil
+	case <-time.After(killGrace):
+		return fmt.Errorf("agent %s did not exit", a.Info().ID)
+	}
+}
+
+// Done returns a channel that closes when the program ends; nil if it
+// never started.
+func (a *Agent) Done() <-chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return a.done
+}
+
+// note writes a line of the gateway's own into the terminal history, shown
+// dim, e.g. that the agent was resumed.
+func (a *Agent) note(text string) {
+	_, _ = a.ring.Write([]byte("\r\n\x1b[2m[claude-bot] " + text + "\x1b[0m\r\n"))
+}

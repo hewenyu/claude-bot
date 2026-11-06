@@ -21,6 +21,7 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 - **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，不用配域名、HTTPS 和回调地址。
 - **一个 gateway 管所有项目**：本机只跑一个 `claude-bot gateway` 进程，服务所有登记过的项目。每个项目有自己的 bot（一个应用只属于一个项目），可以同时接多个渠道。配置统一存在本地 SQLite（`~/.claude-bot/gateway.db`），TypeSafe key 和 GitHub token 只配一次；消息仍进各项目自己的 `.claude-bot/inbox/`，多个项目同时值守、互不影响。
 - **本地网页看全局**：gateway 自带一个只在本机打开的网页（`claude-bot gateway open`）：每个项目和它的渠道连没连上、出了什么错；每个项目正在处理哪些事，点开看整段对话和 bot 的回复（处理完的自动归档，有人追问时回到列表里）；在页面上添加、修改渠道凭证并测试连接，改完 gateway 几秒内自动重连。凭证只进不出，页面上只显示末几位。
+- **不用一直开着终端**：在网页上给项目打开「自动处理」，gateway 有待办时就在项目里启动 Claude Code 跑 `/bot`，不用每个仓库都开一个终端挂 `/loop /bot`。每个项目最多一个 Claude，所有项目一共最多几个（默认 3 个，可改）；名额满时，空闲最久的让出名额，有新消息再接着原来的会话启动。Claude 的终端就在网页上，能看、能打字、能中断。也有一个桌面 App（`desktop/`），就是这个网页的独立窗口。
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就建好应用；其他渠道粘贴 token 即可。
 - **改代码一律走 PR**：Claude 自己开的 PR 验证后合并、打 tag 发版；别人的 PR 先判断值不值得要，再在本地实际跑过才合并。
 - **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理。
@@ -47,6 +48,33 @@ claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地
 
 ## 安装
 
+**Apple Silicon 的 Mac（M 系列芯片）**：从 [Releases](https://github.com/hewenyu/claude-bot/releases) 下载 `claude-bot-<版本>-arm64.dmg`，打开后把 claude-bot 拖进「应用程序」。App 里带着 `claude-bot` 命令，打开 App 就会启动 gateway 并显示它的网页。其他平台暂时没有 App，用下面的 `go install`。
+
+App 没有签 Apple 的开发者证书、也没有公证（开源项目），第一次打开会被 macOS 拦下。在终端里运行一次：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/claude-bot.app
+```
+
+或者先双击打开一次，再到「系统设置 → 隐私与安全性」里点「仍要打开」。
+
+在终端里用 `claude-bot`（`init` 登记项目等），把 App 里的那个链接到 PATH 上，和 App 用同一个版本：
+
+```bash
+sudo ln -sf /Applications/claude-bot.app/Contents/Resources/claude-bot /usr/local/bin/claude-bot
+```
+
+**只要命令行**：[Releases](https://github.com/hewenyu/claude-bot/releases) 里有编译好的二进制，Apple Silicon 的 Mac（`darwin-arm64`）和 Linux（`linux-amd64`、`linux-arm64`）各一个。比如 Linux amd64：
+
+```bash
+curl -fsSL https://github.com/hewenyu/claude-bot/releases/latest/download/claude-bot-<版本>-linux-amd64.tar.gz | tar -xz claude-bot
+sudo install claude-bot /usr/local/bin/
+```
+
+`<版本>` 是 Releases 上的 tag，比如 `v0.3.0`。和 DMG 一样没有签名：在 Mac 上用浏览器下载的话，先 `xattr -d com.apple.quarantine claude-bot`；用 `curl` 下载不需要。
+
+或者用 Go 安装（macOS 或 Linux）：
+
 ```bash
 go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
 ```
@@ -62,11 +90,12 @@ claude-bot gateway start  # 在后台启动 gateway，一个进程服务所有�
 claude-bot gateway open   # 在浏览器里打开 gateway 的网页，看各项目的状态和处理过的事
 ```
 
-然后在 Claude Code 里挂上 loop：
+然后让 Claude 值守，二选一：
 
-```
-/loop /bot
-```
+- **gateway 来跑（推荐）**：在网页上打开项目的「自动处理」标签，打开开关。有待办时 gateway 在项目里启动 Claude Code 跑 `/bot`，终端也在这个标签里。
+- **自己开终端**：在项目里启动 Claude Code，挂上 `/loop /bot`。
+
+两种别同时用在一个项目上，不然两个 Claude 会抢同一批任务。
 
 把 bot 拉进项目群，之后大家私聊 bot 或在群里 @ 它就可以了。再值守一个项目，只要在那个仓库里 `claude-bot init`，gateway 几秒内自动接上，不用重启。
 
@@ -76,6 +105,7 @@ claude-bot gateway open   # 在浏览器里打开 gateway 的网页，看各项�
 
 - [接入各个渠道](docs/channels.md)：飞书 / Lark、Discord、Telegram、Slack、钉钉、GitHub 的接入步骤、权限和限制
 - [工作原理](docs/how-it-works.md)：消息怎么收进来、多条消息怎么排队处理
+- [自动处理](docs/how-it-works.md#自动处理)：gateway 怎么替你跑 `/bot`，以及桌面 App
 - [命令与配置](docs/reference.md)：全部命令和 `init` 参数、项目定位、文件、环境变量、代理
 - [常见问题](docs/faq.md)：权限确认卡住、监听进程起不来、升级之后怎么办
 - [开发](docs/development.md)：构建、测试和代码结构

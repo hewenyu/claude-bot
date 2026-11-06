@@ -194,6 +194,11 @@ func gatewayServe(ctx context.Context, args []string) error {
 	defer s.Close() //nolint:errcheck // the gateway only reads
 
 	g := newGateway(s, newLogger())
+	g.newBots = func(ctx context.Context, url string) (*bots, error) {
+		program, args := agentCommand()
+
+		return startBots(ctx, home, url, g.log, program, args)
+	}
 	g.log.Info("gateway started", "pid", os.Getpid(), "version", Version, "home", home)
 
 	// The page is a view: without it the projects are served all the same.
@@ -204,6 +209,9 @@ func gatewayServe(ctx context.Context, args []string) error {
 	} else {
 		g.log.Info("page", "url", g.ui)
 	}
+
+	// The agents end with the gateway, after it let go of the projects.
+	defer g.bots.wait()
 
 	return g.loop(ctx, filepath.Join(home, gatewayBeat))
 }
@@ -220,6 +228,9 @@ type gateway struct {
 	started time.Time
 	tick    time.Duration // how often it reconciles
 	ui      string        // the page's URL, "" if it is not served
+	// newBots starts the runner once the page is served; nil runs none.
+	newBots func(ctx context.Context, url string) (*bots, error)
+	bots    *bots // nil if it runs no agents
 
 	mu   sync.Mutex
 	runs map[int64]*projectRun
@@ -264,6 +275,10 @@ func (g *gateway) loop(ctx context.Context, beatPath string) error {
 		case err != nil && ctx.Err() == nil:
 			g.log.Error("read configuration", "err", err)
 		case err == nil && (rev != last || g.busy()):
+			if rev != last {
+				g.syncBots(ctx)
+			}
+
 			if err := g.reconcile(ctx); err != nil {
 				g.log.Error("apply configuration", "err", err)
 			} else {
@@ -281,6 +296,17 @@ func (g *gateway) loop(ctx context.Context, beatPath string) error {
 			return nil
 		case <-t.C:
 		}
+	}
+}
+
+// syncBots applies the runner's settings, if it runs.
+func (g *gateway) syncBots(ctx context.Context) {
+	if g.bots == nil {
+		return
+	}
+
+	if err := g.bots.sync(ctx, g.store); err != nil {
+		g.log.Error("apply runner settings", "err", err)
 	}
 }
 

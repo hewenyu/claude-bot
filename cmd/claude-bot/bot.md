@@ -1,5 +1,5 @@
 ---
-description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉等渠道的消息，处理 GitHub 的 issue 和 PR，并回复（配合 /loop 使用：/loop /bot）
+description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉等渠道的消息，处理 GitHub 的 issue 和 PR，并回复（配合 /loop 使用：/loop /bot；或者在 gateway 网页上打开「自动处理」，由 gateway 启动）
 ---
 
 你是这个项目的值守 bot，也是这个项目的维护者。你要盯两个地方：
@@ -71,7 +71,7 @@ description: 值守项目 bot：收飞书、Discord、Telegram、Slack、钉钉�
 
 - **不要在前台等，也不要 sleep 轮询**它的输出文件。
 - 上一次的后台等待还在运行，就不要再开一个。
-- 用 `/loop /bot` 跑时，这个后台命令才是唤醒你的信号；`ScheduleWakeup` 只是兜底，设成 3600 秒。
+- 用 `/loop /bot` 跑时，这个后台命令才是唤醒你的信号；`ScheduleWakeup` 只是兜底，设成 3600 秒。由 gateway 的「自动处理」启动时没有 `/loop`，这个后台命令就是唯一的唤醒信号；gateway 看到你很久没醒，会再给你一次 `/bot`。
 
 ## 改代码：一律走 PR
 

@@ -1,0 +1,115 @@
+# 发布 claude-bot：推送 v* tag 后，在 Mac mini（darwin/arm64）上构建桌面 App 的 DMG，
+# 在 darwin/arm64、linux/arm64、linux/amd64 各自的 Runner 上编译 claude-bot 二进制，一起发布到本仓库的
+# GitHub Release。PR 执行相同的构建（验证打包），但不发布；lint 和测试在 ci.yml。先打 tag 再构建，Kiln 不会替你打 tag。
+# - asset：claude-bot-<tag>-arm64.dmg；claude-bot-<tag>-<os>-<arch>.tar.gz（包内是 claude-bot、LICENSE、README.md）；
+#   以及覆盖全部 asset 的 SHA256SUMS。
+# - 发版前确认 master 上的 ci 是绿的：release 不重复 lint 和测试。
+# - 开源项目，不签 Developer ID、不公证：App 只做 ad hoc 签名（Apple Silicon 不运行没签名的代码），
+#   第一次打开的步骤见 README。所以不需要证书和 secret。
+# - DMG 里的 App 带着自己的 claude-bot（Contents/Resources/claude-bot）；单独的二进制给只用命令行、
+#   或者在 Linux 上跑 gateway 的人。
+# - 桌面 App 只支持 Apple Silicon 的 Mac；二进制支持 Apple Silicon 的 Mac 和 Linux（arm64、amd64）。
+# - 工作区没有 .git，也没有 GITHUB_* 环境变量：版本号从 ${{ github.* }} 传进去。
+# - publish 引用 Kiln 中的 environment release（ref 策略 refs/tags/v*），要先由运维创建。
+name: release
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+jobs:
+  dmg:
+    runs-on: darwin/arm64
+    runtimes: [go, node]
+    inputs: ["**"]
+    network: true            # go mod download、npm ci、下载 Electron
+    cache: false
+    resources: { cpu: 4, memory: 8Gi }
+    timeout-minutes: 60
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: "4"
+      GOFLAGS: "-p=4"
+      REF: ${{ github.ref }}
+      TAG: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+    toolcache:
+      - { name: gomod, env: GOMODCACHE }
+      - { name: gocache-macos, env: GOCACHE }
+      - { name: npm-macos, env: npm_config_cache }
+      - { name: electron-macos, env: electron_config_cache }
+    steps:
+      - name: 构建 DMG（ad hoc 签名，未公证）
+        run: |
+          case "$REF" in
+            refs/tags/v*) version="$TAG" ;;
+            *) version="0.0.0-$(printf %.7s "$SHA")" ;;
+          esac
+          make dmg VERSION="$version"
+          ls -l desktop/dist/*.dmg
+          shasum -a 256 desktop/dist/*.dmg
+    outputs:
+      dmg: desktop/dist/*.dmg
+  build:
+    runs-on: ${{ matrix.os }}/${{ matrix.arch }}
+    # host executor 使用目标平台的 Go runtime；版本和各平台的摘要由 runtimes.lock 固定。
+    runtimes: [go]
+    inputs: ["**"]
+    network: true            # go mod download
+    # host job 的资源只用于调度；linux/amd64 的 Runner 只有 2 核 / 约 2GiB，声明的资源必须放得下。
+    resources: { cpu: 1, memory: 1536Mi }
+    timeout-minutes: 30
+    strategy:
+      # 逐个构建，避免同一 Runner 上的 Go toolcache 争用。
+      max-parallel: 1
+      matrix:
+        include:
+          - { os: darwin, arch: arm64 }
+          - { os: linux, arch: arm64 }
+          - { os: linux, arch: amd64 }
+    toolcache:
+      - { name: gomod, env: GOMODCACHE }
+      - { name: gocache, env: GOCACHE }
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: "2"
+      GOFLAGS: "-p=2"
+      CGO_ENABLED: "0"
+      TARGETOS: ${{ matrix.os }}
+      TARGETARCH: ${{ matrix.arch }}
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: 本平台编译 ${{ matrix.os }}/${{ matrix.arch }}
+        run: |
+          expected="$TARGETOS/$TARGETARCH"
+          host="$(go env GOHOSTOS)/$(go env GOHOSTARCH)"
+          target="$(go env GOOS)/$(go env GOARCH)"
+          [ "$host" = "$expected" ] && [ "$target" = "$expected" ] || { echo "必须在 $expected 编译：Go host=$host target=$target"; exit 1; }
+          # 网页已经构建好提交在 internal/webui/static，go:embed 直接打进二进制，这里不需要 Node。
+          go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o dist/claude-bot ./cmd/claude-bot
+          cp LICENSE README.md dist/
+      - name: 核对平台和版本
+        # 直接运行产物核对版本，不接受只能检查字符串的异平台产物。
+        run: |
+          info=$(go version -m dist/claude-bot)
+          for kv in "GOOS=$TARGETOS" "GOARCH=$TARGETARCH" "CGO_ENABLED=0"; do
+            grep -Eq "^[[:space:]]+build[[:space:]]+$kv\$" <<<"$info" || { echo "dist/claude-bot 不是 $kv"; exit 1; }
+          done
+          got=$(dist/claude-bot version)
+          [ "$got" = "$VERSION" ] || { echo "dist/claude-bot version 输出 $got，应为 $VERSION"; exit 1; }
+          ls -l dist
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum dist/claude-bot; else shasum -a 256 dist/claude-bot; fi
+    outputs:
+      bin: dist/
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [dmg, build]
+    environment: release
+    release:
+      assets:
+        - from: dmg.dmg
+          name: claude-bot-${{ github.ref_name }}-arm64
+          archive: none
+        - from: build.bin
+          name: claude-bot-${{ github.ref_name }}-${{ matrix.os }}-${{ matrix.arch }}   # .tar.gz
+      # 校验和文件默认是 SHA256SUMS
+      github: {}   # 发布到本仓库的 GitHub Release
