@@ -1,12 +1,14 @@
 // Routes live in the URL fragment: #/p/3, #/p/3/t/<task>, #/p/3/channels,
-// #/settings. The server serves the page for every path anyway.
+// #/p/3/agent, #/settings. The server serves the page for every path anyway.
 
 import { useEffect, useState } from "react";
 
 export type Route =
   | { page: "home" }
   | { page: "settings" }
-  | { page: "project"; project: number; tab: "tasks" | "channels"; task?: string };
+  | { page: "project"; project: number; tab: Tab; task?: string };
+
+export type Tab = "tasks" | "channels" | "agent";
 
 export function parse(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
@@ -16,6 +18,7 @@ export function parse(hash: string): Route {
   if (parts[0] === "p" && /^\d+$/.test(parts[1] ?? "")) {
     const project = Number(parts[1]);
     if (parts[2] === "channels") return { page: "project", project, tab: "channels" };
+    if (parts[2] === "agent") return { page: "project", project, tab: "agent" };
     if (parts[2] === "t" && parts[3]) return { page: "project", project, tab: "tasks", task: parts[3] };
 
     return { page: "project", project, tab: "tasks" };
@@ -32,6 +35,7 @@ export function href(r: Route): string {
       return "#/settings";
     case "project":
       if (r.tab === "channels") return `#/p/${r.project}/channels`;
+      if (r.tab === "agent") return `#/p/${r.project}/agent`;
       if (r.task) return `#/p/${r.project}/t/${encodeURIComponent(r.task)}`;
 
       return `#/p/${r.project}`;

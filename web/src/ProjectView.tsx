@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { api } from "./api";
+import { AgentPanel } from "./Agent";
 import { ChannelsPanel } from "./Channels";
 import { projectProblems } from "./diagnose";
 import { channel, shortPath } from "./format";
 import { ProblemCard } from "./Problems";
-import { go, href } from "./route";
-import { projectLabel, projectTone } from "./status";
+import { go, href, type Tab } from "./route";
+import { projectLabel, projectTone, runLabel, runTone } from "./status";
 import { TasksPanel } from "./Tasks";
 import type { Overview, ProjectStatus } from "./types";
 import { Banner, ChannelBadge, CopyButton, Mark, Menu, Modal, SrOnly, errorText, toast } from "./ui";
@@ -13,7 +14,7 @@ import { Banner, ChannelBadge, CopyButton, Mark, Menu, Modal, SrOnly, errorText,
 interface Props {
   project: ProjectStatus;
   overview: Overview;
-  tab: "tasks" | "channels";
+  tab: Tab;
   task?: string;
   /** Reloads the overview; resolves once it is in. */
   onChanged: () => Promise<void>;
@@ -23,6 +24,7 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
   const [removing, setRemoving] = useState(false);
   const tone = projectTone(p);
   const problems = projectProblems(p);
+  const run = overview.runner?.runs.find((r) => r.project === p.id && r.state !== "off");
 
   return (
     <div className="page page-wide project">
@@ -73,6 +75,17 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
           渠道
           <span className="count count-quiet">{p.channels.length}</span>
         </a>
+        {overview.runner && (
+          <a className={`tab${tab === "agent" ? " active" : ""}`} href={href({ page: "project", project: p.id, tab: "agent" })} aria-current={tab === "agent" ? "page" : undefined}>
+            自动处理
+            {run && (
+              <span className="tab-mark" title={runLabel[run.state]}>
+                <Mark tone={runTone(run.state)} live={run.state === "running"} />
+                <SrOnly>：{runLabel[run.state]}</SrOnly>
+              </span>
+            )}
+          </a>
+        )}
         {p.screening > 0 && (
           <span className="screening" title="刚收到、正在由 Jev 筛选的消息">
             <Mark tone="info" live />
@@ -81,7 +94,9 @@ export function ProjectView({ project: p, overview, tab, task, onChanged }: Prop
         )}
       </nav>
 
-      {tab === "tasks" ? <TasksPanel project={p} selected={task} /> : <ChannelsPanel project={p} onChanged={onChanged} />}
+      {tab === "tasks" && <TasksPanel project={p} selected={task} />}
+      {tab === "channels" && <ChannelsPanel project={p} onChanged={onChanged} />}
+      {tab === "agent" && <AgentPanel project={p} />}
 
       {removing && (
         <RemoveProject

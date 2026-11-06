@@ -525,7 +525,10 @@ func (r *Runner) set(run *Run, st State, detail string) bool {
 		return false
 	}
 
-	if run.State != st {
+	switch {
+	case run.State == "":
+		r.logf(run, "%s %s", label(st), detail)
+	case run.State != st:
 		r.logf(run, "%s → %s %s", label(run.State), label(st), detail)
 	}
 

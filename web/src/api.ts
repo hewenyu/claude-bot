@@ -5,7 +5,10 @@
 import type {
   ChannelType,
   ChannelView,
+  AgentInfo,
   Overview,
+  Run,
+  RunnerOverview,
   Settings,
   TaskDetail,
   TaskSummary,
@@ -87,4 +90,23 @@ export const api = {
   saveGitHubToken: (name: string, token: string, projects: number[]) =>
     call<Settings>("PUT", `/api/github-tokens/${encodeURIComponent(name)}`, { token, projects }),
   removeGitHubToken: (name: string) => call<Settings>("DELETE", `/api/github-tokens/${encodeURIComponent(name)}`),
+  run: (project: number) => call<Run>("GET", `${p(project)}/runner`),
+  setRunner: (project: number, on: boolean) => call<Run>("PUT", `${p(project)}/runner`, { on }),
+  resumeRunner: (project: number) => call<Run>("POST", `${p(project)}/runner/resume`),
+  saveRunner: (maxParallel: number) => call<RunnerOverview>("PUT", "/api/runner", { max_parallel: maxParallel }),
+  agentAction: (agent: string, action: "interrupt" | "kill" | "keys" | "send", text?: string) =>
+    call<AgentInfo>("POST", `/api/agents/${encodeURIComponent(agent)}/${action}`, text === undefined ? undefined : { text }),
 };
+
+/**
+ * Opens an agent's terminal. A browser cannot set headers on a WebSocket,
+ * so the token goes as a subprotocol.
+ */
+export function openTerminal(agent: string): WebSocket {
+  const url = new URL(`/api/agents/${encodeURIComponent(agent)}/term`, location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(url, ["claude-bot", `token.${localStorage.getItem(TOKEN_KEY) ?? ""}`]);
+  ws.binaryType = "arraybuffer";
+
+  return ws;
+}

@@ -44,7 +44,59 @@ export function SettingsView({ overview }: { overview: Overview }) {
       />
 
       <GitHubTokens settings={settings.data} onSaved={settings.reload} />
+
+      {overview.runner && <RunnerSetting saved={overview.runner.max_parallel} running={overview.runner.runs.filter((r) => ["running", "blocked", "waiting", "idle"].includes(r.state)).length} />}
     </div>
+  );
+}
+
+/** How many agents run at once, in all projects. */
+function RunnerSetting({ saved, running }: { saved: number; running: number }) {
+  const [input, setInput] = useState(String(saved));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const n = Number(input);
+  const changed = Number.isInteger(n) && n !== saved;
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    api.saveRunner(n).then(
+      (r) => {
+        setBusy(false);
+        setInput(String(r.max_parallel));
+        toast(`最多同时运行 ${r.max_parallel} 个 agent`);
+      },
+      (err) => {
+        setBusy(false);
+        setError(errorText(err));
+      },
+    );
+  };
+
+  return (
+    <section className="card setting">
+      <header className="card-head">
+        <div className="card-title">
+          <h2>同时运行的 agent</h2>
+          <span className="muted">现在 {running} 个在运行，最多 {saved} 个</span>
+        </div>
+      </header>
+      <p className="muted">打开了「自动处理」的项目，每个最多一个 Claude Code。名额满了，空闲最久的 agent 让出名额，等有新消息再启动。</p>
+      <form className="inline-form" onSubmit={submit}>
+        <input type="number" min={1} max={32} step={1} value={input} onChange={(e) => setInput(e.target.value)} aria-label="同时运行的 agent 数" />
+        <button type="submit" className={`btn${changed ? " btn-primary" : ""}`} disabled={!changed || busy}>
+          {busy ? "保存中…" : "保存"}
+        </button>
+      </form>
+      {error && (
+        <p className="result result-bad">
+          <Icon name="cross" />
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 
