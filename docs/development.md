@@ -13,7 +13,7 @@ make dmg      # 在 Apple Silicon 的 Mac 上构建 desktop/dist/claude-bot-<版
 
 CI 和发版都在 Kiln（维护者自己的 CI）上跑：
 
-- `.kiln/workflows/ci.yml`：每个 PR 和 master 上，Mac mini 跑 lint、race tests、核对提交的网页和桌面 App 的类型检查，linux/arm64 再跑一遍 race tests。
+- `.kiln/workflows/ci.yml`：每个 PR 和 master 上，Mac mini 跑 lint、race tests、核对提交的网页和桌面 App 的类型检查，linux/arm64 再用 `CGO_ENABLED=0`（和发布的二进制一样）跑一遍测试。
 - `.kiln/workflows/release.yml`：推送 `v*` tag 后，在 Mac mini 上构建 DMG，在 darwin/arm64、linux/arm64、linux/amd64 上各自编译二进制并运行一次核对版本，一起发布到 GitHub Release（另附 `SHA256SUMS`）。PR 上也构建一遍，但不发布。发版前先确认 master 的 ci 是绿的。
 - 改了 Go 或 Node 的版本（`go.mod`、`.node-version`）后，用 Kiln 的 `kiln runtime lock` 重新生成 `.kiln/runtimes.lock`，`kiln lint` 检查 workflow。
 
