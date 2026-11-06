@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Problem } from "./diagnose";
 import { Icon } from "./icons";
-import { ChannelBadge, Command, CopyButton, useFlag } from "./ui";
+import { ChannelBadge, Command, CopyButton, copyText, useFlag } from "./ui";
 
 /** Something that needs the user: what happened, the main fix, and the steps behind it. */
 export function ProblemCard({ problem: p, open: initiallyOpen = false, showProject = true }: { problem: Problem; open?: boolean; showProject?: boolean }) {
@@ -70,13 +70,7 @@ function Action({ problem: p }: { problem: Problem }) {
 
   if ("command" in a) {
     return (
-      <button
-        type="button"
-        className="btn btn-primary"
-        onClick={() =>
-          navigator.clipboard.writeText(a.command).then(flag)
-        }
-      >
+      <button type="button" className="btn btn-primary" onClick={() => copyText(a.command).then((ok) => ok && flag())}>
         <Icon name={done ? "check" : "copy"} />
         {done ? "已复制" : a.label}
       </button>

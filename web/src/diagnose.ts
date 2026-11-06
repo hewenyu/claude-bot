@@ -2,9 +2,13 @@
 // gateway reports raw errors from each platform; this turns the ones we
 // recognize into a diagnosis and keeps the raw text alongside.
 
-import { channel, shortPath } from "./format";
+import { channelDocs, channelFacts, channelKinds, channelLabel } from "./channelKinds";
+import { shortPath } from "./format";
 import { href } from "./route";
 import type { Overview, ProjectStatus } from "./types";
+
+/** Where a TypeSafe API key is made. */
+export const TYPESAFE_KEYS = "https://console.typesafe.ai/keys";
 
 export interface Step {
   title: string;
@@ -30,36 +34,15 @@ export interface Problem {
   raw?: string;
 }
 
-const DOCS = "https://github.com/hewenyu/claude-bot/blob/master/docs/channels.md";
+/** Where the channel's credentials and settings live, if the page knows. */
+const consoleOf = (name: string) => channelFacts(name)?.console;
 
-/** Where each platform's credentials and settings live. */
-export const consoles: Record<string, { label: string; href: string }> = {
-  lark: { label: "飞书开放平台", href: "https://open.feishu.cn/app" },
-  dingtalk: { label: "钉钉开发者后台", href: "https://open-dev.dingtalk.com" },
-  slack: { label: "Slack 应用后台", href: "https://api.slack.com/apps" },
-  discord: { label: "Discord 开发者后台", href: "https://discord.com/developers/applications" },
-  telegram: { label: "BotFather", href: "https://t.me/BotFather" },
-  github: { label: "GitHub token 设置", href: "https://github.com/settings/tokens" },
-};
-
-const docAnchor: Record<string, string> = {
-  lark: "#飞书--lark",
-  dingtalk: "#钉钉",
-  slack: "#slack",
-  discord: "#discord",
-  telegram: "#telegram",
-  github: "#github",
-};
-
-/** The setup guide for a channel. */
-export function channelDocs(name: string): string {
-  return DOCS + (docAnchor[name] ?? "");
-}
+const RESTART_COMMAND = "claude-bot gateway restart";
 
 const RESTART: Step = {
   title: "重启 gateway，让它重新连接",
   detail: "平台那边的设置改了，要重连一次才生效。",
-  command: "claude-bot gateway restart",
+  command: RESTART_COMMAND,
 };
 
 interface Cause {
@@ -69,7 +52,11 @@ interface Cause {
   action?: (name: string, channels: string) => Problem["action"];
 }
 
-const platformLink = (name: string) => (consoles[name] ? { label: tidy(`打开${sp(consoles[name].label)}`), href: consoles[name].href } : undefined);
+const platformLink = (name: string) => {
+  const c = consoleOf(name);
+
+  return c ? { label: tidy(`打开${sp(c.label)}`), href: c.href } : undefined;
+};
 
 // Order matters: the first match wins.
 const causes: Cause[] = [
@@ -81,13 +68,13 @@ const causes: Cause[] = [
       { title: "在「机器人」里把消息接收模式设为 Stream 模式，然后发布机器人", detail: "Stream 模式走长连接，不需要公网地址。" },
       RESTART,
     ],
-    action: () => ({ label: "打开钉钉开发者后台", href: consoles.dingtalk.href, external: true }),
+    action: () => ({ label: "打开钉钉开发者后台", href: channelKinds.dingtalk.console.href, external: true }),
   },
   {
     test: /invalid_auth|not_authed|unauthori[sz]ed|\b401\b|invalid[ _-]?(token|secret|credential)|(token|secret|credential)s? (is )?(invalid|expired|revoked)|bad credentials/i,
     title: (label) => `${label}的凭证无效或已过期`,
     steps: (name, label, channels) => [
-      { title: tidy(`到${sp(consoles[name]?.label ?? `${label}后台`)}拿一份新的凭证`), link: platformLink(name) },
+      { title: tidy(`到${sp(consoleOf(name)?.label ?? `${label}后台`)}拿一份新的凭证`), link: platformLink(name) },
       { title: "在「渠道」里编辑它，粘贴新凭证，先点「测试连接」", link: { label: "去「渠道」", href: channels } },
       { title: "保存后 gateway 几秒内自动重连", detail: "不用重启。" },
     ],
@@ -97,11 +84,15 @@ const causes: Cause[] = [
     test: /\b403\b|forbidden|missing_scope|permission|not allowed|access denied/i,
     title: (label) => `${label}应用的权限不够`,
     steps: (name, label) => [
-      { title: tidy(`打开${sp(consoles[name]?.label ?? `${label}后台`)}，按错误里写的补上权限`), link: platformLink(name) },
+      { title: tidy(`打开${sp(consoleOf(name)?.label ?? `${label}后台`)}，按错误里写的补上权限`), link: platformLink(name) },
       { title: "发布应用的新版本", detail: "多数平台改了权限要发布后才生效。" },
       RESTART,
     ],
-    action: (name) => (consoles[name] ? { label: tidy(`打开${sp(consoles[name].label)}`), href: consoles[name].href, external: true } : { label: "复制重启命令", command: RESTART.command! }),
+    action: (name) => {
+      const link = platformLink(name);
+
+      return link ? { ...link, external: true } : { label: "复制重启命令", command: RESTART_COMMAND };
+    },
   },
   {
     test: /timeout|deadline exceeded|no such host|connection refused|connection reset|dial tcp|network is unreachable|\bEOF\b|tls/i,
@@ -122,7 +113,7 @@ const sp = (label: string) => `${/^[A-Za-z0-9]/.test(label) ? " " : ""}${label}$
 const tidy = (s: string) => s.replace(/ *([：，。「」（）]) */g, "$1").replace(/ {2,}/g, " ").trim();
 
 function diagnose(key: string, p: ProjectStatus, name: string | undefined, raw: string, title: (who: string, label: string) => string): Problem {
-  const label = sp(name ? channel(name).label : "渠道");
+  const label = sp(name ? channelLabel(name) : "渠道");
   const channels = href({ page: "project", project: p.id, tab: "channels" });
   const cause = causes.find((c) => c.test.test(raw));
 
@@ -228,7 +219,7 @@ export function globalProblems(o: Overview): Problem[] {
       title: "还没有 TypeSafe API key",
       summary: "每条消息都要先经过 TypeSafe 的 Jev 筛选。没有 key，gateway 不会连接任何项目。",
       steps: [
-        { title: "在 TypeSafe 控制台创建一个 key", link: { label: "打开 console.typesafe.ai", href: "https://console.typesafe.ai/keys" } },
+        { title: "在 TypeSafe 控制台创建一个 key", link: { label: "打开 console.typesafe.ai", href: TYPESAFE_KEYS } },
         { title: "粘贴到「共用设置」，验证后保存", link: { label: "去「共用设置」", href: href({ page: "settings" }) } },
       ],
       action: { label: "填写 key", href: href({ page: "settings" }) },

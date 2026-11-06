@@ -2,10 +2,13 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { tasksOf } from "./api";
 import { isOpenTask, projectLabel, projectTone, taskTone, untitled } from "./status";
 import { taskStateLabel } from "./format";
+import { usePoll } from "./hooks";
 import { Icon, type IconName } from "./icons";
 import { go, type Route } from "./route";
 import type { Overview, TaskSummary } from "./types";
-import { ChannelBadge, Mark, type Tone } from "./ui";
+import { ChannelBadge, Mark, useTrap, type Tone } from "./ui";
+
+const noTasks: { project: number; name: string; task: TaskSummary }[] = [];
 
 interface Item {
   key: string;
@@ -23,27 +26,23 @@ interface Item {
 export function Palette({ overview, onClose }: { overview: Overview; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
-  const [tasks, setTasks] = useState<{ project: number; name: string; task: TaskSummary }[]>([]);
-  const input = useRef<HTMLInputElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLUListElement>(null);
 
-  useEffect(() => {
-    input.current?.focus();
-  }, []);
+  // Focus starts in the input, Tab stays in the palette, Escape closes it,
+  // and focus goes back to where it was.
+  useTrap(box, onClose);
 
   // Keyed on the project ids, not the array: the overview poll hands over a
   // new array every few seconds, and refetching every project's tasks each
   // time would be wasted work while the palette is open.
-  const projects = overview.projects;
-  const ids = projects.map((p) => p.id).join(",");
-  useEffect(() => {
-    let live = true;
-    tasksOf(projects).then((all) => live && setTasks(all.map(({ project: p, task }) => ({ project: p.id, name: p.name, task }))));
-
-    return () => {
-      live = false;
-    };
-  }, [ids]);
+  const ids = overview.projects.map((p) => p.id).join(",");
+  const loaded = usePoll(
+    () => tasksOf(overview.projects).then((all) => all.map(({ project: p, task }) => ({ project: p.id, name: p.name, task }))),
+    null,
+    `palette-tasks-${ids}`,
+  );
+  const tasks = loaded.data ?? noTasks;
 
   const items = useMemo(() => {
     const out: Item[] = [
@@ -97,8 +96,6 @@ export function Palette({ overview, onClose }: { overview: Overview; onClose: ()
     } else if (e.key === "Enter") {
       e.preventDefault();
       pick(items[index]);
-    } else if (e.key === "Escape") {
-      onClose();
     }
   };
 
@@ -106,11 +103,10 @@ export function Palette({ overview, onClose }: { overview: Overview; onClose: ()
 
   return (
     <div className="palette-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label="跳转">
+      <div className="palette" role="dialog" aria-modal="true" aria-label="跳转" ref={box}>
         <div className="palette-input">
           <Icon name="search" />
           <input
-            ref={input}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKey}

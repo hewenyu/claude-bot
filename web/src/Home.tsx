@@ -1,14 +1,15 @@
 import { useEffect, useRef } from "react";
 import { tasksOf } from "./api";
+import { channelLabel } from "./channelKinds";
 import { allProblems } from "./diagnose";
-import { ago, channel, fullTime, paletteKey, taskStateLabel } from "./format";
+import { ago, fullTime, paletteKey, taskStateLabel } from "./format";
 import { POLL_SLOW, useNow, usePoll } from "./hooks";
 import { Icon } from "./icons";
 import { ProblemCard } from "./Problems";
 import { href } from "./route";
 import { bySeverity, isOpenTask, presence, projectLabel, projectTone, taskTone, untitled } from "./status";
 import type { Overview, ProjectStatus } from "./types";
-import { ChannelBadge, Command, Mark, Orb, SrOnly } from "./ui";
+import { ChannelBadge, Command, Mark, Orb, SrOnly, StateText } from "./ui";
 
 /** Open tasks across the projects that have any, newest first. */
 function useOpenTasks(projects: ProjectStatus[]) {
@@ -33,7 +34,8 @@ function useOpenTasks(projects: ProjectStatus[]) {
   return open;
 }
 
-export function Home({ overview, onSearch }: { overview: Overview; onSearch: () => void }) {
+/** offline: the gateway stopped answering; overview is what it said last. */
+export function Home({ overview, offline, onSearch }: { overview: Overview; offline: boolean; onSearch: () => void }) {
   const problems = allProblems(overview);
   const open = useOpenTasks(overview.projects);
   const now = useNow();
@@ -54,7 +56,7 @@ export function Home({ overview, onSearch }: { overview: Overview; onSearch: () 
   return (
     <div className="page page-narrow home">
       <header className="brief">
-        <Orb state={presence(overview, false)} size="lg" />
+        <Orb state={presence(overview, offline)} size="lg" />
         <div>
           <h1>{headline}</h1>
           <p>{bits.join("，")}。</p>
@@ -82,13 +84,12 @@ export function Home({ overview, onSearch }: { overview: Overview; onSearch: () 
                   <span className="row-main">
                     <span className="row-title">{t.title || untitled}</span>
                     <span className="row-sub">
-                      {project.name} · {t.senders.slice(0, 2).join("、") || channel(t.channel).label}
+                      {project.name} · {t.senders.slice(0, 2).join("、") || channelLabel(t.channel)}
                     </span>
                   </span>
-                  <span className={`state-text tone-${taskTone[t.state]}`}>
-                    <Mark tone={taskTone[t.state]} live={t.state === "working"} />
+                  <StateText tone={taskTone[t.state]} live={t.state === "working"}>
                     {taskStateLabel[t.state]}
-                  </span>
+                  </StateText>
                   <time className="row-time" dateTime={t.updated_at} title={fullTime(t.updated_at)}>
                     {ago(t.updated_at, now)}
                   </time>

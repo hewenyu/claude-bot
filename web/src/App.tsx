@@ -29,10 +29,11 @@ export function App() {
 
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPalette((x) => !x);
-      }
+      if (!((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k")) return;
+      e.preventDefault();
+      // A dialog keeps the keyboard: the palette would open over it and take its focus.
+      if (document.querySelector('.modal[aria-modal="true"]')) return;
+      setPalette((x) => !x);
     };
     window.addEventListener("keydown", on);
 
@@ -73,8 +74,8 @@ export function App() {
           </div>
         )}
 
-        {route.page === "home" && <Home overview={data} onSearch={() => setPalette(true)} />}
-        {route.page === "settings" && <SettingsView overview={data} />}
+        {route.page === "home" && <Home overview={data} offline={offline} onSearch={() => setPalette(true)} />}
+        {route.page === "settings" && <SettingsView overview={data} onChanged={overview.reload} />}
         {route.page === "project" && project && (
           <ProjectView key={project.id} project={project} overview={data} tab={route.tab} task={route.task} onChanged={overview.reload} />
         )}

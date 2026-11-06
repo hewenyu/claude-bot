@@ -1,4 +1,5 @@
 import { useId, type ReactNode } from "react";
+import { isChannelKind, type ChannelKind } from "./channelKinds";
 
 // The channels' official logos, inlined so the page never loads anything
 // from the internet. They are the trademarks of their owners and are shown
@@ -111,7 +112,7 @@ function GitHub() {
   );
 }
 
-const logos: Record<string, () => ReactNode> = {
+const logos: Record<ChannelKind, () => ReactNode> = {
   lark: Lark,
   dingtalk: DingTalk,
   telegram: Telegram,
@@ -122,11 +123,11 @@ const logos: Record<string, () => ReactNode> = {
 
 /** The channel's official logo, or null for a channel without one here. */
 export function ChannelLogo({ name }: { name: string }) {
+  if (!isChannelKind(name)) return null;
   const Logo = logos[name];
 
-  return Logo ? <Logo /> : null;
+  return <Logo />;
 }
 
-export function hasLogo(name: string): boolean {
-  return name in logos;
-}
+/** Every channel the page knows has its logo here. */
+export const hasLogo = isChannelKind;

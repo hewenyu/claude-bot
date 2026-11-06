@@ -35,6 +35,14 @@
   --orb-2: #8f8ff2;
   --orb-3: #5b5bd6;
 
+  /* The same in both themes. The terminal is always dark (Terminal.tsx sets
+     xterm's own background to the same colour); the scrim dims the page
+     behind dialogs, the palette and the drawer; a channel without a logo
+     gets a grey tile that white letters read on. */
+  --term-bg: #111113;
+  --scrim: rgb(12 12 20 / 0.38);
+  --badge-grey: #6b7280;
+
   --shadow-float: 0 10px 30px -8px rgb(20 20 40 / 0.14), 0 2px 6px rgb(20 20 40 / 0.06);
   --shadow-pop: 0 24px 60px -16px rgb(20 20 40 / 0.28), 0 4px 12px rgb(20 20 40 / 0.08);
   --shadow-raise: 0 1px 2px rgb(20 20 40 / 0.06), 0 0 0 1px var(--line);
@@ -439,7 +447,7 @@ kbd {
   place-items: center;
   flex: none;
   color: #fff;
-  background: #6b7280;
+  background: var(--badge-grey);
   font-weight: 700;
   border-radius: 6px;
   letter-spacing: -0.02em;
@@ -2229,7 +2237,7 @@ input:disabled {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgb(12 12 20 / 0.38);
+  background: var(--scrim);
   animation: dim 0.18s ease-out;
 }
 
@@ -2514,7 +2522,7 @@ input:disabled {
     position: fixed;
     inset: 0;
     z-index: 40;
-    background: rgb(12 12 20 / 0.38);
+    background: var(--scrim);
   }
 
   .rail-close {
@@ -2782,7 +2790,7 @@ input:disabled {
   min-height: 320px;
   padding: 10px 4px 10px 12px;
   border-radius: 14px;
-  background: #111113;
+  background: var(--term-bg);
   box-shadow: var(--shadow-raise);
 }
 
