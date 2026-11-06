@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -12,7 +13,7 @@ import (
 const (
 	nameTTL       = 24 * time.Hour
 	nameRetry     = 10 * time.Minute
-	NameTimeout   = 3 * time.Second // budget for one lookup while receiving
+	nameTimeout   = 3 * time.Second // budget for one lookup while receiving
 	maxCachedName = 10000           // entries kept before the cache starts over
 )
 
@@ -66,6 +67,26 @@ func (n *Names) Name(ctx context.Context, id string) (string, error) {
 	n.mu.Unlock()
 
 	return c.name, err
+}
+
+// NameSender fills in the display name of msg's sender when it lacks one,
+// spending at most nameTimeout. Best effort: when the lookup fails, the
+// sender stays an id and log gets warning (which says what permission the
+// names need), once per failure that is not cached.
+func (n *Names) NameSender(ctx context.Context, msg *Message, log *slog.Logger, warning string) {
+	if msg.Sender.Name != "" || msg.Sender.ID == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, nameTimeout)
+	defer cancel()
+
+	name, err := n.Name(ctx, msg.Sender.ID)
+	if err != nil {
+		log.Warn(warning, "user", msg.Sender.ID, "err", err)
+	}
+
+	msg.Sender.Name = name
 }
 
 func (n *Names) clock() time.Time {

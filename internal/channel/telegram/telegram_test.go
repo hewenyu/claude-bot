@@ -189,11 +189,11 @@ func TestFatal(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{err: &APIError{Code: codeUnauthorized}, want: true},
-		{err: &APIError{Code: codeNotFound}, want: true},
-		{err: &APIError{Code: codeConflict, Description: "Conflict: can't use getUpdates method while webhook is active"}, want: true},
-		{err: &APIError{Code: codeConflict, Description: "Conflict: terminated by other getUpdates request"}},
-		{err: &APIError{Code: http.StatusBadGateway}},
+		{err: &apiError{Code: codeUnauthorized}, want: true},
+		{err: &apiError{Code: codeNotFound}, want: true},
+		{err: &apiError{Code: codeConflict, Description: "Conflict: can't use getUpdates method while webhook is active"}, want: true},
+		{err: &apiError{Code: codeConflict, Description: "Conflict: terminated by other getUpdates request"}},
+		{err: &apiError{Code: http.StatusBadGateway}},
 		{err: errors.New("connection reset")},
 	}
 
@@ -372,7 +372,7 @@ func TestListen_badTokenEnds(t *testing.T) {
 
 	err := ch.Listen(t.Context(), func(channel.Message) error { return nil }, func() {})
 
-	var ae *APIError
+	var ae *apiError
 	if !errors.As(err, &ae) || ae.Code != codeUnauthorized {
 		t.Fatalf("Listen() = %v, want the 401", err)
 	}
@@ -496,6 +496,28 @@ func TestSend_fallsBackToPlainText(t *testing.T) {
 	sends := f.called("sendMessage")
 	if len(sends) != 2 || sends[1]["text"] != "[x](javascript:alert)" || sends[1]["parse_mode"] != nil {
 		t.Errorf("sendMessage calls = %v, want an HTML try then plain text", sends)
+	}
+}
+
+func TestSend_splitsByUTF16Units(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+
+	// 3000 emoji: 3000 runes, under the limit of 4096, but 6000 UTF-16 units.
+	if err := ch.Send(t.Context(), "200", strings.Repeat("\U0001F600", 3000)); err != nil {
+		t.Fatal(err)
+	}
+
+	sends := f.called("sendMessage")
+	if len(sends) != 2 {
+		t.Fatalf("sendMessage calls = %d, want the text split in two", len(sends))
+	}
+
+	for i, p := range sends {
+		if text, _ := p["text"].(string); utf16Len(text) > maxMessageLen {
+			t.Errorf("part %d is %d UTF-16 units, limit %d", i, utf16Len(text), maxMessageLen)
+		}
 	}
 }
 

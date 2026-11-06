@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"maps"
 	"net/http"
 	"time"
 
@@ -28,83 +28,75 @@ const (
 	pathDownload    = "/v1.0/robot/messageFiles/download"
 )
 
-// APIError is an error answer of the OpenAPI.
-type APIError struct {
+// apiError is an error answer of the OpenAPI.
+type apiError struct {
 	Path    string
 	Status  int
 	Code    string // e.g. "InvalidAuthentication"
 	Message string
 }
 
-func (e *APIError) Error() string {
+func (e *apiError) Error() string {
 	return fmt.Sprintf("dingtalk %s: %d %s: %s", e.Path, e.Status, e.Code, e.Message)
 }
 
 // fatal reports errors that retrying cannot fix: the credentials or the
 // request are refused. Rate limits and server errors are retried.
 func fatal(err error) bool {
-	ae, ok := errors.AsType[*APIError](err)
+	ae, ok := errors.AsType[*apiError](err)
 
 	return ok && ae.Status >= http.StatusBadRequest && ae.Status < http.StatusInternalServerError &&
 		ae.Status != http.StatusTooManyRequests
 }
 
-// call POSTs body as JSON to an OpenAPI path and decodes the answer into out
-// (if not nil). Every path but the token's own is authenticated with the
-// app's access token.
+// call POSTs body as JSON to an OpenAPI path, authenticated with the app's
+// access token, and decodes the answer into out (if not nil).
 func (c *Channel) call(ctx context.Context, path string, body, out any) error {
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	return c.post(ctx, path, http.Header{tokenHeader: {token}}, body, out)
+}
+
+// post POSTs body as JSON to an OpenAPI path with header, and decodes the
+// answer into out (if not nil). On its own it is unauthenticated, for the
+// access token's own path.
+func (c *Channel) post(ctx context.Context, path string, header http.Header, body, out any) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("dingtalk %s: %w", path, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.api+path, bytes.NewReader(raw))
+	h := http.Header{"Content-Type": {transport.JSON}}
+	maps.Copy(h, header)
+
+	resp, err := transport.Do(ctx, c.http, http.MethodPost, c.api+path, h, bytes.NewReader(raw))
 	if err != nil {
 		return fmt.Errorf("dingtalk %s: %w", path, err)
 	}
 
-	req.Header.Set("Content-Type", transport.JSON)
-
-	if path != pathAccessToken {
-		token, err := c.accessToken(ctx)
-		if err != nil {
-			return err
-		}
-
-		req.Header.Set(tokenHeader, token)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("dingtalk %s: %w", path, err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // read-only body
-
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, transport.MaxResponse))
-	if err != nil {
-		return fmt.Errorf("dingtalk %s: %w", path, err)
-	}
-
-	if resp.StatusCode >= http.StatusBadRequest {
+	if resp.Status >= http.StatusBadRequest {
 		var e struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 		}
 
-		_ = json.Unmarshal(answer, &e)
+		_ = json.Unmarshal(resp.Body, &e)
 
 		if e.Message == "" {
-			e.Message = http.StatusText(resp.StatusCode)
+			e.Message = http.StatusText(resp.Status)
 		}
 
-		return &APIError{Path: path, Status: resp.StatusCode, Code: e.Code, Message: e.Message}
+		return &apiError{Path: path, Status: resp.Status, Code: e.Code, Message: e.Message}
 	}
 
 	if out == nil {
 		return nil
 	}
 
-	if err := json.Unmarshal(answer, out); err != nil {
+	if err := json.Unmarshal(resp.Body, out); err != nil {
 		return fmt.Errorf("dingtalk %s: decode answer: %w", path, err)
 	}
 
@@ -127,7 +119,7 @@ func (c *Channel) accessToken(ctx context.Context) (string, error) {
 	}
 
 	body := map[string]string{"appKey": c.cfg.ClientID, "appSecret": c.cfg.ClientSecret}
-	if err := c.call(ctx, pathAccessToken, body, &r); err != nil {
+	if err := c.post(ctx, pathAccessToken, nil, body, &r); err != nil {
 		return "", err
 	}
 

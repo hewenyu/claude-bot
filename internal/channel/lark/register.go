@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -51,7 +50,6 @@ const (
 	feishuAccounts   = "accounts.feishu.cn"
 	larkAccounts     = "accounts.larksuite.com"
 	registrationPath = "/oauth/v1/app/registration"
-	formType         = "application/x-www-form-urlencoded"
 )
 
 // Device-flow error codes.
@@ -335,25 +333,18 @@ func encodeAddons() (string, error) {
 func (r *Registrar) post(ctx context.Context, host string, form url.Values) (regResponse, error) {
 	var res regResponse
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+host+registrationPath, strings.NewReader(form.Encode()))
-	if err != nil {
-		return res, fmt.Errorf("build registration request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", formType)
-
-	resp, err := r.http.Do(req)
+	resp, err := transport.Do(ctx, r.http, http.MethodPost, "https://"+host+registrationPath,
+		http.Header{"Content-Type": {transport.Form}}, strings.NewReader(form.Encode()))
 	if err != nil {
 		return res, fmt.Errorf("registration request: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // read-only body
 
 	// Pending / slow_down come back as HTTP 400 with a JSON body.
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest {
-		return res, fmt.Errorf("%w: HTTP %d", ErrResponse, resp.StatusCode)
+	if resp.Status != http.StatusOK && resp.Status != http.StatusBadRequest {
+		return res, fmt.Errorf("%w: HTTP %d", ErrResponse, resp.Status)
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(&res); err != nil {
+	if err := json.Unmarshal(resp.Body, &res); err != nil {
 		return res, fmt.Errorf("%w: %w", ErrResponse, err)
 	}
 

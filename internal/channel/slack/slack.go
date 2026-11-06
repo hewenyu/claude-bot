@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 
 	"github.com/gorilla/websocket"
 
@@ -100,9 +99,7 @@ type Channel struct {
 	cfg    Config
 	log    *slog.Logger
 
-	botMu sync.Mutex
-	bot   *Bot // cached once fetched successfully
-
+	bot   channel.Memo[Bot]
 	names channel.Names // display names of senders; events carry user ids only
 }
 
@@ -134,23 +131,9 @@ func New(cfg Config, log *slog.Logger) (*Channel, error) {
 	return c, nil
 }
 
-// nameSender fills in the sender's display name. Best effort: without the
-// users:read scope the sender stays a user id.
-func (c *Channel) nameSender(ctx context.Context, msg *channel.Message) {
-	if msg.Sender.Name != "" || msg.Sender.ID == "" {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, channel.NameTimeout)
-	defer cancel()
-
-	name, err := c.names.Name(ctx, msg.Sender.ID)
-	if err != nil {
-		c.log.Warn("slack sender name (add the users:read scope to show names)", "user", msg.Sender.ID, "err", err)
-	}
-
-	msg.Sender.Name = name
-}
+// nameWarning is logged when a sender's name cannot be looked up: without
+// the users:read scope the sender stays a user id.
+const nameWarning = "slack sender name (add the users:read scope to show names)"
 
 // userName looks up a user's display name (users.info, scope users:read):
 // the profile's display name, else the real name, else the handle.
@@ -184,13 +167,10 @@ func (c *Channel) Name() string { return Name }
 // Bot returns the bot's identity. It doubles as a bot token check; only a
 // successful answer is cached, so a transient failure can be retried.
 func (c *Channel) Bot(ctx context.Context) (Bot, error) {
-	c.botMu.Lock()
-	defer c.botMu.Unlock()
+	return c.bot.Get(ctx, c.fetchBot)
+}
 
-	if c.bot != nil {
-		return *c.bot, nil
-	}
-
+func (c *Channel) fetchBot(ctx context.Context) (Bot, error) {
 	var r struct {
 		UserID string `json:"user_id"`
 		User   string `json:"user"`
@@ -206,9 +186,7 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 		return Bot{}, fmt.Errorf("slack: the bot token belongs to a user (%s), %w", r.User, errNotBot)
 	}
 
-	c.bot = &Bot{UserID: r.UserID, Name: r.User, BotID: r.BotID, Team: r.Team, URL: r.URL}
-
-	return *c.bot, nil
+	return Bot{UserID: r.UserID, Name: r.User, BotID: r.BotID, Team: r.Team, URL: r.URL}, nil
 }
 
 // CheckAppToken proves the app-level token can open a Socket Mode connection.
@@ -243,7 +221,7 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 
 	thread, mention := msg.ThreadID, ""
 
-	if msg.ChatType != channel.ChatDirect {
+	if channel.MentionsSender(msg) {
 		if thread == "" {
 			thread = ts
 		}
@@ -268,7 +246,7 @@ func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 func (c *Channel) post(ctx context.Context, channelID, thread, mention, text string) error {
 	text = defuseBroadcasts.Replace(text)
 
-	for i, part := range markdown.Split(text, maxMarkdownLen) {
+	err := markdown.SendParts(markdown.Split(text, maxMarkdownLen), func(i int, part string) error {
 		var blocks []block
 
 		fallback := part
@@ -282,7 +260,7 @@ func (c *Channel) post(ctx context.Context, channelID, thread, mention, text str
 
 		raw, err := json.Marshal(blocks)
 		if err != nil {
-			return fmt.Errorf("slack send: %w", err)
+			return err
 		}
 
 		params := url.Values{
@@ -296,9 +274,10 @@ func (c *Channel) post(ctx context.Context, channelID, thread, mention, text str
 			params.Set("thread_ts", thread)
 		}
 
-		if err := c.call(ctx, c.cfg.BotToken, methodPostMessage, params, nil); err != nil {
-			return fmt.Errorf("slack send (part %d): %w", i+1, err)
-		}
+		return c.call(ctx, c.cfg.BotToken, methodPostMessage, params, nil)
+	})
+	if err != nil {
+		return fmt.Errorf("slack send: %w", err)
 	}
 
 	return nil
@@ -346,7 +325,7 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 
 			msg := toMessage(m, bot.UserID)
 			if m.BotID == "" {
-				c.nameSender(ctx, &msg)
+				c.names.NameSender(ctx, &msg, c.log, nameWarning)
 			}
 
 			return msg, nil
@@ -371,12 +350,7 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 
 	auth := http.Header{"Authorization": {transport.Bearer + c.cfg.BotToken}}
 
-	data, err := transport.Download(ctx, c.http, r.File.URLPrivateDownload, auth)
-	if err != nil {
-		return "", fmt.Errorf("slack download: %w", err)
-	}
-
-	path, err := channel.SaveFile(dir, channel.FileName(att.Key, data, att.Name, r.File.Name), data)
+	path, err := channel.SaveURL(ctx, c.http, r.File.URLPrivateDownload, auth, dir, att.Key, att.Name, r.File.Name)
 	if err != nil {
 		return "", fmt.Errorf("slack download: %w", err)
 	}
@@ -394,7 +368,7 @@ func (c *Channel) Ack(ctx context.Context, msg channel.Message) error {
 	params := url.Values{"channel": {channelID}, "timestamp": {ts}, "name": {ackEmoji}}
 
 	err = c.call(ctx, c.cfg.BotToken, methodAddReaction, params, nil)
-	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeAlreadyReacted {
+	if ae, ok := errors.AsType[*apiError](err); ok && ae.Code == codeAlreadyReacted {
 		return nil
 	}
 

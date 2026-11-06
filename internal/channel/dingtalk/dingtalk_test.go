@@ -403,7 +403,7 @@ func TestListen_refusedCredentials(t *testing.T) {
 
 	err := f.channel().Listen(context.Background(), func(channel.Message) error { return nil }, func() {})
 
-	ae, ok := errors.AsType[*APIError](err)
+	ae, ok := errors.AsType[*apiError](err)
 	if !ok || !fatal(err) || ae.Code != "invalidClientIdOrSecret" {
 		t.Errorf("Listen() = %v, want the refusal", err)
 	}

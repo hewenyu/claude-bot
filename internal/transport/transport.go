@@ -1,6 +1,7 @@
 // Package transport builds the HTTP and WebSocket clients the channel
 // adapters share, with the same proxy rules and bounded timeouts everywhere,
-// plus the bounded download and reconnect backoff they all need.
+// plus what they all need on top: bounded API calls and streamed downloads,
+// WebSocket sessions, reconnect and polling loops with backoff.
 package transport
 
 import (
@@ -35,18 +36,16 @@ const (
 	handshakeTimeout = 45 * time.Second // WebSocket upgrade, TLS included
 )
 
-// ClientTimeout bounds a whole request made with Client, reading the body
+// clientTimeout bounds a whole request made with Client, reading the body
 // included: an API call or an attachment download.
-const ClientTimeout = 2 * time.Minute
-
-// MaxResponse bounds an API answer read into memory.
-const MaxResponse = 16 << 20
+const clientTimeout = 2 * time.Minute
 
 // Header values the adapters send.
 const (
 	UserAgent = "claude-bot"
 	Bearer    = "Bearer " // Authorization scheme of API tokens
 	JSON      = "application/json"
+	Form      = "application/x-www-form-urlencoded"
 )
 
 // Proxy parses a proxy mode: ProxyDirect, ProxyEnv or a proxy URL.
@@ -77,11 +76,11 @@ func ProxyOr(mode, fallback string) (ProxyFunc, error) {
 }
 
 // Client returns the client for a channel's API calls and downloads: every
-// request is bounded by ClientTimeout, and a failed request closes the idle
+// request is bounded by two minutes, and a failed request closes the idle
 // connections, so the retry starts on a new one. WebSocket and other long
 // connections do not go through it.
 func Client(proxy ProxyFunc) *http.Client {
-	return &http.Client{Transport: closeOnError{HTTP(proxy)}, Timeout: ClientTimeout}
+	return &http.Client{Transport: closeOnError{HTTP(proxy)}, Timeout: clientTimeout}
 }
 
 // HTTP returns a transport that bounds every phase of a request that can

@@ -46,8 +46,8 @@ func TestProxy(t *testing.T) {
 func TestClient_boundsEveryRequest(t *testing.T) {
 	t.Parallel()
 
-	if c := Client(nil); c.Timeout != ClientTimeout {
-		t.Errorf("Client().Timeout = %v, want %v", c.Timeout, ClientTimeout)
+	if c := Client(nil); c.Timeout != clientTimeout {
+		t.Errorf("Client().Timeout = %v, want %v", c.Timeout, clientTimeout)
 	}
 }
 

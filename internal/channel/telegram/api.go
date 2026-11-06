@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,15 +16,15 @@ import (
 
 const defaultAPI = "https://api.telegram.org"
 
-// APIError is an error answer of the Bot API.
-type APIError struct {
+// apiError is an error answer of the Bot API.
+type apiError struct {
 	Method      string
 	Code        int
 	Description string
 	RetryAfter  time.Duration // set on 429 Too Many Requests
 }
 
-func (e *APIError) Error() string {
+func (e *apiError) Error() string {
 	return fmt.Sprintf("telegram %s: %d %s", e.Method, e.Code, e.Description)
 }
 
@@ -41,7 +40,7 @@ const (
 // fatal reports errors that retrying cannot fix: a bad token, or a webhook
 // that keeps getUpdates from working.
 func fatal(err error) bool {
-	ae, ok := errors.AsType[*APIError](err)
+	ae, ok := errors.AsType[*apiError](err)
 	if !ok {
 		return false
 	}
@@ -74,7 +73,7 @@ func (c *Channel) call(ctx context.Context, method string, params, out any) erro
 
 // floodWait is how long a 429 answer asks to wait.
 func floodWait(err error) (time.Duration, bool) {
-	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeTooMany {
+	if ae, ok := errors.AsType[*apiError](err); ok && ae.Code == codeTooMany {
 		return ae.RetryAfter, true
 	}
 
@@ -87,26 +86,19 @@ func (c *Channel) callOnce(ctx context.Context, method string, params, out any) 
 		return fmt.Errorf("telegram %s: %w", method, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.api+"/bot"+c.token+"/"+method, bytes.NewReader(body))
+	resp, err := transport.Do(ctx, c.http, http.MethodPost, c.api+"/bot"+c.token+"/"+method,
+		http.Header{"Content-Type": {transport.JSON}}, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("telegram %s: %w", method, redact(err))
 	}
-
-	req.Header.Set("Content-Type", transport.JSON)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("telegram %s: %w", method, redact(err))
-	}
-	defer resp.Body.Close() //nolint:errcheck // read-only body
 
 	var r response
-	if err := json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(&r); err != nil {
-		return fmt.Errorf("telegram %s: %s: %w", method, resp.Status, err)
+	if err := json.Unmarshal(resp.Body, &r); err != nil {
+		return fmt.Errorf("telegram %s: HTTP %d: %w", method, resp.Status, err)
 	}
 
 	if !r.OK {
-		ae := &APIError{Method: method, Code: r.ErrorCode, Description: r.Description}
+		ae := &apiError{Method: method, Code: r.ErrorCode, Description: r.Description}
 		if r.Parameters != nil {
 			ae.RetryAfter = time.Duration(r.Parameters.RetryAfter) * time.Second
 		}

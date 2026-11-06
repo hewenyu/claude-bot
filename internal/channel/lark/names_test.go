@@ -90,7 +90,7 @@ func TestNameSender(t *testing.T) {
 
 	for _, tt := range tests {
 		msg := channel.Message{Sender: channel.User{ID: tt.id, Mention: mentionSyntax(tt.id)}}
-		c.nameSender(t.Context(), &msg)
+		c.names.NameSender(t.Context(), &msg, c.log, nameWarning)
 
 		if msg.Sender.Name != tt.want || msg.Sender.ID != tt.id {
 			t.Errorf("sender of %s = %+v, want name %q", tt.id, msg.Sender, tt.want)
@@ -125,7 +125,7 @@ func TestNameSender_keepsKnownName(t *testing.T) {
 	f, c := newContactChannel(t)
 
 	msg := channel.Message{Sender: channel.User{ID: "ou_ann", Name: "Already"}}
-	c.nameSender(t.Context(), &msg)
+	c.names.NameSender(t.Context(), &msg, c.log, nameWarning)
 
 	if msg.Sender.Name != "Already" || len(f.users) != 0 {
 		t.Errorf("sender = %+v after %d lookups", msg.Sender, len(f.users))

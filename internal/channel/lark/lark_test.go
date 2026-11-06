@@ -11,6 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -357,6 +360,138 @@ func TestPickLocale(t *testing.T) {
 
 	if got := pickLocale(map[string]post{"ja_jp": {Title: "ja"}, "de_de": {Title: "de"}}); got.Title != "de" {
 		t.Errorf("pickLocale() without zh/en = %q, want the first by name", got.Title)
+	}
+}
+
+// sentMessage is one send request the fake reply API received.
+type sentMessage struct {
+	MsgType string `json:"msg_type"`
+	Content string `json:"content"`
+	UUID    string `json:"uuid"`
+	size    int    // of the whole request body
+}
+
+// replyAPI serves the tenant token and records every reply posted.
+func replyAPI(t *testing.T) (*Channel, func() []sentMessage) {
+	t.Helper()
+
+	var (
+		mu   sync.Mutex
+		sent []sentMessage
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			_, _ = io.WriteString(w, `{"code":0,"msg":"ok","tenant_access_token":"t-test","expire":7200}`)
+
+			return
+		}
+
+		raw, _ := io.ReadAll(r.Body)
+
+		var m sentMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Errorf("request body: %v", err)
+		}
+
+		m.size = len(raw)
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		sent = append(sent, m)
+
+		_, _ = io.WriteString(w, `{"code":0,"msg":"ok","data":{}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &Channel{
+		client: lark.NewClient(t.Name(), "secret",
+			lark.WithOpenBaseUrl(srv.URL), lark.WithLogLevel(larkcore.LogLevelError), lark.WithHttpClient(srv.Client())),
+		log: slog.New(slog.DiscardHandler),
+	}
+
+	return c, func() []sentMessage {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return slices.Clone(sent)
+	}
+}
+
+func TestReply_splitsLongReplies(t *testing.T) {
+	t.Parallel()
+
+	c, sent := replyAPI(t)
+	msg := channel.Message{ID: "lark:om_1", ChatType: channel.ChatGroup, Sender: channel.User{ID: "ou_ann"}}
+
+	// 3 bytes a character, and quotes escaped twice: well over one post.
+	line := strings.Repeat("中文", 100) + `"<b>"` + "\n"
+	text := strings.Repeat(line, 100)
+
+	if err := c.Reply(t.Context(), msg, text); err != nil {
+		t.Fatal(err)
+	}
+
+	first := sent()
+	if len(first) < 2 {
+		t.Fatalf("sent %d messages, want the reply split", len(first))
+	}
+
+	uuids := map[string]bool{}
+
+	for i, m := range first {
+		if m.MsgType != larkim.MsgTypePost || m.size > 30<<10 {
+			t.Errorf("part %d: %s of %d bytes, want a post under 30 KB", i, m.MsgType, m.size)
+		}
+
+		if mentions := strings.Contains(m.Content, `"tag":"at"`); mentions != (i == 0) {
+			t.Errorf("part %d mentions the sender: %v; want only the first to", i, mentions)
+		}
+
+		uuids[m.UUID] = true
+	}
+
+	if len(uuids) != len(first) {
+		t.Errorf("%d dedupe keys for %d parts, want one each", len(uuids), len(first))
+	}
+
+	// A retry sends the same keys, so Lark drops the parts already sent.
+	if err := c.Reply(t.Context(), msg, text); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, m := range sent()[len(first):] {
+		if m.UUID != first[i].UUID {
+			t.Errorf("retried part %d has key %s, want %s", i, m.UUID, first[i].UUID)
+		}
+	}
+}
+
+func TestSend_givesEveryPartItsOwnUUID(t *testing.T) {
+	t.Parallel()
+
+	c, sent := replyAPI(t)
+
+	if err := c.Send(t.Context(), "oc_1", strings.Repeat(strings.Repeat("x", 1000)+"\n", 60)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := sent()
+	if len(got) != 3 || got[0].UUID == got[1].UUID || got[1].UUID == got[2].UUID || len(got[0].UUID) > 50 {
+		t.Errorf("sent %d parts with uuids %v; want 3 distinct ones of at most 50 characters", len(got), got)
+	}
+}
+
+func TestPostLen(t *testing.T) {
+	t.Parallel()
+
+	for s, want := range map[string]int{"ab": 2, "中": 3, "\"": 4, "\n": 3, "<": 6, "\x01": 7} {
+		if got := postLen(s); got != want {
+			t.Errorf("postLen(%q) = %d, want %d", s, got, want)
+		}
 	}
 }
 

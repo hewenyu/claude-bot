@@ -14,7 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"sync"
+	"strconv"
 
 	"github.com/gorilla/websocket"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -24,6 +24,7 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/markdown"
 	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
@@ -125,9 +126,7 @@ type Channel struct {
 	dialer *websocket.Dialer
 	log    *slog.Logger
 
-	botMu sync.Mutex
-	bot   *Bot // cached once fetched successfully
-
+	bot   channel.Memo[Bot]
 	names channel.Names // display names of senders; events carry open_ids only
 }
 
@@ -186,13 +185,10 @@ func (c *Channel) Name() string { return Name }
 // Bot returns the bot's identity. It doubles as a credentials check; only a
 // successful answer is cached, so a transient failure can be retried.
 func (c *Channel) Bot(ctx context.Context) (Bot, error) {
-	c.botMu.Lock()
-	defer c.botMu.Unlock()
+	return c.bot.Get(ctx, c.fetchBot)
+}
 
-	if c.bot != nil {
-		return *c.bot, nil
-	}
-
+func (c *Channel) fetchBot(ctx context.Context) (Bot, error) {
 	resp, err := c.client.Get(ctx, botInfoPath, nil, larkcore.AccessTokenTypeTenant)
 	if err != nil {
 		return Bot{}, fmt.Errorf("lark bot info: %w", err)
@@ -211,8 +207,6 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 	if err := checkCode(body.Code, body.Msg); err != nil {
 		return Bot{}, fmt.Errorf("lark bot info: %w", err)
 	}
-
-	c.bot = &body.Bot
 
 	return body.Bot, nil
 }
@@ -253,7 +247,7 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 				return nil
 			}
 
-			c.nameSender(ctx, &msg)
+			c.names.NameSender(ctx, &msg, c.log, nameWarning)
 
 			return deliver(msg)
 		}).
@@ -282,23 +276,9 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 	return nil
 }
 
-// nameSender fills in the sender's display name when the message lacks it.
-// Best effort: without the contact permission the sender stays an open_id.
-func (c *Channel) nameSender(ctx context.Context, msg *channel.Message) {
-	if msg.Sender.Name != "" || msg.Sender.ID == "" {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, channel.NameTimeout)
-	defer cancel()
-
-	name, err := c.names.Name(ctx, msg.Sender.ID)
-	if err != nil {
-		c.log.Warn("lark sender name (grant contact:user.base:readonly to show names)", "user", msg.Sender.ID, "err", err)
-	}
-
-	msg.Sender.Name = name
-}
+// nameWarning is logged when a sender's name cannot be looked up: without
+// the contact permission the sender stays an open_id.
+const nameWarning = "lark sender name (grant contact:user.base:readonly to show names)"
 
 // userName looks up a user's display name by open_id. It needs the
 // contact:user.base:readonly permission, and the user within the app's
@@ -429,6 +409,8 @@ func prefixed(id string) string {
 // Reply implements channel.Channel. Outside direct chats the sender is
 // @-mentioned so they are notified (a message fetched with Get carries no chat
 // type, so it counts as a group); thread messages are answered in the thread.
+// Each part of a long reply has its own dedupe key, made of the message, the
+// part's place and its content: a retried reply sends no part twice.
 func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) error {
 	_, platformID, err := channel.SplitID(msg.ID)
 	if err != nil {
@@ -436,18 +418,18 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 	}
 
 	mentionID := ""
-	if msg.ChatType != channel.ChatDirect {
+	if channel.MentionsSender(msg) {
 		mentionID = msg.Sender.ID
 	}
 
-	return c.sendWithFallback(text, mentionID, func(msgType, content string) error {
+	return c.sendParts(text, mentionID, func(i int, msgType, content string) error {
 		resp, err := c.client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
 			MessageId(platformID).
 			Body(larkim.NewReplyMessageReqBodyBuilder().
 				MsgType(msgType).
 				Content(content).
 				ReplyInThread(msg.ThreadID != "").
-				Uuid(dedupeKey(msg.ID, msgType, content)).
+				Uuid(dedupeKey(msg.ID, strconv.Itoa(i), msgType, content)).
 				Build()).
 			Build())
 		if err != nil {
@@ -459,19 +441,20 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 }
 
 // Send implements channel.Channel. Lark sends at most one message per uuid
-// within an hour, so each call gets its own: the same text sent twice is
-// two messages. The text fallback shares it, since the post was refused.
+// within an hour, so each call gets its own, and each part of it a suffix:
+// the same text sent twice is two messages. The text fallback of a part
+// shares its uuid, since the post was refused.
 func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 	uuid := rand.Text()
 
-	return c.sendWithFallback(text, "", func(msgType, content string) error {
+	return c.sendParts(text, "", func(i int, msgType, content string) error {
 		resp, err := c.client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
 			ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
 			Body(larkim.NewCreateMessageReqBodyBuilder().
 				ReceiveId(chatID).
 				MsgType(msgType).
 				Content(content).
-				Uuid(uuid).
+				Uuid(uuid+"-"+strconv.Itoa(i)).
 				Build()).
 			Build())
 		if err != nil {
@@ -482,13 +465,30 @@ func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 	})
 }
 
-// sendFunc posts one message of the given type.
-type sendFunc func(msgType, content string) error
+// sendFunc posts part i of a message as the given type.
+type sendFunc func(i int, msgType, content string) error
+
+// sendParts posts Markdown split to fit a post request (see maxPostLen);
+// only the first part @-mentions mentionID (if set).
+func (c *Channel) sendParts(text, mentionID string, send sendFunc) error {
+	err := markdown.SendParts(markdown.SplitFunc(text, maxPostLen, postLen), func(i int, part string) error {
+		if i > 0 {
+			mentionID = ""
+		}
+
+		return c.sendWithFallback(part, mentionID, func(msgType, content string) error { return send(i, msgType, content) })
+	})
+	if err != nil {
+		return fmt.Errorf("lark send: %w", err)
+	}
+
+	return nil
+}
 
 // sendWithFallback posts Markdown as a rich-text post. Only if the platform
 // rejects the post does it retry as plain text: after a transport error the
 // post may have gone through, and a second message would be a duplicate.
-func (c *Channel) sendWithFallback(text, mentionID string, send sendFunc) error {
+func (c *Channel) sendWithFallback(text, mentionID string, send func(msgType, content string) error) error {
 	content, err := buildPost(text, mentionID)
 	if err != nil {
 		return fmt.Errorf("build post: %w", err)
@@ -498,7 +498,7 @@ func (c *Channel) sendWithFallback(text, mentionID string, send sendFunc) error 
 
 	if _, rejected := errors.AsType[*apiError](postErr); !rejected {
 		if postErr != nil {
-			return fmt.Errorf("lark send post: %w", postErr)
+			return fmt.Errorf("post: %w", postErr)
 		}
 
 		return nil
@@ -512,7 +512,7 @@ func (c *Channel) sendWithFallback(text, mentionID string, send sendFunc) error 
 	}
 
 	if err := send(larkim.MsgTypeText, content); err != nil {
-		return errors.Join(fmt.Errorf("lark send post: %w", postErr), fmt.Errorf("lark send text: %w", err))
+		return errors.Join(fmt.Errorf("post: %w", postErr), fmt.Errorf("text: %w", err))
 	}
 
 	return nil
@@ -550,7 +550,7 @@ func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, 
 
 	msg := fromItem(it, bot.OpenID)
 	if it.Sender != nil && larkcore.StringValue(it.Sender.SenderType) == senderUser {
-		c.nameSender(ctx, &msg)
+		c.names.NameSender(ctx, &msg, c.log, nameWarning)
 	}
 
 	return msg, nil
@@ -612,12 +612,9 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
-	data, err := transport.ReadAll(resp.File)
-	if err != nil {
-		return "", fmt.Errorf("lark download: %w", err)
-	}
-
-	path, err := channel.SaveFile(dir, channel.FileName(att.Key, data, att.Name, resp.FileName), data)
+	// The SDK has read the file into memory already; it is at least saved
+	// with the same bound as every other download.
+	path, err := channel.SaveStream(dir, att.Key, resp.File, att.Name, resp.FileName)
 	if err != nil {
 		return "", fmt.Errorf("lark download: %w", err)
 	}

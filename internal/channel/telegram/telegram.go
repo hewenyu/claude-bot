@@ -14,7 +14,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
+	"unicode/utf16"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/markdown"
@@ -27,10 +27,11 @@ const Name = "telegram"
 const (
 	// pollSeconds stays below the transport's 30 s response header timeout.
 	pollSeconds = 25
-	// Telegram allows 4096 UTF-16 code units per message, but Split counts
-	// characters, and emoji and other characters outside the BMP take two
-	// units. The margin covers a reasonable share of them.
-	maxMessageLen = 4000
+	// maxMessageLen is Telegram's limit, in UTF-16 code units of the text
+	// after entity parsing. Parts are measured as the Markdown they are cut
+	// from: its HTML renders no longer, and the plain-text fallback is that
+	// Markdown as is.
+	maxMessageLen = 4096
 	ackEmoji      = "👀"
 	reactionEmoji = "emoji" // ReactionType of a plain emoji
 	updateMessage = "message"
@@ -93,8 +94,7 @@ type Channel struct {
 	token string
 	log   *slog.Logger
 
-	botMu sync.Mutex
-	bot   *Bot // cached once fetched successfully
+	bot channel.Memo[Bot]
 }
 
 var (
@@ -127,21 +127,14 @@ func (c *Channel) Name() string { return Name }
 // Bot returns the bot's identity. It doubles as a token check; only a
 // successful answer is cached, so a transient failure can be retried.
 func (c *Channel) Bot(ctx context.Context) (Bot, error) {
-	c.botMu.Lock()
-	defer c.botMu.Unlock()
+	return c.bot.Get(ctx, func(ctx context.Context) (Bot, error) {
+		var u user
+		if err := c.call(ctx, methodGetMe, struct{}{}, &u); err != nil {
+			return Bot{}, err
+		}
 
-	if c.bot != nil {
-		return *c.bot, nil
-	}
-
-	var u user
-	if err := c.call(ctx, methodGetMe, struct{}{}, &u); err != nil {
-		return Bot{}, err
-	}
-
-	c.bot = &Bot{ID: u.ID, Name: u.name(), Username: u.Username, ReadsAllGroupMessages: u.CanReadAllGroupMessages}
-
-	return *c.bot, nil
+		return Bot{ID: u.ID, Name: u.name(), Username: u.Username, ReadsAllGroupMessages: u.CanReadAllGroupMessages}, nil
+	})
 }
 
 // Identity implements channel.Identifier.
@@ -174,38 +167,18 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 	}
 
 	req := getUpdates{Timeout: pollSeconds, AllowedUpdates: []string{updateMessage}}
-	connected := false
 
-	for {
+	return transport.Poll(ctx, c.log, Name, 0, backoff, fatal, func(ctx context.Context) error {
 		var updates []update
-
-		err := c.call(ctx, methodGetUpdates, req, &updates)
-		if err == nil && !connected {
-			c.log.Info("telegram connected", "bot", bot.Username)
-			ready()
-		}
-
-		connected = err == nil
-		if err == nil {
-			err = deliverAll(updates, bot, &req.Offset, deliver)
-		}
-
-		switch {
-		case ctx.Err() != nil:
-			return nil //nolint:nilerr // cancelled: the poll error is just the shutdown
-		case fatal(err):
+		if err := c.call(ctx, methodGetUpdates, req, &updates); err != nil {
 			return err
-		case err != nil:
-			wait := backoff.Next()
-			c.log.Warn("telegram poll", "err", err, "retry_in", wait)
-
-			if !transport.Sleep(ctx, wait) {
-				return nil
-			}
-		default:
-			backoff.Reset()
 		}
-	}
+
+		return deliverAll(updates, bot, &req.Offset, deliver)
+	}, func() {
+		c.log.Info("telegram connected", "bot", bot.Username)
+		ready()
+	})
 }
 
 // deliverAll delivers the messages of updates addressed to the bot, moving
@@ -234,7 +207,7 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 		return err
 	}
 
-	if msg.ChatType == channel.ChatGroup && msg.Sender.Mention != "" {
+	if channel.MentionsSender(msg) && msg.Sender.Mention != "" {
 		text = msg.Sender.Mention + " " + text
 	}
 
@@ -275,7 +248,9 @@ func (c *Channel) post(ctx context.Context, chatID, threadID string, replyTo int
 		}
 	}
 
-	for i, part := range markdown.Split(text, maxMessageLen) {
+	parts := markdown.SplitFunc(text, maxMessageLen, utf16Len)
+
+	err := markdown.SendParts(parts, func(i int, part string) error {
 		send := sendMessage{ChatID: chatID, MessageThreadID: thread, Text: toHTML(part), ParseMode: parseHTML}
 		send.LinkPreviewOptions.IsDisabled = true
 
@@ -285,17 +260,29 @@ func (c *Channel) post(ctx context.Context, chatID, threadID string, replyTo int
 
 		err := c.call(ctx, methodSendMessage, send, nil)
 
-		if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeBadRequest && strings.Contains(ae.Description, "parse") {
+		if ae, ok := errors.AsType[*apiError](err); ok && ae.Code == codeBadRequest && strings.Contains(ae.Description, "parse") {
 			send.Text, send.ParseMode = part, ""
 			err = c.call(ctx, methodSendMessage, send, nil)
 		}
 
-		if err != nil {
-			return fmt.Errorf("telegram send (part %d): %w", i+1, err)
-		}
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("telegram send: %w", err)
 	}
 
 	return nil
+}
+
+// utf16Len is the length of s in UTF-16 code units, as Telegram counts.
+func utf16Len(s string) int {
+	n := 0
+
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+
+	return n
 }
 
 // Get implements channel.Channel. The Bot API has no way to fetch a message,
@@ -320,21 +307,15 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		return "", errors.New("telegram download: no file path (larger than the Bot API's 20 MB?)")
 	}
 
-	// The file URL carries the token, so errors must not.
-	data, err := transport.Download(ctx, c.http, c.api+"/file/bot"+c.token+"/"+f.FilePath, nil)
+	// The file URL carries the token, so errors must not. Photos have no
+	// name of their own; the file path has one.
+	saved, err := channel.SaveURL(ctx, c.http, c.api+"/file/bot"+c.token+"/"+f.FilePath, nil,
+		dir, att.Key, att.Name, path.Base(f.FilePath))
 	if err != nil {
 		return "", fmt.Errorf("telegram download: %w", redact(err))
 	}
 
-	// Photos have no name of their own; the file path has one.
-	name := channel.FileName(att.Key, data, att.Name, path.Base(f.FilePath))
-
-	path, err := channel.SaveFile(dir, name, data)
-	if err != nil {
-		return "", fmt.Errorf("telegram download: %w", err)
-	}
-
-	return path, nil
+	return saved, nil
 }
 
 type reaction struct {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -101,45 +100,17 @@ func (c *Channel) session(ctx context.Context, deliver func(channel.Message) err
 		return false, err
 	}
 
-	conn, resp, err := c.dialer.DialContext(ctx, wsURL, nil)
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-
+	opened, err := transport.Session(ctx, c.dialer, wsURL, func() {
+		c.log.Info("dingtalk connected", "client_id", c.cfg.ClientID)
+		ready()
+	}, func(conn *websocket.Conn, data []byte) (bool, error) {
+		return c.frame(conn, data, deliver)
+	})
 	if err != nil {
-		return false, fmt.Errorf("dingtalk stream: %w", err)
+		return opened, fmt.Errorf("dingtalk stream: %w", err)
 	}
 
-	defer conn.Close() //nolint:errcheck // closing a finished connection
-
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-
-	done := make(chan struct{})
-	defer close(done)
-
-	touch := transport.KeepAlive(conn, done)
-
-	c.log.Info("dingtalk connected", "client_id", c.cfg.ClientID)
-	ready()
-
-	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			if ctx.Err() != nil {
-				return true, nil
-			}
-
-			return true, fmt.Errorf("dingtalk stream: %w", err)
-		}
-
-		touch()
-
-		end, err := c.frame(conn, data, deliver)
-		if end || err != nil {
-			return true, err
-		}
-	}
+	return opened, nil
 }
 
 // frame answers and handles one frame. end reports that the server is about
@@ -184,9 +155,7 @@ func (c *Channel) ack(conn *websocket.Conn, f frame, data string) error {
 		Data:    data,
 	}
 
-	_ = conn.SetWriteDeadline(time.Now().Add(transport.WriteTimeout))
-
-	if err := conn.WriteJSON(a); err != nil {
+	if err := transport.WriteJSON(conn, a); err != nil {
 		return fmt.Errorf("dingtalk stream ack: %w", err)
 	}
 

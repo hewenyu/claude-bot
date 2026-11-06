@@ -4,15 +4,21 @@
 package channel
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 // Errors about protocol ids.
@@ -91,8 +97,9 @@ type Channel interface {
 	// Name is the id prefix, e.g. "lark".
 	Name() string
 	// Listen blocks, delivering every message addressed to the bot until ctx
-	// ends. It calls ready each time the connection is (re-)established.
-	// deliver must return quickly.
+	// ends. It calls ready once the first connection is up; adapters may call
+	// it again on reconnects, which must be harmless. deliver must return
+	// quickly.
 	Listen(ctx context.Context, deliver func(Message) error, ready func()) error
 	// Reply answers msg in place (same thread), mentioning the sender in groups.
 	// text is Markdown.
@@ -122,6 +129,43 @@ type Identifier interface {
 	// Identity asks the platform and returns a human-readable "who am I",
 	// e.g. "Telegram @my_bot". It doubles as a credentials check.
 	Identity(ctx context.Context) (string, error)
+}
+
+// MentionsSender reports whether a reply to msg @-mentions its sender, so
+// they are notified: everywhere but in direct chats. A message fetched with
+// Get may carry no chat type; it counts as a group message.
+func MentionsSender(msg Message) bool {
+	return msg.ChatType != ChatDirect
+}
+
+// Memo holds what an adapter fetches once, e.g. the bot's identity. Only a
+// success is kept, so a failed fetch is tried again on the next call. The
+// zero value is ready to use.
+type Memo[T any] struct {
+	mu  sync.Mutex
+	v   T
+	set bool
+}
+
+// Get returns the kept value, fetching it first if there is none yet.
+func (m *Memo[T]) Get(ctx context.Context, fetch func(context.Context) (T, error)) (T, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.set {
+		return m.v, nil
+	}
+
+	v, err := fetch(ctx)
+	if err != nil {
+		var zero T
+
+		return zero, err
+	}
+
+	m.v, m.set = v, true
+
+	return v, nil
 }
 
 // ID builds a protocol message id.
@@ -287,19 +331,79 @@ func Extension(data []byte) string {
 
 // Download files stay private to the owner.
 const (
-	downloadDirPerm  = 0o750
-	downloadFilePerm = 0o600
+	downloadDirPerm = 0o750
+	sniffLen        = 512 // bytes http.DetectContentType looks at
 )
 
 // SaveFile writes a downloaded attachment to dir/name, creating dir, and
 // returns its path. name must already be a bare file name (see BaseName).
 func SaveFile(dir, name string, data []byte) (string, error) {
+	return save(dir, name, bytes.NewReader(data), int64(len(data)))
+}
+
+// SaveStream writes a download read from r into dir, creating dir, and
+// returns its path. The file is named as FileName does, the extension
+// sniffed from its first bytes. A file over transport.MaxDownload fails with
+// transport.ErrTooLarge and leaves nothing behind.
+func SaveStream(dir, key string, r io.Reader, names ...string) (string, error) {
+	return saveStream(dir, key, r, transport.MaxDownload, names...)
+}
+
+func saveStream(dir, key string, r io.Reader, limit int64, names ...string) (string, error) {
+	br := bufio.NewReaderSize(r, sniffLen)
+
+	head, err := br.Peek(sniffLen)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+
+	return save(dir, FileName(key, head, names...), br, limit)
+}
+
+// SaveURL downloads url with c, sending header, into dir: SaveStream, named
+// after key and names.
+func SaveURL(ctx context.Context, c *http.Client, url string, header http.Header, dir, key string, names ...string) (string, error) {
+	var path string
+
+	err := transport.Download(ctx, c, url, header, func(r io.Reader) error {
+		var err error
+
+		path, err = SaveStream(dir, key, r, names...)
+
+		return err
+	})
+
+	return path, err
+}
+
+// save copies at most limit bytes of r to dir/name through a temporary file
+// renamed into place, so a failed or refused download leaves no partial
+// file behind.
+func save(dir, name string, r io.Reader, limit int64) (string, error) {
 	if err := os.MkdirAll(dir, downloadDirPerm); err != nil {
 		return "", fmt.Errorf("save %s: %w", name, err)
 	}
 
+	tmp, err := os.CreateTemp(dir, ".download-*") // mode 0600
+	if err != nil {
+		return "", fmt.Errorf("save %s: %w", name, err)
+	}
+	defer os.Remove(tmp.Name()) //nolint:errcheck // already gone once renamed
+
+	n, err := io.Copy(tmp, io.LimitReader(r, limit+1))
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("save %s: %w", name, err)
+	case n > limit:
+		return "", fmt.Errorf("save %s: file %w: over %d MiB", name, transport.ErrTooLarge, limit>>20)
+	}
+
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, data, downloadFilePerm); err != nil {
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return "", fmt.Errorf("save %s: %w", name, err)
 	}
 

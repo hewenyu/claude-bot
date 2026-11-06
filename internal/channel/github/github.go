@@ -17,7 +17,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -89,8 +88,7 @@ type Channel struct {
 	repo  string
 	log   *slog.Logger
 
-	accountMu sync.Mutex
-	account   *Account // cached once fetched successfully
+	account channel.Memo[Account]
 }
 
 var (
@@ -124,13 +122,10 @@ func (c *Channel) Name() string { return Name }
 // Account checks the token and its access to the repository. Only a
 // successful answer is cached.
 func (c *Channel) Account(ctx context.Context) (Account, error) {
-	c.accountMu.Lock()
-	defer c.accountMu.Unlock()
+	return c.account.Get(ctx, c.fetchAccount)
+}
 
-	if c.account != nil {
-		return *c.account, nil
-	}
-
+func (c *Channel) fetchAccount(ctx context.Context) (Account, error) {
 	var u user
 	if err := c.get(ctx, "/user", nil, &u); err != nil {
 		return Account{}, err
@@ -147,9 +142,7 @@ func (c *Channel) Account(ctx context.Context) (Account, error) {
 		return Account{}, fmt.Errorf("github: no access to %s with this token: %w", c.repo, err)
 	}
 
-	c.account = &Account{Login: u.Login, Repo: r.FullName, Private: r.Private, CanPush: r.Permissions.Push}
-
-	return *c.account, nil
+	return Account{Login: u.Login, Repo: r.FullName, Private: r.Private, CanPush: r.Permissions.Push}, nil
 }
 
 // Identity implements channel.Identifier, noting a token that cannot push.
@@ -182,43 +175,22 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 	}
 
 	p := newPoller(c, acct.Login, deliver, start)
-	imported, connected := false, false
+	imported := false
 
-	for {
-		// Every round sets err afresh: a failure must not stick and skip
-		// the rounds after it.
-		if imported {
-			err = p.poll(ctx)
-		} else if err = p.importOpen(ctx); err == nil {
-			imported = true
-			err = p.poll(ctx)
-		}
-
-		wait := pollEvery
-
-		switch {
-		case ctx.Err() != nil:
-			return nil //nolint:nilerr // cancelled: the poll error is just the shutdown
-		case fatal(err):
-			return err
-		case err != nil:
-			wait = backoff.Next()
-			c.log.Warn("github poll", "err", err, "retry_in", wait)
-		default:
-			backoff.Reset()
-
-			if !connected {
-				connected = true
-
-				c.log.Info("github connected", "user", acct.Login, "repo", c.repo)
-				ready()
+	return transport.Poll(ctx, c.log, Name, pollEvery, backoff, fatal, func(ctx context.Context) error {
+		if !imported {
+			if err := p.importOpen(ctx); err != nil {
+				return err
 			}
+
+			imported = true
 		}
 
-		if !transport.Sleep(ctx, wait) {
-			return nil
-		}
-	}
+		return p.poll(ctx)
+	}, func() {
+		c.log.Info("github connected", "user", acct.Login, "repo", c.repo)
+		ready()
+	})
 }
 
 // Reply implements channel.Channel: a comment on the issue or PR, or a reply
@@ -229,7 +201,7 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 		return err
 	}
 
-	if msg.Sender.Mention != "" {
+	if channel.MentionsSender(msg) && msg.Sender.Mention != "" {
 		text = msg.Sender.Mention + " " + text
 	}
 
@@ -257,10 +229,11 @@ func (c *Channel) commentsPath(number int) string {
 // post comments text, split to fit GitHub's limit. Every part carries the
 // Marker, so the poller knows it for the bot's own.
 func (c *Channel) post(ctx context.Context, path, text string) error {
-	for i, part := range markdown.Split(text, maxBodyLen) {
-		if err := c.send(ctx, http.MethodPost, path, map[string]string{"body": withMarker(part)}, nil); err != nil {
-			return fmt.Errorf("github comment (part %d): %w", i+1, err)
-		}
+	err := markdown.SendParts(markdown.Split(text, maxBodyLen), func(_ int, part string) error {
+		return c.send(ctx, http.MethodPost, path, map[string]string{"body": withMarker(part)}, nil)
+	})
+	if err != nil {
+		return fmt.Errorf("github comment: %w", err)
 	}
 
 	return nil
@@ -372,12 +345,7 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		header = http.Header{"Authorization": {transport.Bearer + c.token}}
 	}
 
-	data, err := transport.Download(ctx, c.http, att.Key, header)
-	if err != nil {
-		return "", fmt.Errorf("github download: %w", err)
-	}
-
-	path, err := channel.SaveFile(dir, channel.FileName(att.Key, data, att.Name), data)
+	path, err := channel.SaveURL(ctx, c.http, att.Key, header, dir, att.Key, att.Name)
 	if err != nil {
 		return "", fmt.Errorf("github download: %w", err)
 	}
