@@ -19,7 +19,6 @@ const (
 	defaultAPI = "https://api.github.com"
 	apiVersion = "2022-11-28"
 	mediaType  = "application/vnd.github+json"
-	userAgent  = "claude-bot"
 	perPage    = 100 // the most GitHub returns per page
 	maxPages   = 10  // pages read per listing, so a huge backlog cannot stall the listener
 )
@@ -41,6 +40,15 @@ func fatal(err error) bool {
 	ae, ok := errors.AsType[*APIError](err)
 
 	return ok && ae.Status == http.StatusUnauthorized
+}
+
+// noAccess reports why Account fails for good: a rejected token, or a
+// repository the token cannot see (GitHub answers 404 for both "no such
+// repository" and "not yours").
+func noAccess(err error) bool {
+	ae, ok := errors.AsType[*APIError](err)
+
+	return fatal(err) || ok && ae.Status == http.StatusNotFound
 }
 
 // request is one API call. etag, if set, makes it conditional.
@@ -83,11 +91,11 @@ func (c *Channel) call(ctx context.Context, r request, out any) (response, error
 
 	req.Header.Set("Accept", mediaType)
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("User-Agent", transport.UserAgent)
+	req.Header.Set("Authorization", transport.Bearer+c.token)
 
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", transport.JSON)
 	}
 
 	if r.etag != "" {
@@ -155,9 +163,9 @@ func (c *Channel) send(ctx context.Context, method, path string, body, out any) 
 }
 
 // listAll reads up to maxPages pages of a listing, calling each with every
-// item. The first page is conditional on etag; notModified reports that it
-// was unchanged (and nothing was read).
-func listAll[T any](ctx context.Context, c *Channel, path string, query url.Values, etag string, each func(T)) (response, error) {
+// item until it fails. The first page is conditional on etag; notModified
+// reports that it was unchanged (and nothing was read).
+func listAll[T any](ctx context.Context, c *Channel, path string, query url.Values, etag string, each func(T) error) (response, error) {
 	q := url.Values{}
 	maps.Copy(q, query)
 
@@ -189,7 +197,9 @@ func listAll[T any](ctx context.Context, c *Channel, path string, query url.Valu
 		}
 
 		for _, it := range items {
-			each(it)
+			if err := each(it); err != nil {
+				return first, err
+			}
 		}
 
 		if len(items) < perPage {

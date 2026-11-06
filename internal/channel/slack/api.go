@@ -16,10 +16,8 @@ import (
 )
 
 const (
-	defaultAPI    = "https://slack.com/api"
-	maxRetryAfter = 60 * time.Second // longest rate-limit wait honoured before giving up
-	formType      = "application/x-www-form-urlencoded"
-	bearer        = "Bearer " // Authorization scheme of every token
+	defaultAPI = "https://slack.com/api"
+	formType   = "application/x-www-form-urlencoded"
 )
 
 // APIError is an error answer of the Web API.
@@ -48,27 +46,30 @@ const (
 	codeAlreadyReacted = "already_reacted"
 )
 
-// fatal reports errors that retrying cannot fix: a bad or revoked token.
+// errNotBot is a bot token that belongs to a user.
+var errNotBot = errors.New("not a bot")
+
+// fatal reports errors that retrying cannot fix: a bad or revoked token, a
+// user's token in place of the bot's, or Socket Mode turned off.
 func fatal(err error) bool {
 	ae, ok := errors.AsType[*APIError](err)
 
-	return ok && fatalCodes[ae.Code]
+	return ok && fatalCodes[ae.Code] || errors.Is(err, errNotBot) || errors.Is(err, errLinkDisabled)
 }
 
 // call invokes a Web API method with form params, authenticated by token,
 // and decodes the answer into out (if not nil). A rate limit is honoured once.
 func (c *Channel) call(ctx context.Context, token, method string, params url.Values, out any) error {
-	err := c.callOnce(ctx, token, method, params, out)
+	return transport.RetryOnce(ctx, rateLimit, func() error { return c.callOnce(ctx, token, method, params, out) })
+}
 
-	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeRateLimited && ae.RetryAfter <= maxRetryAfter {
-		if !transport.Sleep(ctx, ae.RetryAfter) {
-			return ctx.Err()
-		}
-
-		err = c.callOnce(ctx, token, method, params, out)
+// rateLimit is how long a rate-limited answer asks to wait.
+func rateLimit(err error) (time.Duration, bool) {
+	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeRateLimited {
+		return ae.RetryAfter, true
 	}
 
-	return err
+	return 0, false
 }
 
 func (c *Channel) callOnce(ctx context.Context, token, method string, params url.Values, out any) error {
@@ -78,7 +79,7 @@ func (c *Channel) callOnce(ctx context.Context, token, method string, params url
 	}
 
 	req.Header.Set("Content-Type", formType)
-	req.Header.Set("Authorization", bearer+token)
+	req.Header.Set("Authorization", transport.Bearer+token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

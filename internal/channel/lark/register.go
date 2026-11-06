@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -41,6 +42,17 @@ const (
 
 // defaultWaitNotice is how often OnWaiting hears that no answer came yet.
 const defaultWaitNotice = 2 * time.Minute
+
+// requestTimeout bounds one call to the registration endpoint.
+const requestTimeout = 20 * time.Second
+
+// The registration endpoint: its hosts per deployment, and its path.
+const (
+	feishuAccounts   = "accounts.feishu.cn"
+	larkAccounts     = "accounts.larksuite.com"
+	registrationPath = "/oauth/v1/app/registration"
+	formType         = "application/x-www-form-urlencoded"
+)
 
 // Device-flow error codes.
 const (
@@ -100,7 +112,7 @@ type Registrar struct {
 func NewRegistrar(proxy transport.ProxyFunc) *Registrar {
 	return &Registrar{
 		http: &http.Client{
-			Timeout:   20 * time.Second,
+			Timeout:   requestTimeout,
 			Transport: transport.HTTP(proxy),
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
@@ -108,10 +120,10 @@ func NewRegistrar(proxy transport.ProxyFunc) *Registrar {
 		},
 		intervalUnit: time.Second,
 		waitNotice:   defaultWaitNotice,
-		feishuHost:   "accounts.feishu.cn",
-		larkHost:     "accounts.larksuite.com",
+		feishuHost:   feishuAccounts,
+		larkHost:     larkAccounts,
 		linkHosts: []string{
-			"accounts.feishu.cn", "accounts.larksuite.com", "open.feishu.cn",
+			feishuAccounts, larkAccounts, "open.feishu.cn",
 			"open.larksuite.com", "passport.feishu.cn", "passport.larksuite.com",
 		},
 	}
@@ -323,12 +335,12 @@ func encodeAddons() (string, error) {
 func (r *Registrar) post(ctx context.Context, host string, form url.Values) (regResponse, error) {
 	var res regResponse
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+host+"/oauth/v1/app/registration", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+host+registrationPath, strings.NewReader(form.Encode()))
 	if err != nil {
 		return res, fmt.Errorf("build registration request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", formType)
 
 	resp, err := r.http.Do(req)
 	if err != nil {
@@ -341,7 +353,7 @@ func (r *Registrar) post(ctx context.Context, host string, form url.Values) (reg
 		return res, fmt.Errorf("%w: HTTP %d", ErrResponse, resp.StatusCode)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, transport.MaxResponse)).Decode(&res); err != nil {
 		return res, fmt.Errorf("%w: %w", ErrResponse, err)
 	}
 

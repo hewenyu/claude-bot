@@ -2,7 +2,6 @@ package dingtalk
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
@@ -133,15 +132,15 @@ func body(m robotMessage) (string, []channel.Attachment) {
 
 	var atts []channel.Attachment
 
-	// Attachments without a file name are numbered, so the files of one
-	// message do not overwrite each other; Download adds the extension.
+	// Attachments without a file name are named after their kind, numbered
+	// at the end; Download adds the extension.
 	attach := func(kind channel.AttachmentKind, code, name string) {
 		if code == "" {
 			return
 		}
 
 		if name = channel.BaseName(name); name == "" {
-			name = fmt.Sprintf("%s-%d", kind, len(atts)+1)
+			name = string(kind)
 		}
 
 		atts = append(atts, channel.Attachment{Kind: kind, Key: code, Name: name})
@@ -174,6 +173,8 @@ func body(m robotMessage) (string, []channel.Attachment) {
 	default:
 		text = "[" + m.MsgType + " message]"
 	}
+
+	channel.UniqueNames(atts)
 
 	return strings.TrimSpace(text), atts
 }

@@ -87,6 +87,18 @@ func Split(text string, limit int) []string {
 	return parts
 }
 
+// Truncate cuts s to at most n characters (n > 0), ending in "…" when it
+// had to cut.
+func Truncate(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+
+	head, _ := cutRunes(s, n-1)
+
+	return head + "…"
+}
+
 // cutRunes splits s after its first n runes.
 func cutRunes(s string, n int) (head, tail string) {
 	for i := range s {

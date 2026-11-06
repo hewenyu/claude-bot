@@ -291,6 +291,92 @@ func TestPoll(t *testing.T) {
 	}
 }
 
+// A message the inbox could not take is delivered again by the next poll.
+func TestPoll_failedDeliveryKeepsTheFeed(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.json("GET /repos/o/r/issues", []issue{{Number: 9, User: alice, CreatedAt: after, UpdatedAt: after}})
+	f.json("GET /repos/o/r/issues/comments", []comment{})
+	f.json("GET /repos/o/r/pulls/comments", []reviewComment{})
+
+	var got collect
+
+	fail := true
+	deliver := func(m channel.Message) error {
+		if fail {
+			return errors.New("disk full")
+		}
+
+		return got.deliver(m)
+	}
+
+	p := newPoller(ch, me, deliver, start)
+	if err := p.poll(context.Background()); err == nil {
+		t.Fatal("poll() succeeded with a failed delivery")
+	}
+
+	if !p.issues.since.Equal(start) {
+		t.Errorf("issues feed moved to %v after a failed delivery", p.issues.since)
+	}
+
+	fail = false
+
+	if err := p.poll(context.Background()); err != nil || !reflect.DeepEqual(got.ids(), []string{"github:o/r/9"}) {
+		t.Errorf("next poll delivered %v, %v; want github:o/r/9", got.ids(), err)
+	}
+}
+
+func TestListen_retriesAccountAndIsReadyAfterAPoll(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+
+	var users atomic.Int32
+
+	f.on("GET /user", func(w http.ResponseWriter, _ *http.Request) {
+		if users.Add(1) == 1 {
+			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(self)
+	})
+	f.json("GET /repos/o/r", map[string]any{"full_name": repo})
+	f.json("GET /repos/o/r/issues", []issue{})
+	f.json("GET /repos/o/r/issues/comments", []comment{})
+	f.json("GET /repos/o/r/pulls/comments", []reviewComment{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	ready := make(chan struct{})
+
+	go func() { _ = ch.Listen(ctx, func(channel.Message) error { return nil }, func() { close(ready) }) }()
+
+	select {
+	case <-ready:
+	case <-time.After(3 * backoffStart):
+		t.Fatalf("not ready; account asked %d times", users.Load())
+	}
+
+	if n := len(f.sent(http.MethodGet)); n < 5 {
+		t.Errorf("ready after %d requests, want after a whole poll", n)
+	}
+}
+
+func TestListen_noAccessToTheRepoEnds(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.json("GET /user", self)
+
+	if err := ch.Listen(t.Context(), func(channel.Message) error { return nil }, func() {}); !noAccess(err) {
+		t.Errorf("Listen() = %v, want the 404 of the repository", err)
+	}
+}
+
 // A failure reading a PR's reviews must not lose them: the issues feed has
 // already moved past the PR, so the next poll reads them from what is due.
 func TestPoll_retriesReviewsAfterFailure(t *testing.T) {
@@ -364,7 +450,7 @@ func TestPollFeed_conditionalOnceIdle(t *testing.T) {
 	ctx := context.Background()
 
 	for range 3 {
-		if err := pollFeed(ctx, p, &p.reviewComments, func(rc reviewComment) time.Time { return rc.UpdatedAt }); err != nil {
+		if err := pollFeed(ctx, p, &p.reviewComments, func(rc reviewComment) (time.Time, error) { return rc.UpdatedAt, nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

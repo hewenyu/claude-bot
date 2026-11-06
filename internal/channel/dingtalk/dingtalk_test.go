@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const (
@@ -85,14 +86,14 @@ func TestFromRobotMessage_kinds(t *testing.T) {
 			m:        with(msgRichText, `{"richText":[{"text":"看这个"},{"type":"picture","downloadCode":"pic1"},{"text":" 报错"},{"type":"picture","downloadCode":"pic3"}]}`),
 			wantText: "看这个 报错",
 			wantAtts: []channel.Attachment{
-				{Kind: channel.AttachmentImage, Key: "pic1", Name: "image-1"},
+				{Kind: channel.AttachmentImage, Key: "pic1", Name: "image"},
 				{Kind: channel.AttachmentImage, Key: "pic3", Name: "image-2"},
 			},
 		},
 		{
 			name:     "picture",
 			m:        with(msgPicture, `{"downloadCode":"pic2"}`),
-			wantAtts: []channel.Attachment{{Kind: channel.AttachmentImage, Key: "pic2", Name: "image-1"}},
+			wantAtts: []channel.Attachment{{Kind: channel.AttachmentImage, Key: "pic2", Name: "image"}},
 		},
 		{
 			name:     "file keeps a safe name",
@@ -103,7 +104,7 @@ func TestFromRobotMessage_kinds(t *testing.T) {
 			name:     "voice is its transcript",
 			m:        with(msgAudio, `{"downloadCode":"a1","recognition":"帮我看下日志"}`),
 			wantText: "帮我看下日志",
-			wantAtts: []channel.Attachment{{Kind: channel.AttachmentFile, Key: "a1", Name: "file-1"}},
+			wantAtts: []channel.Attachment{{Kind: channel.AttachmentFile, Key: "a1", Name: "file"}},
 		},
 		{
 			name:     "unknown types are named",
@@ -408,6 +409,53 @@ func TestListen_refusedCredentials(t *testing.T) {
 	}
 }
 
+func TestListen_retriesCredentialsAtStart(t *testing.T) {
+	t.Parallel()
+
+	f := newFake(t)
+	f.authStatus = http.StatusBadGateway
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	ready := make(chan struct{}, 1)
+
+	go func() {
+		_ = f.channel().Listen(ctx, func(channel.Message) error { return nil }, func() {
+			select {
+			case ready <- struct{}{}:
+			default:
+			}
+		})
+	}()
+
+	// Once the first request failed, the retry gets a token.
+	asked := func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+
+		if f.tokenCalls == 0 {
+			return false
+		}
+
+		f.authStatus = 0
+
+		return true
+	}
+
+	for deadline := time.Now().Add(5 * time.Second); !asked(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the access token was never asked for")
+		}
+	}
+
+	select {
+	case <-ready:
+	case <-time.After(3 * transport.ReconnectStart):
+		t.Fatal("not connected after a failed token request")
+	}
+}
+
 func TestReplyAndSend(t *testing.T) {
 	t.Parallel()
 
@@ -500,7 +548,7 @@ func TestDownload(t *testing.T) {
 func TestGet_unsupported(t *testing.T) {
 	t.Parallel()
 
-	if _, err := newFake(t).channel().Get(context.Background(), "cid/m"); !errors.Is(err, ErrNoGet) {
+	if _, err := newFake(t).channel().Get(context.Background(), "cid/m"); !errors.Is(err, channel.ErrNoGet) || !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("Get() = %v, want ErrNoGet", err)
 	}
 }

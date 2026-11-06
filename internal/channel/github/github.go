@@ -35,6 +35,7 @@ const (
 	backoffCap   = 5 * time.Minute
 	maxBodyLen   = 60000 // GitHub allows 65536 characters per comment
 	ackReaction  = "eyes"
+	webRoot      = "https://github.com/" // files below it get the token
 )
 
 // Pull request merge methods.
@@ -92,7 +93,10 @@ type Channel struct {
 	account   *Account // cached once fetched successfully
 }
 
-var _ channel.Channel = (*Channel)(nil)
+var (
+	_ channel.Channel    = (*Channel)(nil)
+	_ channel.Identifier = (*Channel)(nil)
+)
 
 // New returns a GitHub channel for cfg.
 func New(cfg Config, log *slog.Logger) (*Channel, error) {
@@ -148,22 +152,37 @@ func (c *Channel) Account(ctx context.Context) (Account, error) {
 	return *c.account, nil
 }
 
-// Listen implements channel.Channel. On start it delivers the open issues and
-// PRs still waiting for an answer, then polls for new ones, comments and
-// reviews, from people only. Errors are retried with backoff; only a
-// rejected token, or no access to the repository, ends it.
-func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
+// Identity implements channel.Identifier, noting a token that cannot push.
+func (c *Channel) Identity(ctx context.Context) (string, error) {
 	acct, err := c.Account(ctx)
 	if err != nil {
+		return "", err
+	}
+
+	who := acct.Login + " @ " + acct.Repo
+	if !acct.CanPush {
+		who += "（没有写权限：能收消息、发评论，但不能 close / merge）"
+	}
+
+	return who, nil
+}
+
+// Listen implements channel.Channel. On start it delivers the open issues and
+// PRs still waiting for an answer, then polls for new ones, comments and
+// reviews, from people only. Errors, and messages that could not be
+// delivered, are retried with backoff; only a rejected token, or no access to
+// the repository, ends it. ready is called after the first successful poll.
+func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
+	start := time.Now().Add(-clockSkew)
+	backoff := transport.Backoff{Start: backoffStart, Cap: backoffCap}
+
+	acct, err := transport.Retry(ctx, backoff, c.log, "github account", noAccess, c.Account)
+	if err != nil || ctx.Err() != nil {
 		return err
 	}
 
-	c.log.Info("github connected", "user", acct.Login, "repo", c.repo)
-	ready()
-
-	p := newPoller(c, acct.Login, deliver, time.Now().Add(-clockSkew))
-	backoff := transport.Backoff{Start: backoffStart, Cap: backoffCap}
-	imported := false
+	p := newPoller(c, acct.Login, deliver, start)
+	imported, connected := false, false
 
 	for {
 		// Every round sets err afresh: a failure must not stick and skip
@@ -187,6 +206,13 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 			c.log.Warn("github poll", "err", err, "retry_in", wait)
 		default:
 			backoff.Reset()
+
+			if !connected {
+				connected = true
+
+				c.log.Info("github connected", "user", acct.Login, "repo", c.repo)
+				ready()
+			}
 		}
 
 		if !transport.Sleep(ctx, wait) {
@@ -342,8 +368,8 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 	}
 
 	var header http.Header
-	if strings.HasPrefix(att.Key, "https://github.com/") {
-		header = http.Header{"Authorization": {"Bearer " + c.token}}
+	if strings.HasPrefix(att.Key, webRoot) {
+		header = http.Header{"Authorization": {transport.Bearer + c.token}}
 	}
 
 	data, err := transport.Download(ctx, c.http, att.Key, header)
@@ -351,12 +377,7 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		return "", fmt.Errorf("github download: %w", err)
 	}
 
-	name := channel.BaseName(att.Name)
-	if name == "" {
-		name = channel.PathSafe(att.Key)
-	}
-
-	path, err := channel.SaveFile(dir, name, data)
+	path, err := channel.SaveFile(dir, channel.FileName(att.Key, data, att.Name), data)
 	if err != nil {
 		return "", fmt.Errorf("github download: %w", err)
 	}

@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"slices"
 	"time"
@@ -56,10 +57,14 @@ func newPoller(c *Channel, me string, deliver func(channel.Message) error, start
 	}
 }
 
-func (p *poller) send(msg channel.Message) {
+// send delivers msg. A failure fails the poll, so the feed does not move
+// past it and the next poll delivers it again.
+func (p *poller) send(msg channel.Message) error {
 	if err := p.deliver(msg); err != nil {
-		p.c.log.Error("github deliver", "id", msg.ID, "err", err)
+		return fmt.Errorf("github deliver %s: %w", msg.ID, err)
 	}
+
+	return nil
 }
 
 // fresh reports whether a post is new and from someone other than the bot.
@@ -70,16 +75,18 @@ func (p *poller) fresh(u user, body string, at time.Time) bool {
 // poll delivers new issues and PRs, comments, inline review comments and
 // reviews.
 func (p *poller) poll(ctx context.Context) error {
-	err := pollFeed(ctx, p, &p.issues, func(i issue) time.Time {
+	err := pollFeed(ctx, p, &p.issues, func(i issue) (time.Time, error) {
 		if p.fresh(i.User, i.Body, i.CreatedAt) {
-			p.send(p.c.fromIssue(i))
+			if err := p.send(p.c.fromIssue(i)); err != nil {
+				return time.Time{}, err
+			}
 		}
 
 		if i.isPR() && !slices.Contains(p.reviewsDue, i.Number) {
 			p.reviewsDue = append(p.reviewsDue, i.Number)
 		}
 
-		return i.UpdatedAt
+		return i.UpdatedAt, nil
 	})
 	if err != nil {
 		return err
@@ -94,35 +101,39 @@ func (p *poller) poll(ctx context.Context) error {
 		p.reviewsDue = p.reviewsDue[1:]
 	}
 
-	err = pollFeed(ctx, p, &p.comments, func(cm comment) time.Time {
+	err = pollFeed(ctx, p, &p.comments, func(cm comment) (time.Time, error) {
 		if p.fresh(cm.User, cm.Body, cm.CreatedAt) {
-			p.send(p.c.fromComment(cm))
+			return cm.UpdatedAt, p.send(p.c.fromComment(cm))
 		}
 
-		return cm.UpdatedAt
+		return cm.UpdatedAt, nil
 	})
 	if err != nil {
 		return err
 	}
 
-	return pollFeed(ctx, p, &p.reviewComments, func(rc reviewComment) time.Time {
+	return pollFeed(ctx, p, &p.reviewComments, func(rc reviewComment) (time.Time, error) {
 		if p.fresh(rc.User, rc.Body, rc.CreatedAt) {
-			p.send(p.c.fromReviewComment(rc))
+			return rc.UpdatedAt, p.send(p.c.fromReviewComment(rc))
 		}
 
-		return rc.UpdatedAt
+		return rc.UpdatedAt, nil
 	})
 }
 
 // pollFeed lists what changed in f and hands each item to handle, which
-// returns the item's update time.
-func pollFeed[T any](ctx context.Context, p *poller, f *feed, handle func(T) time.Time) error {
+// returns the item's update time. f only moves forward once every item was
+// handled.
+func pollFeed[T any](ctx context.Context, p *poller, f *feed, handle func(T) (time.Time, error)) error {
 	latest := f.since
 
-	res, err := listAll(ctx, p.c, f.path, f.query(), f.etag, func(it T) {
-		if t := handle(it); t.After(latest) {
+	res, err := listAll(ctx, p.c, f.path, f.query(), f.etag, func(it T) error {
+		t, err := handle(it)
+		if t.After(latest) {
 			latest = t
 		}
+
+		return err
 	})
 	if err != nil {
 		return err
@@ -147,14 +158,16 @@ func pollFeed[T any](ctx context.Context, p *poller, f *feed, handle func(T) tim
 func (p *poller) pollReviews(ctx context.Context, n int) error {
 	path := p.c.repoPath("/pulls/%d/reviews", n)
 
-	_, err := listAll(ctx, p.c, path, nil, "", func(rv review) {
+	_, err := listAll(ctx, p.c, path, nil, "", func(rv review) error {
 		if rv.Body == "" && rv.State == reviewCommented {
-			return // just the wrapper of inline comments
+			return nil // just the wrapper of inline comments
 		}
 
 		if p.fresh(rv.User, rv.Body, rv.SubmittedAt) {
-			p.send(p.c.fromReview(n, rv))
+			return p.send(p.c.fromReview(n, rv))
 		}
+
+		return nil
 	})
 
 	return err
@@ -168,8 +181,10 @@ func (p *poller) pollReviews(ctx context.Context, n int) error {
 func (p *poller) importOpen(ctx context.Context) error {
 	var open []issue
 
-	_, err := listAll(ctx, p.c, p.c.repoPath("/issues"), url.Values{"state": {stateOpen}}, "", func(i issue) {
+	_, err := listAll(ctx, p.c, p.c.repoPath("/issues"), url.Values{"state": {stateOpen}}, "", func(i issue) error {
 		open = append(open, i)
+
+		return nil
 	})
 	if err != nil {
 		return err
@@ -188,10 +203,14 @@ func (p *poller) importOpen(ctx context.Context) error {
 		switch {
 		case last == nil || !last.User.person():
 			if !fromBot(i.User, i.Body, p.me) {
-				p.send(p.c.fromIssue(i))
+				err = p.send(p.c.fromIssue(i))
 			}
 		case !fromBot(last.User, last.Body, p.me):
-			p.send(p.c.fromComment(*last))
+			err = p.send(p.c.fromComment(*last))
+		}
+
+		if err != nil {
+			return err
 		}
 	}
 

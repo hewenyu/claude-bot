@@ -133,3 +133,55 @@ func TestExtension(t *testing.T) {
 		})
 	}
 }
+
+func TestUniqueNames(t *testing.T) {
+	t.Parallel()
+
+	atts := []Attachment{
+		{Name: "image.png"},
+		{Name: "a/image.png"},
+		{},
+		{Name: "IMAGE.png"},
+		{Name: "image-2.png"},
+		{Name: "notes"},
+		{Name: "notes"},
+	}
+	UniqueNames(atts)
+
+	want := []string{"image.png", "image-2.png", "", "IMAGE-3.png", "image-2-2.png", "notes", "notes-2"}
+	for i, a := range atts {
+		if a.Name != want[i] {
+			t.Errorf("name %d = %q, want %q", i, a.Name, want[i])
+		}
+	}
+}
+
+func TestFileName(t *testing.T) {
+	t.Parallel()
+
+	png := []byte("\x89PNG\r\n\x1a\n0000")
+
+	tests := []struct {
+		names []string
+		want  string
+	}{
+		{names: []string{"own.txt", "served.txt"}, want: "own.txt"},
+		{names: []string{"", "dir/served"}, want: "served.png"},
+		{names: []string{"..", ""}, want: "k_1.png"},
+		{want: "k_1.png"},
+	}
+
+	for _, tt := range tests {
+		if got := FileName("k/1", png, tt.names...); got != tt.want {
+			t.Errorf("FileName(%q) = %q, want %q", tt.names, got, tt.want)
+		}
+	}
+}
+
+func TestKindOf(t *testing.T) {
+	t.Parallel()
+
+	if KindOf("image/png") != AttachmentImage || KindOf("application/pdf") != AttachmentFile || KindOf("") != AttachmentFile {
+		t.Error("KindOf tells images from files wrongly")
+	}
+}

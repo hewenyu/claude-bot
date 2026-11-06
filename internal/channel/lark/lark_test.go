@@ -1,19 +1,26 @@
 package lark
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	lark "github.com/larksuite/oapi-sdk-go/v3"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const botOpenID = "ou_bot_open_id"
@@ -219,7 +226,7 @@ func TestFileName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := fileName(tt.att, tt.served, png); got != tt.want {
+			if got := channel.FileName(tt.att.Key, png, tt.att.Name, tt.served); got != tt.want {
 				t.Errorf("fileName() = %q, want %q", got, tt.want)
 			}
 		})
@@ -230,7 +237,7 @@ func TestFileName_jpeg(t *testing.T) {
 	t.Parallel()
 
 	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0}
-	if got := fileName(channel.Attachment{Key: "img_v3_1"}, "", jpeg); got != "img_v3_1.jpg" {
+	if got := channel.FileName("img_v3_1", jpeg); got != "img_v3_1.jpg" {
 		t.Errorf("fileName() = %q, want img_v3_1.jpg", got)
 	}
 }
@@ -363,5 +370,69 @@ func TestNew_validatesConfig(t *testing.T) {
 		if _, err := New(cfg, slog.New(slog.DiscardHandler)); err == nil {
 			t.Errorf("New(%+v) accepted an invalid config", cfg)
 		}
+	}
+}
+
+// openAPI serves the tenant token with tokenBody and the bot info as a
+// server error, counting the bot info calls.
+func openAPI(t *testing.T, tokenBody string, botCalls *atomic.Int32) *Channel {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_, _ = io.WriteString(w, tokenBody)
+		case botInfoPath:
+			botCalls.Add(1)
+			http.Error(w, "upstream down", http.StatusBadGateway)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// The SDK caches tenant tokens per app, across clients: an app of its own
+	// keeps the other tests' tokens out.
+	return &Channel{
+		client: lark.NewClient(t.Name(), "secret",
+			lark.WithOpenBaseUrl(srv.URL), lark.WithLogLevel(larkcore.LogLevelError), lark.WithHttpClient(srv.Client())),
+		log: slog.New(slog.DiscardHandler),
+	}
+}
+
+func TestListen_refusedCredentialsEnd(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+
+	c := openAPI(t, `{"code":10014,"msg":"app secret invalid"}`, &calls)
+
+	if err := c.Listen(t.Context(), func(channel.Message) error { return nil }, func() {}); !fatal(err) {
+		t.Errorf("Listen() = %v, want the refusal", err)
+	}
+}
+
+func TestListen_retriesBotInfoAtStart(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+
+	c := openAPI(t, `{"code":0,"msg":"ok","tenant_access_token":"t-test","expire":7200}`, &calls)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+
+	go func() { done <- c.Listen(ctx, func(channel.Message) error { return nil }, func() {}) }()
+
+	for deadline := time.Now().Add(3 * transport.ReconnectStart); calls.Load() < 2; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("bot info asked %d times, want it retried", calls.Load())
+		}
+	}
+
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Errorf("Listen() = %v after cancel, want nil", err)
 	}
 }

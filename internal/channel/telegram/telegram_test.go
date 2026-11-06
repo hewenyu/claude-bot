@@ -13,10 +13,12 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const token = "123:secret"
@@ -380,6 +382,69 @@ func TestListen_badTokenEnds(t *testing.T) {
 	}
 }
 
+// waitFor polls until cond holds, failing the test after a while.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * transport.ReconnectStart)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestListen_retriesGetMeAtStart(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+
+	f.answer["getMe"] = func(map[string]any) (int, string) {
+		if len(f.called("getMe")) == 1 { // only the first answer fails
+			return http.StatusBadGateway, `{"ok":false,"error_code":502,"description":"Bad Gateway"}`
+		}
+
+		raw, _ := json.Marshal(user{ID: bot.ID, IsBot: true, FirstName: bot.Name, Username: bot.Username})
+
+		return http.StatusOK, `{"ok":true,"result":` + string(raw) + `}`
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var ready atomic.Bool
+
+	go func() { _ = ch.Listen(ctx, func(channel.Message) error { return nil }, func() { ready.Store(true) }) }()
+
+	waitFor(t, "ready after a failed getMe", ready.Load)
+}
+
+func TestListen_failedDeliveryIsNotConfirmed(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.updates = []update{
+		{UpdateID: 10, Message: group("not for the bot")},
+		{UpdateID: 11, Message: &message{MessageID: 5, From: alice, Chat: chat{ID: 200, Type: chatPrivate}, Text: "hi"}},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	go func() {
+		_ = ch.Listen(ctx, func(channel.Message) error { return errors.New("disk full") }, func() {})
+	}()
+
+	waitFor(t, "a second poll", func() bool { return len(f.called("getUpdates")) >= 2 })
+
+	// Update 10 is done with; 11 must come again.
+	if off := f.called("getUpdates")[1]["offset"]; off != float64(11) {
+		t.Errorf("poll after a failed delivery has offset %v, want 11", off)
+	}
+}
+
 func TestReply_groupMentionsAndReplies(t *testing.T) {
 	t.Parallel()
 
@@ -511,7 +576,7 @@ func TestGet_unsupported(t *testing.T) {
 	t.Parallel()
 
 	_, ch := newFake(t)
-	if _, err := ch.Get(t.Context(), "200/5"); !errors.Is(err, ErrNoGet) {
+	if _, err := ch.Get(t.Context(), "200/5"); !errors.Is(err, channel.ErrNoGet) || !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("Get() error = %v, want ErrNoGet", err)
 	}
 }

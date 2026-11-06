@@ -106,7 +106,10 @@ type Channel struct {
 	names channel.Names // display names of senders; events carry user ids only
 }
 
-var _ channel.Channel = (*Channel)(nil)
+var (
+	_ channel.Channel    = (*Channel)(nil)
+	_ channel.Identifier = (*Channel)(nil)
+)
 
 // New returns a Slack channel for cfg.
 func New(cfg Config, log *slog.Logger) (*Channel, error) {
@@ -200,7 +203,7 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 	}
 
 	if r.BotID == "" {
-		return Bot{}, fmt.Errorf("slack: the bot token belongs to a user (%s), not a bot", r.User)
+		return Bot{}, fmt.Errorf("slack: the bot token belongs to a user (%s), %w", r.User, errNotBot)
 	}
 
 	c.bot = &Bot{UserID: r.UserID, Name: r.User, BotID: r.BotID, Team: r.Team, URL: r.URL}
@@ -213,6 +216,20 @@ func (c *Channel) CheckAppToken(ctx context.Context) error {
 	_, err := c.socketURL(ctx)
 
 	return err
+}
+
+// Identity implements channel.Identifier, checking both tokens.
+func (c *Channel) Identity(ctx context.Context) (string, error) {
+	bot, err := c.Bot(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	if err := c.CheckAppToken(ctx); err != nil {
+		return "", err
+	}
+
+	return "Slack bot " + bot.Name + "（" + bot.Team + "）", nil
 }
 
 // Reply implements channel.Channel. Outside direct messages the answer goes
@@ -271,7 +288,7 @@ func (c *Channel) post(ctx context.Context, channelID, thread, mention, text str
 		params := url.Values{
 			"channel":      {channelID},
 			"blocks":       {string(raw)},
-			"text":         {truncate(fallback, maxFallbackLen)},
+			"text":         {markdown.Truncate(fallback, maxFallbackLen)},
 			"unfurl_links": {"false"},
 			"unfurl_media": {"false"},
 		}
@@ -302,16 +319,6 @@ type textObject struct {
 // defuseBroadcasts breaks Slack's <!…> special mentions with a zero-width
 // space, which leaves the text looking the same.
 var defuseBroadcasts = strings.NewReplacer("<!", "<\u200b!")
-
-// truncate cuts s to at most n characters.
-func truncate(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-
-	return string(runes[:n-1]) + "…"
-}
 
 // Get implements channel.Channel, for messages in channels and threads alike.
 func (c *Channel) Get(ctx context.Context, platformID string) (channel.Message, error) {
@@ -362,19 +369,14 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		return "", fmt.Errorf("slack download: file %s has no download link", att.Key)
 	}
 
-	auth := http.Header{"Authorization": {bearer + c.cfg.BotToken}}
+	auth := http.Header{"Authorization": {transport.Bearer + c.cfg.BotToken}}
 
 	data, err := transport.Download(ctx, c.http, r.File.URLPrivateDownload, auth)
 	if err != nil {
 		return "", fmt.Errorf("slack download: %w", err)
 	}
 
-	name := channel.BaseName(r.File.Name)
-	if name == "" {
-		name = channel.PathSafe(att.Key)
-	}
-
-	path, err := channel.SaveFile(dir, name, data)
+	path, err := channel.SaveFile(dir, channel.FileName(att.Key, data, att.Name, r.File.Name), data)
 	if err != nil {
 		return "", fmt.Errorf("slack download: %w", err)
 	}

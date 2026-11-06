@@ -14,9 +14,6 @@ import (
 )
 
 const (
-	backoffStart = 2 * time.Second // first wait after a failed connection
-	backoffCap   = time.Minute
-
 	envelopeHello      = "hello"
 	envelopeDisconnect = "disconnect"
 	envelopeEvents     = "events_api"
@@ -39,38 +36,14 @@ type envelope struct {
 // refreshes Slack asks for, reconnect with backoff; only a rejected token or
 // Socket Mode being disabled ends it. ready is called on every connect.
 func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
-	bot, err := c.Bot(ctx)
-	if err != nil {
+	bot, err := transport.Retry(ctx, transport.ReconnectBackoff(), c.log, "slack auth.test", fatal, c.Bot)
+	if err != nil || ctx.Err() != nil {
 		return err
 	}
 
-	backoff := transport.Backoff{Start: backoffStart, Cap: backoffCap}
-
-	for {
-		connected, err := c.session(ctx, bot, deliver, ready)
-
-		switch {
-		case ctx.Err() != nil:
-			return nil //nolint:nilerr // cancelled: the connection error is just the shutdown
-		case fatal(err) || errors.Is(err, errLinkDisabled):
-			return err
-		case connected:
-			backoff.Reset()
-		}
-
-		if err == nil && connected {
-			c.log.Info("slack reconnecting", "reason", "requested by Slack")
-
-			continue
-		}
-
-		wait := backoff.Next()
-		c.log.Warn("slack connection", "err", err, "retry_in", wait)
-
-		if !transport.Sleep(ctx, wait) {
-			return nil
-		}
-	}
+	return transport.Reconnect(ctx, c.log, Name, fatal, func(ctx context.Context) (bool, error) {
+		return c.session(ctx, bot, deliver, ready)
+	})
 }
 
 // socketURL asks for a fresh Socket Mode endpoint.

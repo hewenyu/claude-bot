@@ -8,10 +8,10 @@ import (
 	"unicode/utf16"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/markdown"
 )
 
 const (
-	imageMIME     = "image/"
 	mentionMark   = "@"
 	chatPrivate   = "private"
 	chatGroup     = "group"
@@ -19,7 +19,7 @@ const (
 	entityMention = "mention"      // @username
 	entityTextRef = "text_mention" // a user without a username, by id
 	entityCommand = "bot_command"  // /cmd or /cmd@bot
-	maxQuoteLen   = 500            // characters of a quoted message kept
+	maxQuoteLen   = 500            // characters a quoted message is cut to
 	quoteLine     = "> "           // starts each line of a quoted message
 	attachmentTag = "[attachment]" // stands for a quoted message without text
 )
@@ -246,9 +246,7 @@ func quoted(r *message) string {
 		return ""
 	}
 
-	if runes := []rune(text); len(runes) > maxQuoteLen {
-		text = string(runes[:maxQuoteLen]) + "…"
-	}
+	text = markdown.Truncate(text, maxQuoteLen)
 
 	if r.From != nil {
 		text = r.From.name() + ": " + text
@@ -270,13 +268,10 @@ func attachments(m *message) []channel.Attachment {
 			continue
 		}
 
-		kind := channel.AttachmentFile
-		if strings.HasPrefix(d.MimeType, imageMIME) {
-			kind = channel.AttachmentImage
-		}
-
-		out = append(out, channel.Attachment{Kind: kind, Key: d.FileID, Name: d.FileName})
+		out = append(out, channel.Attachment{Kind: channel.KindOf(d.MimeType), Key: d.FileID, Name: d.FileName})
 	}
+
+	channel.UniqueNames(out)
 
 	return out
 }
