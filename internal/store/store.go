@@ -25,14 +25,14 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // pure Go: no cgo, so the binary stays a plain go install
+
+	"github.com/hewenyu/claude-bot/internal/atomicfile"
 )
 
 // FileName is the database inside the gateway home.
 const FileName = "gateway.db"
 
 const (
-	dirPerm  = 0o700
-	filePerm = 0o600
 	// busyTimeout lets a command read while the gateway writes, and the
 	// other way round, instead of failing with SQLITE_BUSY.
 	busyTimeout = 5 * time.Second
@@ -111,28 +111,21 @@ var tracked = []string{"settings", "projects", "channels"}
 
 const schemaVersion = 1
 
-// Path returns the database file in home.
-func Path(home string) string {
+// dbPath returns the database file in home.
+func dbPath(home string) string {
 	return filepath.Join(home, FileName)
-}
-
-// Exists reports whether home has a database.
-func Exists(home string) bool {
-	_, err := os.Stat(Path(home))
-
-	return err == nil
 }
 
 // Open opens the database in home, creating home and the database as needed.
 func Open(ctx context.Context, home string) (*Store, error) {
-	if err := os.MkdirAll(home, dirPerm); err != nil {
+	if err := os.MkdirAll(home, atomicfile.PrivateDir); err != nil {
 		return nil, fmt.Errorf("create %s: %w", home, err)
 	}
 
-	path := Path(home)
+	path := dbPath(home)
 
 	// Create the file first, so that it never exists with wider permissions.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, filePerm) //nolint:gosec // the gateway's own file
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, atomicfile.PrivateFile) //nolint:gosec // the gateway's own file
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -147,11 +140,11 @@ func Open(ctx context.Context, home string) (*Store, error) {
 // OpenExisting opens the database in home if there is one; ok is false if
 // there is none, which is not an error: the gateway was never set up.
 func OpenExisting(ctx context.Context, home string) (s *Store, ok bool, err error) {
-	if _, err := os.Stat(Path(home)); errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(dbPath(home)); errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
 	}
 
-	s, err = open(ctx, Path(home))
+	s, err = open(ctx, dbPath(home))
 
 	return s, err == nil, err
 }
@@ -271,9 +264,40 @@ func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 // turns a project's runner on.
 const SettingRunnerPrefix = "runner:"
 
+// runnerOn is the value of the setting that turns a runner on.
+const runnerOn = "on"
+
 // RunnerKey is the setting that turns project's runner on.
 func RunnerKey(project int64) string {
 	return SettingRunnerPrefix + strconv.FormatInt(project, 10)
+}
+
+// RunnersOn returns the projects whose runner is on.
+func (s *Store) RunnersOn(ctx context.Context) (map[int64]bool, error) {
+	settings, err := s.SettingsWithPrefix(ctx, SettingRunnerPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	on := make(map[int64]bool, len(settings))
+
+	for k, v := range settings {
+		if id, err := strconv.ParseInt(k, 10, 64); err == nil && v == runnerOn {
+			on[id] = true
+		}
+	}
+
+	return on, nil
+}
+
+// SetRunnerOn turns a project's runner on or off.
+func (s *Store) SetRunnerOn(ctx context.Context, project int64, on bool) error {
+	v := ""
+	if on {
+		v = runnerOn
+	}
+
+	return s.SetSetting(ctx, RunnerKey(project), v)
 }
 
 // SettingGitHubTokenPrefix starts the key of each named GitHub token, for
@@ -398,26 +422,11 @@ func (s *Store) projectWhere(ctx context.Context, where string, arg any) (Projec
 	return p, nil
 }
 
-// AddProject registers the repository at dir, named after its directory
-// (with a number added if another project has that name). Registering a
-// registered directory returns its project.
-func (s *Store) AddProject(ctx context.Context, dir string) (Project, error) {
-	var p Project
-
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		var err error
-
-		p, err = addProject(ctx, tx, dir)
-
-		return err
-	})
-
-	return p, err
-}
-
 // SaveProject registers the repository at dir, if it is not yet, and
 // replaces its channels with chans, all or nothing: an app another project
-// uses (a *ConflictError) leaves the database as it was.
+// uses (a *ConflictError) leaves the database as it was. A new project is
+// named after its directory, with a number added if another project has
+// that name.
 func (s *Store) SaveProject(ctx context.Context, dir string, chans []Channel) (Project, error) {
 	var p Project
 
@@ -529,12 +538,6 @@ func (s *Store) Channels(ctx context.Context, project int64) ([]Channel, error) 
 	}
 
 	return out, nil
-}
-
-// SetChannels replaces a project's channels with chans, all or nothing. An
-// app another project uses is a *ConflictError.
-func (s *Store) SetChannels(ctx context.Context, project int64, chans []Channel) error {
-	return s.tx(ctx, func(tx *sql.Tx) error { return setChannels(ctx, tx, project, chans) })
 }
 
 func setChannels(ctx context.Context, tx *sql.Tx, project int64, chans []Channel) error {

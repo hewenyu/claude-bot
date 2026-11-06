@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -12,12 +11,6 @@ import (
 	"strings"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
-	"github.com/hewenyu/claude-bot/internal/channel/dingtalk"
-	"github.com/hewenyu/claude-bot/internal/channel/discord"
-	"github.com/hewenyu/claude-bot/internal/channel/github"
-	"github.com/hewenyu/claude-bot/internal/channel/lark"
-	"github.com/hewenyu/claude-bot/internal/channel/slack"
-	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/jev"
@@ -35,33 +28,7 @@ type app struct {
 	// holds its configuration and serves it; nil for a project configured
 	// by its own config.json.
 	gateway *store.Project
-	// wake, in the listener, wakes the screener when a message arrives;
-	// nil elsewhere.
-	wake chan struct{}
-	// locked, if set, is called once serve holds the project's lock.
-	locked func()
 }
-
-// Layout of the project's .claude-bot directory.
-const (
-	heartbeatFile = "serve.json"
-	listenerLock  = "serve.lock"
-	listenerLog   = "serve.log"
-	inboxDir      = "inbox"
-	filesDir      = "files"
-)
-
-// File modes: bot state stays private to the owner; files meant for the team
-// (.gitignore, the slash command) are world-readable like the rest of the repo.
-const (
-	dirPerm     = 0o750
-	privatePerm = 0o600
-	sharedPerm  = 0o644
-)
-
-var errNotConfigured = errors.New("no channel configured: run `claude-bot init` in the project (or `claude-bot init --channel <name>`); " +
-	"or set LARK_APP_ID and LARK_APP_SECRET, DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, SLACK_APP_TOKEN and SLACK_BOT_TOKEN, " +
-	"or DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET")
 
 func newApp(ctx context.Context, project string) (*app, error) {
 	dir, err := config.Dir(ctx, project)
@@ -69,69 +36,43 @@ func newApp(ctx context.Context, project string) (*app, error) {
 		return nil, err
 	}
 
-	cfg, err := config.Load(ctx, dir)
+	cfg, reg, err := config.LoadProject(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
 
-	return appFor(dir, cfg, newLogger())
+	a, err := appFor(dir, cfg, newLogger())
+	if err != nil {
+		return nil, err
+	}
+
+	a.gateway = reg
+
+	return a, nil
 }
 
 // appFor builds the app of the project whose bot directory is dir.
 func appFor(dir string, cfg config.Config, log *slog.Logger) (*app, error) {
-	channels, err := openChannels(cfg, log)
+	channels, err := cfg.Open(log)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(channels) == 0 {
-		return nil, errNotConfigured
+		return nil, config.ErrNotConfigured
 	}
 
 	a := assemble(dir, log, channels...)
 	a.typesafe = cfg.TypeSafe
-	a.gateway = cfg.Gateway
 
 	return a, nil
-}
-
-// openChannels builds the adapters of the configured channels.
-func openChannels(cfg config.Config, log *slog.Logger) ([]channel.Channel, error) {
-	var chs []channel.Channel
-
-	err := errors.Join(
-		addChannel(&chs, cfg.Lark, lark.New, log),
-		addChannel(&chs, cfg.Discord, discord.New, log),
-		addChannel(&chs, cfg.Telegram, telegram.New, log),
-		addChannel(&chs, cfg.Slack, slack.New, log),
-		addChannel(&chs, cfg.GitHub, github.New, log),
-		addChannel(&chs, cfg.DingTalk, dingtalk.New, log),
-	)
-
-	return chs, err
-}
-
-// addChannel appends the adapter newChannel builds for cfg, if it is set.
-func addChannel[C any, T channel.Channel](chs *[]channel.Channel, cfg *C, newChannel func(C, *slog.Logger) (T, error), log *slog.Logger) error {
-	if cfg == nil {
-		return nil
-	}
-
-	ch, err := newChannel(*cfg, log)
-	if err != nil {
-		return err
-	}
-
-	*chs = append(*chs, ch)
-
-	return nil
 }
 
 // assemble builds an app over already constructed channels.
 func assemble(dir string, log *slog.Logger, channels ...channel.Channel) *app {
 	a := &app{
 		dir:      dir,
-		inbox:    inbox.New(filepath.Join(dir, inboxDir)),
+		inbox:    inboxOf(dir),
 		channels: make(map[string]channel.Channel, len(channels)),
 		log:      log,
 	}

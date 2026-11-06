@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -89,11 +90,7 @@ type githubStatus struct {
 }
 
 func cmdStatus(ctx context.Context, project string, args []string) error {
-	if _, err := parseArgs("status", args); err != nil {
-		return err
-	}
-
-	a, err := newApp(ctx, project)
+	a, _, err := openApp(ctx, project, nil, args, exactly(0), "status")
 	if err != nil {
 		return err
 	}
@@ -119,49 +116,70 @@ func cmdStatus(ctx context.Context, project string, args []string) error {
 		Incoming: len(incoming),
 	}
 
-	if bot, errText, ok := identity(ctx, a, lark.Name, (*lark.Channel).Bot); ok {
-		s.Lark = &larkStatus{Bot: bot, Error: errText}
-	}
+	// Each probe sets its own field of s; they ask their platforms at once.
+	var wg sync.WaitGroup
 
-	if bot, errText, ok := identity(ctx, a, discord.Name, (*discord.Channel).Bot); ok {
-		s.Discord = &discordStatus{Bot: bot, Error: errText}
-		if errText == "" {
-			s.Discord.InviteURL = bot.InviteURL()
+	for name, ch := range a.channels {
+		if probe, ok := statusProbes[name]; ok {
+			wg.Go(func() { probe(ctx, ch, &s) })
 		}
 	}
 
-	if bot, errText, ok := identity(ctx, a, telegram.Name, (*telegram.Channel).Bot); ok {
-		s.Telegram = &telegramStatus{Bot: bot, Error: errText}
-		if errText == "" {
-			s.Telegram.Link = bot.Link()
-		}
-	}
-
-	if bot, errText, ok := identity(ctx, a, slack.Name, (*slack.Channel).Bot); ok {
-		s.Slack = &slackStatus{Bot: bot, Error: errText}
-	}
-
-	if acct, errText, ok := identity(ctx, a, github.Name, (*github.Channel).Account); ok {
-		s.GitHub = &githubStatus{Account: acct, Error: errText}
-	}
-
-	if app, errText, ok := identity(ctx, a, dingtalk.Name, (*dingtalk.Channel).App); ok {
-		s.DingTalk = &dingtalkStatus{App: app, Error: errText}
-	}
+	wg.Wait()
 
 	return printJSON(s)
 }
 
-// identity asks the channel configured under name who it is, with who.
-// errText is why it could not tell; ok is false if the channel is not
-// configured.
-func identity[C channel.Channel, I any](ctx context.Context, a *app, name string, who func(C, context.Context) (I, error)) (id I, errText string, ok bool) {
-	ch, ok := a.channels[name].(C)
+// statusProbes ask each kind of channel who it is, for status, and set
+// that in its own field.
+var statusProbes = map[string]func(context.Context, channel.Channel, *status){
+	lark.Name: func(ctx context.Context, ch channel.Channel, s *status) {
+		if bot, errText, ok := identity(ctx, ch, (*lark.Channel).Bot); ok {
+			s.Lark = &larkStatus{Bot: bot, Error: errText}
+		}
+	},
+	discord.Name: func(ctx context.Context, ch channel.Channel, s *status) {
+		if bot, errText, ok := identity(ctx, ch, (*discord.Channel).Bot); ok {
+			s.Discord = &discordStatus{Bot: bot, Error: errText}
+			if errText == "" {
+				s.Discord.InviteURL = bot.InviteURL()
+			}
+		}
+	},
+	telegram.Name: func(ctx context.Context, ch channel.Channel, s *status) {
+		if bot, errText, ok := identity(ctx, ch, (*telegram.Channel).Bot); ok {
+			s.Telegram = &telegramStatus{Bot: bot, Error: errText}
+			if errText == "" {
+				s.Telegram.Link = bot.Link()
+			}
+		}
+	},
+	slack.Name: func(ctx context.Context, ch channel.Channel, s *status) {
+		if bot, errText, ok := identity(ctx, ch, (*slack.Channel).Bot); ok {
+			s.Slack = &slackStatus{Bot: bot, Error: errText}
+		}
+	},
+	github.Name: func(ctx context.Context, ch channel.Channel, s *status) {
+		if acct, errText, ok := identity(ctx, ch, (*github.Channel).Account); ok {
+			s.GitHub = &githubStatus{Account: acct, Error: errText}
+		}
+	},
+	dingtalk.Name: func(ctx context.Context, ch channel.Channel, s *status) {
+		if app, errText, ok := identity(ctx, ch, (*dingtalk.Channel).App); ok {
+			s.DingTalk = &dingtalkStatus{App: app, Error: errText}
+		}
+	},
+}
+
+// identity asks ch who it is, with who. errText is why it could not tell;
+// ok is false if ch is not of the kind who asks.
+func identity[C channel.Channel, I any](ctx context.Context, ch channel.Channel, who func(C, context.Context) (I, error)) (id I, errText string, ok bool) {
+	c, ok := ch.(C)
 	if !ok {
 		return id, "", false
 	}
 
-	id, err := withTimeout(ctx, func(ctx context.Context) (I, error) { return who(ch, ctx) })
+	id, err := withTimeout(ctx, func(ctx context.Context) (I, error) { return who(c, ctx) })
 	if err != nil {
 		errText = err.Error()
 	}

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,27 +31,34 @@ const (
 
 // page is the web API of a gateway fixture.
 type page struct {
-	t *testing.T
-	f *gatewayFixture
-	w *web
-	h http.Handler
+	t    *testing.T
+	f    *gatewayFixture
+	w    *web
+	h    http.Handler
+	host string // the Host header it is called with
 }
 
 func newPage(t *testing.T) *page {
 	t.Helper()
 
-	f := newGatewayFixture(t)
+	return newGatewayFixture(t).page(testPageHost, nil)
+}
 
-	hosts, err := loopbackHosts(testPageHost)
+// page serves the API of f's gateway, with the runner b (nil for none),
+// as reached at host. The platforms' checks are fakes.
+func (f *gatewayFixture) page(host string, b *bots) *page {
+	f.t.Helper()
+
+	hosts, err := loopbackHosts(host)
 	if err != nil {
-		t.Fatal(err)
+		f.t.Fatal(err)
 	}
 
-	w := newWeb(f.g.store, nil, testPageToken, hosts, slog.New(slog.DiscardHandler))
+	w := newWeb(f.g.store, b, f.home, testPageToken, hosts, slog.New(slog.DiscardHandler))
 	w.checkGitHub = fakeGitHubCheck
 	w.checkJev = fakeJevCheck
 
-	return &page{t: t, f: f, w: w, h: w.routes()}
+	return &page{t: f.t, f: f, w: w, h: w.routes(), host: host}
 }
 
 // fakeJevCheck accepts TypeSafe keys starting with "good".
@@ -87,7 +95,7 @@ func (p *page) call(method, path string, body any) (int, []byte) {
 	}
 
 	r := httptest.NewRequestWithContext(p.t.Context(), method, path, &in)
-	r.Host = testPageHost
+	r.Host = p.host
 	r.Header.Set("Authorization", "Bearer "+testPageToken)
 
 	rw := httptest.NewRecorder()
@@ -148,6 +156,90 @@ func TestWeb_onlyThisMachineWithTheToken(t *testing.T) {
 			t.Errorf("%s: API answer may be cached", c.name)
 		}
 	}
+}
+
+// The overview reads the heartbeat of its own gateway home, never the
+// user's.
+func TestWeb_overviewReadsItsHome(t *testing.T) {
+	t.Parallel()
+
+	p := newPage(t)
+
+	var ov overviewResponse
+
+	code, raw := p.call(http.MethodGet, "/api/overview", nil)
+	if p.decode(raw, &ov); code != http.StatusOK || ov.Running || ov.Home != string(p.f.home) {
+		t.Fatalf("overview without a gateway: %d %s", code, raw)
+	}
+
+	hb := gatewayHeartbeat{PID: 4242, StartedAt: time.Now().UTC(), BeatAt: time.Now().UTC(), Version: "v9"}
+	if err := writeBeat(p.f.home.path(gatewayBeat), hb); err != nil {
+		t.Fatal(err)
+	}
+
+	code, raw = p.call(http.MethodGet, "/api/overview", nil)
+	if p.decode(raw, &ov); code != http.StatusOK || !ov.Running || ov.PID != 4242 || ov.Version != "v9" {
+		t.Fatalf("overview with a gateway: %d %s", code, raw)
+	}
+}
+
+// Every field of a channel's form is a key of that channel's stored
+// configuration, and every kind of channel has a form.
+func TestChannelForms_matchTheConfig(t *testing.T) {
+	t.Parallel()
+
+	for _, k := range config.Kinds() {
+		form, ok := channelForms[k.Name]
+		if !ok {
+			t.Errorf("%s has no form", k.Name)
+
+			continue
+		}
+
+		cfg, err := config.ChannelConfig(k.Name, json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		keys := jsonKeys(t, cfg)
+		if k.Name == github.Name {
+			keys = append(keys, fieldTokenName) // stored with it
+		}
+
+		for _, f := range form.fields {
+			if !slices.Contains(keys, f.Key) {
+				t.Errorf("%s: field %q is none of %v", k.Name, f.Key, keys)
+			}
+		}
+	}
+
+	if len(channelForms) != len(config.Kinds()) {
+		t.Errorf("%d forms for %d kinds of channel", len(channelForms), len(config.Kinds()))
+	}
+}
+
+// jsonKeys are the JSON keys of the one channel cfg sets up.
+func jsonKeys(t *testing.T, cfg config.Config) []string {
+	t.Helper()
+
+	for _, f := range reflect.ValueOf(cfg).Fields() {
+		if f.Kind() != reflect.Pointer || f.IsNil() || f.Type().Elem().Kind() != reflect.Struct {
+			continue
+		}
+
+		var keys []string
+
+		for sf := range f.Type().Elem().Fields() {
+			name, _, _ := strings.Cut(sf.Tag.Get("json"), ",")
+			keys = append(keys, name)
+		}
+
+		return keys
+	}
+
+	t.Fatalf("no channel set up in %+v", cfg)
+
+	return nil
 }
 
 func TestLoopbackHosts(t *testing.T) {

@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
@@ -23,6 +22,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel/telegram"
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/jev"
+	"github.com/hewenyu/claude-bot/internal/store"
 )
 
 //go:embed bot.md
@@ -31,6 +31,8 @@ var botCommand []byte
 const (
 	verifyTimeout = 3 * time.Minute
 	apiTimeout    = 15 * time.Second
+	// verifyStop bounds the wait for the check's connection to close.
+	verifyStop = 5 * time.Second
 )
 
 // quiet is the logger of channels built only to check credentials.
@@ -49,6 +51,60 @@ type initOptions struct {
 	reregister, noOpen, noVerify, force bool
 	botMD                               bool   // only rewrite the /bot command
 	sharedGitHubToken                   string // the gateway's token of githubTokenName, used unless --github-token gives another
+
+	root string  // the repository
+	out  printer // tells the person running init
+}
+
+// channelInit is how init sets up one kind of channel (see config.Kinds).
+type channelInit struct {
+	hint  string                              // after its label in the menu
+	given func(*initOptions) bool             // its credential flags are given
+	ask   func(*initOptions, *prompter) error // asks for the tokens the flags did not give; nil asks none
+	setup func(context.Context, *config.Config, initOptions) (setup, error)
+}
+
+// channelInits are the kinds of channel init sets up.
+var channelInits = map[string]channelInit{
+	lark.Name: {
+		hint:  "在浏览器里确认即可创建应用",
+		given: func(o *initOptions) bool { return o.appID != "" },
+		setup: setupLark,
+	},
+	discord.Name: {
+		hint:  "需要 bot token",
+		given: func(o *initOptions) bool { return o.discordToken != "" },
+		ask: func(o *initOptions, p *prompter) error {
+			return askToken(p, o.channel, "--discord-token", "", "Discord bot token（Developer Portal → Bot → Reset Token）", &o.discordToken)
+		},
+		setup: setupDiscord,
+	},
+	telegram.Name: {
+		hint:  "需要 @BotFather 给的 token",
+		given: func(o *initOptions) bool { return o.telegramToken != "" },
+		ask: func(o *initOptions, p *prompter) error {
+			return askToken(p, o.channel, "--telegram-token", "", "Telegram bot token（@BotFather → /newbot）", &o.telegramToken)
+		},
+		setup: setupTelegram,
+	},
+	slack.Name: {
+		hint:  "需要 app token 和 bot token",
+		given: func(o *initOptions) bool { return o.slackBotToken != "" },
+		ask:   askSlackTokens,
+		setup: setupSlack,
+	},
+	github.Name: {
+		hint:  "仓库的 issue、PR 和评论，需要 token",
+		given: func(o *initOptions) bool { return o.githubToken != "" || o.githubTokenName != "" },
+		ask:   askGitHubToken,
+		setup: setupGitHub,
+	},
+	dingtalk.Name: {
+		hint:  "企业内部应用的机器人，需要 Client ID 和 Client Secret",
+		given: func(o *initOptions) bool { return o.dingtalkID != "" },
+		ask:   askDingTalkCredentials,
+		setup: setupDingTalk,
+	},
 }
 
 func cmdInit(ctx context.Context, project string, args []string) error {
@@ -57,18 +113,20 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
+	o.out = printer{os.Stdout}
+
 	dir, err := config.Dir(ctx, project)
 	if err != nil {
 		return err
 	}
 
-	root := filepath.Dir(dir)
+	o.root = filepath.Dir(dir)
 	if o.botMD {
-		return rewriteBotCommand(root)
+		return rewriteBotCommand(o.root, o.out)
 	}
 
 	if o.name == "" {
-		o.name = filepath.Base(root) + " Bot"
+		o.name = filepath.Base(o.root) + " Bot"
 	}
 
 	cfg, err := config.Read(ctx, dir)
@@ -86,17 +144,26 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 		return err
 	}
 
-	o.githubRemote = githubRemote(ctx, root)
+	o.githubRemote = githubRemote(ctx, o.root)
 
-	if done, err := initJev(ctx, dir, root, &cfg, o); done || err != nil {
+	// One prompter for the whole of init: it buffers what it reads. Off a
+	// terminal (scripts, Claude Code) there is none, and init asks nothing.
+	p := terminalPrompter(o.out)
+
+	// Jev comes before anything else: every message goes through it.
+	if err := setupJev(ctx, &cfg, o, p); err != nil {
 		return err
 	}
 
-	if err := pickChannel(&o, cfg); err != nil {
+	if keyOnly(o, cfg) {
+		return saveKey(ctx, dir, cfg, o.out)
+	}
+
+	if err := pickChannel(&o, cfg, p); err != nil {
 		return err
 	}
 
-	s, err := setupChannel(ctx, &cfg, o, root)
+	s, err := channelInits[o.channel].setup(ctx, &cfg, o)
 	if err != nil {
 		return err
 	}
@@ -104,16 +171,20 @@ func cmdInit(ctx context.Context, project string, args []string) error {
 	return finishInit(ctx, dir, cfg, s, o)
 }
 
+// saveProject saves cfg as the configuration of the project in the bot
+// directory dir, after making sure git ignores the directory: secrets go
+// into it.
+func saveProject(ctx context.Context, dir string, cfg config.Config) (store.Project, error) {
+	if err := ensureLine(filepath.Join(filepath.Dir(dir), ".gitignore"), config.DirName+"/"); err != nil {
+		return store.Project{}, err
+	}
+
+	return config.Save(ctx, dir, cfg)
+}
+
 // finishInit saves what init set up, writes the /bot command, checks the
 // connection and says what to do next.
 func finishInit(ctx context.Context, dir string, cfg config.Config, s setup, o initOptions) error {
-	root := filepath.Dir(dir)
-
-	// Ignore the directory before the secret is written into it.
-	if err := ensureLine(filepath.Join(root, ".gitignore"), config.DirName+"/"); err != nil {
-		return err
-	}
-
 	// The gateway picks the saved configuration up within seconds; checking
 	// the connection here as well would put a second listener on the app.
 	gw, err := gatewayPID()
@@ -121,55 +192,51 @@ func finishInit(ctx context.Context, dir string, cfg config.Config, s setup, o i
 		return err
 	}
 
-	p, err := config.Save(ctx, dir, cfg)
+	p, err := saveProject(ctx, dir, cfg)
 	if err != nil {
 		return err
 	}
 
-	if err := writeIfAbsent(botCommandPath(root), botCommand, o.force); err != nil {
+	if err := writeIfAbsent(botCommandPath(o.root), botCommand, o.force); err != nil {
 		return err
 	}
 
-	fmt.Printf("✓ bot「%s」已接入 %s（gateway 里的项目名：%s）\n", s.name, root, p.Name)
+	out := o.out
+	out.printf("✓ bot「%s」已接入 %s（gateway 里的项目名：%s）\n", s.name, o.root, p.Name)
 	s.report(ctx)
 
 	switch {
 	case o.noVerify:
 	case gw != 0:
-		fmt.Printf("✓ gateway 正在运行（pid %d），几秒内会接上这个项目，跳过连接验证\n", gw)
+		out.printf("✓ gateway 正在运行（pid %d），几秒内会接上这个项目，跳过连接验证\n", gw)
 	default:
-		if err := verifyConnection(ctx, dir, s.ch, s.prompt); err != nil {
+		if err := verifyConnection(ctx, dir, s.ch, s.prompt, out); err != nil {
 			return err
 		}
 	}
 
-	fmt.Println("\n下一步：")
+	out.println("\n下一步：")
 
 	if gw == 0 {
-		fmt.Println("  1. 在终端里运行  claude-bot gateway start  启动 gateway（一个进程服务所有项目）")
+		out.println("  1. 在终端里运行  " + lineGatewayStart + "  启动 gateway（一个进程服务所有项目）")
 	} else {
-		fmt.Println("  1. gateway 已在运行，会自动用上新配置；`claude-bot gateway status` 可以看它接上没有")
+		out.println("  1. gateway 已在运行，会自动用上新配置；" + hintGatewayStatus + " 可以看它接上没有")
 	}
 
-	fmt.Println("  2. 在 gateway 的网页（claude-bot gateway open）上打开这个项目的「自动处理」；或者自己在这个仓库里的 Claude Code 运行  /bot")
-	warnOwnListener(dir)
-	fmt.Println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
-	fmt.Printf("要再接入其他渠道，运行  claude-bot init --channel <%s>\n", channelNames("|"))
+	out.println("  2. 在 gateway 的网页（claude-bot gateway open）上打开这个项目的「自动处理」；或者自己在这个仓库里的 Claude Code 运行  /bot")
+	warnOwnListener(dir, out)
+	out.println("把 bot 拉进项目群（Discord 是邀请进服务器，Slack 是在频道里 /invite），大家私聊它或在群里 @ 它即可。")
+	out.printf("要再接入其他渠道，运行  claude-bot init --channel <%s>\n", config.KindNames("|"))
 
 	return nil
 }
 
 // pickChannel settles which channel to set up and asks for its tokens. With
-// no choice made by flags it shows a menu on a terminal; elsewhere (scripts,
-// Claude Code) it keeps the old default, Lark.
-func pickChannel(o *initOptions, cfg config.Config) error {
-	p, interactive := terminalPrompter()
-	if !interactive {
-		p = nil
-	}
-
+// no choice made by flags it shows a menu on a terminal (p is not nil);
+// elsewhere (scripts, Claude Code) it keeps the old default, Lark.
+func pickChannel(o *initOptions, cfg config.Config, p *prompter) error {
 	if o.channel == "" {
-		o.channel = lark.Name
+		o.channel = config.Kinds()[0].Name
 
 		if p != nil {
 			name, err := p.chooseChannel(cfg, o.githubRemote != "")
@@ -187,16 +254,16 @@ func pickChannel(o *initOptions, cfg config.Config) error {
 // jevGuide is where to get a TypeSafe API key.
 const jevGuide = "https://console.typesafe.ai/keys"
 
-// setupJev checks key and records it in cfg. Without a key it keeps the one
-// set up before, or asks for one on a terminal.
-func setupJev(ctx context.Context, cfg *config.Config, key string) error {
+// setupJev checks o's TypeSafe key and records it in cfg. Without a key it
+// keeps the one set up before, or asks p for one, if there is a terminal.
+func setupJev(ctx context.Context, cfg *config.Config, o initOptions, p *prompter) error {
+	key := o.typesafeKey
 	if key == "" && cfg.TypeSafe != nil {
 		return nil
 	}
 
 	if key == "" {
-		p, ok := terminalPrompter()
-		if !ok {
+		if p == nil {
 			return fmt.Errorf("%w: claude-bot needs a TypeSafe API key for Jev: --typesafe-key <key> (from %s)", errUsage, jevGuide)
 		}
 
@@ -216,60 +283,45 @@ func setupJev(ctx context.Context, cfg *config.Config, key string) error {
 
 	cfg.TypeSafe = &jev.Config{APIKey: key}
 
-	fmt.Println("✓ Jev 已接入（TypeSafe API key 有效）")
+	o.out.println("✓ Jev 已接入（TypeSafe API key 有效）")
 
 	return nil
 }
 
-// initJev sets up Jev before anything else: every message goes through it.
-// Given only a key for channels already set up, it saves the key and is
-// done.
-func initJev(ctx context.Context, dir, root string, cfg *config.Config, o initOptions) (done bool, err error) {
-	if err := setupJev(ctx, cfg, o.typesafeKey); err != nil {
-		return false, err
+// keyOnly reports whether init was given only a TypeSafe key, for a project
+// with channels already: then saving the key is all there is to do.
+func keyOnly(o initOptions, cfg config.Config) bool {
+	return o.channel == "" && o.typesafeKey != "" && cfg.HasAny()
+}
+
+// saveKey saves the project's configuration with its new TypeSafe key.
+func saveKey(ctx context.Context, dir string, cfg config.Config, out printer) error {
+	if _, err := saveProject(ctx, dir, cfg); err != nil {
+		return err
 	}
 
-	hasChannel := slices.ContainsFunc(channelChoices, func(c channelChoice) bool { return cfg.Has(c.name) })
-	if o.channel != "" || o.typesafeKey == "" || !hasChannel {
-		return false, nil
-	}
+	out.println("✓ 已保存，所有项目共用这个 key；gateway 在运行的话几秒内自动用上，没在运行就运行  " + lineGatewayStart)
+	warnOwnListener(dir, out)
 
-	if err := ensureLine(filepath.Join(root, ".gitignore"), config.DirName+"/"); err != nil {
-		return true, err
-	}
-
-	if _, err := config.Save(ctx, dir, *cfg); err != nil {
-		return true, err
-	}
-
-	fmt.Println("✓ 已保存，所有项目共用这个 key；gateway 在运行的话几秒内自动用上，没在运行就运行  claude-bot gateway start")
-	warnOwnListener(dir)
-
-	return true, nil
+	return nil
 }
 
 // warnOwnListener tells the user to stop a listener the project ran before
 // the gateway, which keeps the gateway out.
-func warnOwnListener(dir string) {
-	if pid, err := assemble(dir, quiet).listenerPID(); err == nil && pid != 0 {
-		if gw, _ := gatewayPID(); gw != pid {
-			fmt.Printf("! 这个项目自己的监听进程（pid %d）还在运行，gateway 要等它停掉才接手：在这里运行  claude-bot stop\n", pid)
-		}
+func warnOwnListener(dir string, out printer) {
+	if pid := ownListener(dir); pid != 0 {
+		out.printf("! 这个项目自己的监听进程（pid %d）还在运行，gateway 要等它停掉才接手：在这里运行  %s\n", pid, lineStop)
 	}
-}
-
-func botCommandPath(root string) string {
-	return filepath.Join(root, ".claude", "commands", "bot.md")
 }
 
 // rewriteBotCommand replaces the /bot command with this version's, leaving
 // the bot configuration alone.
-func rewriteBotCommand(root string) error {
+func rewriteBotCommand(root string, out printer) error {
 	if err := writeIfAbsent(botCommandPath(root), botCommand, true); err != nil {
 		return err
 	}
 
-	fmt.Printf("✓ 已用 %s 版本的值守流程覆盖 %s\n", Version, botCommandPath(root))
+	out.printf("✓ 已用 %s 版本的值守流程覆盖 %s\n", Version, botCommandPath(root))
 
 	return nil
 }
@@ -282,30 +334,11 @@ type setup struct {
 	report func(context.Context) // prints what is left to do on the platform
 }
 
-// setupChannel obtains working credentials for o.channel and records them
-// in cfg.
-func setupChannel(ctx context.Context, cfg *config.Config, o initOptions, root string) (setup, error) {
-	switch o.channel {
-	case discord.Name:
-		return setupDiscord(ctx, cfg, o)
-	case telegram.Name:
-		return setupTelegram(ctx, cfg, o)
-	case slack.Name:
-		return setupSlack(ctx, cfg, o)
-	case github.Name:
-		return setupGitHub(ctx, cfg, o, root)
-	case dingtalk.Name:
-		return setupDingTalk(ctx, cfg, o)
-	}
-
-	return setupLark(ctx, cfg, o)
-}
-
 func parseInitFlags(args []string) (initOptions, error) {
 	var o initOptions
 
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.StringVar(&o.channel, "channel", "", channelNames(", ")+" (default: ask on a terminal, else "+channelChoices[0].name+")")
+	fs.StringVar(&o.channel, "channel", "", config.KindNames(", ")+" (default: ask on a terminal, else "+config.Kinds()[0].Name+")")
 	fs.BoolVar(&o.botMD, "bot-md", false, "only rewrite .claude/commands/bot.md with this version's (overwrites it), nothing else")
 	fs.StringVar(&o.appID, "app-id", "", "use an existing app instead of creating one (cli_...)")
 	fs.StringVar(&o.secret, "app-secret", "", "secret of --app-id")
@@ -327,7 +360,7 @@ func parseInitFlags(args []string) (initOptions, error) {
 	fs.BoolVar(&o.noVerify, "no-verify", false, "skip the send-a-message connection check")
 	fs.BoolVar(&o.force, "force", false, "overwrite an existing .claude/commands/bot.md")
 
-	if err := parseFlags(fs, args); err != nil {
+	if _, err := parseCommand(fs, args, exactly(0), "init [flags]"); err != nil {
 		return o, err
 	}
 
@@ -366,8 +399,10 @@ func settleChannel(o *initOptions) error {
 		return fmt.Errorf("%w: --channel %s does not match the %s credentials given", errUsage, o.channel, implied[0])
 	case len(implied) == 1:
 		o.channel = implied[0]
-	case o.channel != "" && !knownChannel(o.channel):
-		return fmt.Errorf("%w: unknown --channel %q: want one of %s", errUsage, o.channel, channelNames(", "))
+	case o.channel != "":
+		if _, ok := config.KindOf(o.channel); !ok {
+			return fmt.Errorf("%w: unknown --channel %q: want one of %s", errUsage, o.channel, config.KindNames(", "))
+		}
 	}
 
 	return nil
@@ -377,16 +412,9 @@ func settleChannel(o *initOptions) error {
 func impliedChannels(o *initOptions) []string {
 	var implied []string
 
-	for name, set := range map[string]bool{
-		lark.Name:     o.appID != "",
-		discord.Name:  o.discordToken != "",
-		telegram.Name: o.telegramToken != "",
-		slack.Name:    o.slackBotToken != "",
-		github.Name:   o.githubToken != "" || o.githubTokenName != "",
-		dingtalk.Name: o.dingtalkID != "",
-	} {
-		if set {
-			implied = append(implied, name)
+	for _, k := range config.Kinds() {
+		if channelInits[k.Name].given(o) {
+			implied = append(implied, k.Name)
 		}
 	}
 
@@ -405,7 +433,7 @@ func withTimeout[T any](ctx context.Context, f func(context.Context) (T, error))
 // message, the bot answers it. Anything else that arrives meanwhile is kept
 // in the inbox. Without a prompt (no direct messages, as on GitHub) there is
 // nothing to check.
-func verifyConnection(ctx context.Context, dir string, ch channel.Channel, prompt string) error {
+func verifyConnection(ctx context.Context, dir string, ch channel.Channel, prompt string, out printer) error {
 	if prompt == "" {
 		return nil
 	}
@@ -413,7 +441,7 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 	a := assemble(dir, newLogger(), ch)
 
 	if _, alive := readHeartbeat(a.dir); alive {
-		fmt.Println("✓ 监听进程已在运行，跳过连接验证")
+		out.println("✓ 监听进程已在运行，跳过连接验证")
 
 		return nil
 	}
@@ -422,9 +450,9 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 	defer cancel()
 
 	got := make(chan channel.Message, 1)
-	store := a.deliverer(vctx, ch)
+	hold := a.deliverer(vctx, ch, nil)
 	deliver := func(m channel.Message) error {
-		if err := store(m); err != nil {
+		if err := hold(m); err != nil {
 			return err
 		}
 
@@ -438,10 +466,12 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 		return nil
 	}
 
-	listenErr := make(chan error, 1)
-	go func() { listenErr <- ch.Listen(vctx, deliver, func() {}) }()
+	// The connection is closed before verifyConnection returns: the
+	// gateway may connect to the app next.
+	listenErr, stop := listenBriefly(vctx, ch, deliver)
+	defer stop()
 
-	fmt.Printf("\n连接验证：%s（%s 内）…\n", prompt, verifyTimeout)
+	out.printf("\n连接验证：%s（%s 内）…\n", prompt, verifyTimeout)
 
 	select {
 	case m := <-got:
@@ -454,7 +484,7 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 			return err
 		}
 
-		fmt.Println("✓ 收发都已打通")
+		out.println("✓ 收发都已打通")
 
 		return nil
 	case err := <-listenErr:
@@ -464,9 +494,33 @@ func verifyConnection(ctx context.Context, dir string, ch channel.Channel, promp
 			return err // interrupted, not timed out
 		}
 
-		fmt.Println("! 没有收到消息，跳过验证。可以稍后运行 `claude-bot status` 检查，或重新运行 init。")
+		out.println("! 没有收到消息，跳过验证。可以稍后运行 `claude-bot status` 检查，或重新运行 init。")
 
 		return nil
+	}
+}
+
+// listenBriefly runs ch's Listen with deliver until ctx ends or stop is
+// called, which waits, up to verifyStop, until Listen has returned. Listen's
+// error, if it returns before, arrives on errs.
+func listenBriefly(ctx context.Context, ch channel.Channel, deliver func(channel.Message) error) (errs <-chan error, stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	listenErr := make(chan error, 1)
+	listened := make(chan struct{})
+
+	go func() {
+		defer close(listened)
+
+		listenErr <- ch.Listen(ctx, deliver, func() {})
+	}()
+
+	return listenErr, func() {
+		cancel()
+
+		select {
+		case <-listened:
+		case <-time.After(verifyStop):
+		}
 	}
 }
 

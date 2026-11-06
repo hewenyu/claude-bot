@@ -42,16 +42,16 @@ func setupLark(ctx context.Context, cfg *config.Config, o initOptions) (setup, e
 		ch:     la.ch,
 		name:   la.bot.AppName,
 		prompt: fmt.Sprintf("请在飞书里搜索「%s」，给它发一条私聊消息", la.bot.AppName),
-		report: func(ctx context.Context) { reportScopes(ctx, la.ch) },
+		report: func(ctx context.Context) { reportScopes(ctx, o.out, la.ch) },
 	}, nil
 }
 
-func reportScopes(ctx context.Context, ch *lark.Channel) {
+func reportScopes(ctx context.Context, out printer, ch *lark.Channel) {
 	switch missing, err := missingScopes(ctx, ch); {
 	case err != nil:
-		fmt.Printf("! 无法查询权限状态：%v\n", err)
+		out.printf("! 无法查询权限状态：%v\n", err)
 	case len(missing) > 0:
-		fmt.Printf("! 以下权限尚未生效（如果企业需要管理员审批，请在飞书里通过）：%s\n", strings.Join(missing, ", "))
+		out.printf("! 以下权限尚未生效（如果企业需要管理员审批，请在飞书里通过）：%s\n", strings.Join(missing, ", "))
 	}
 }
 
@@ -72,7 +72,7 @@ func obtainApp(ctx context.Context, existing *lark.Config, o initOptions) (larkA
 	if existing != nil && !o.reregister {
 		la, ready, err := checkExisting(ctx, *existing)
 		if ready {
-			fmt.Printf("✓ 已配置 bot「%s」，跳过注册（重新创建请加 --reregister）\n", la.bot.AppName)
+			o.out.printf("✓ 已配置 bot「%s」，跳过注册（重新创建请加 --reregister）\n", la.bot.AppName)
 
 			return la, nil
 		}
@@ -148,38 +148,38 @@ func register(ctx context.Context, o initOptions, upgradeAppID string) (lark.Con
 			action = "为已有应用补充权限"
 		}
 
-		fmt.Printf("请在浏览器中登录飞书并确认，以%s（%s 前有效）：\n\n  %s\n\n", action, expires.Format("15:04"), link)
+		o.out.printf("请在浏览器中登录飞书并确认，以%s（%s 前有效）：\n\n  %s\n\n", action, expires.Format("15:04"), link)
 
-		printLinkQR(link)
+		printLinkQR(o.out, link)
 
-		fmt.Println(shareHint)
+		o.out.println(shareHint)
 
 		if !o.noOpen {
 			openBrowser(ctx, link)
-			fmt.Println(reopenHint)
+			o.out.println(reopenHint)
 		}
 
-		fmt.Printf("等待确认 …（%s 前有效，可随时 Ctrl+C 退出）\n", expires.Format("15:04"))
+		o.out.printf("等待确认 …（%s 前有效，可随时 Ctrl+C 退出）\n", expires.Format("15:04"))
 	}
 	r.OnTenantSwitch = func(string) {
-		fmt.Println("检测到 Lark 国际版租户，切换到 larksuite.com …")
+		o.out.println("检测到 Lark 国际版租户，切换到 larksuite.com …")
 	}
 
 	hinted := false
 	r.OnWaiting = func(left time.Duration) {
-		fmt.Printf("仍在等待确认（链接还有%s有效）…\n", minutesLeft(left))
+		o.out.printf("仍在等待确认（链接还有%s有效）…\n", minutesLeft(left))
 
 		if !hinted {
 			hinted = true
 
-			fmt.Println(strayHint)
+			o.out.println(strayHint)
 		}
 	}
 
 	reg, err := r.Register(ctx)
 	if err != nil {
 		if errors.Is(err, lark.ErrExpired) {
-			fmt.Println(strayHint)
+			o.out.println(strayHint)
 		}
 
 		return lark.Config{}, fmt.Errorf("register app: %w", err)
@@ -211,7 +211,7 @@ func minutesLeft(d time.Duration) string {
 
 // printLinkQR shows link as a QR code for the Lark mobile app, when stdout is
 // a terminal wide enough to draw it without wrapping.
-func printLinkQR(link string) {
+func printLinkQR(out printer, link string) {
 	fd := int(os.Stdout.Fd())
 	if !term.IsTerminal(fd) {
 		return
@@ -219,18 +219,18 @@ func printLinkQR(link string) {
 
 	code, width, err := renderQR(link)
 	if err != nil {
-		fmt.Printf("（二维码生成失败：%v）\n\n", err)
+		out.printf("（二维码生成失败：%v）\n\n", err)
 
 		return
 	}
 
 	if cols, _, err := term.GetSize(fd); err == nil && cols < width {
-		fmt.Printf("（终端宽度不足 %d 列，放不下二维码；拉宽窗口后重新运行可用手机扫码）\n\n", width)
+		out.printf("（终端宽度不足 %d 列，放不下二维码；拉宽窗口后重新运行可用手机扫码）\n\n", width)
 
 		return
 	}
 
-	fmt.Printf("也可以用飞书 App 扫码：\n\n%s\n", code)
+	out.printf("也可以用飞书 App 扫码：\n\n%s\n", code)
 }
 
 // connect builds a channel for cfg and fetches its bot, which proves the

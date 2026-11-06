@@ -79,7 +79,7 @@ func demoBuild(_ string, cfg config.Config, log *slog.Logger) (*app, error) {
 	}
 
 	if len(chans) == 0 {
-		return nil, errNotConfigured
+		return nil, config.ErrNotConfigured
 	}
 
 	return assemble("", log, chans...), nil
@@ -122,9 +122,13 @@ func TestPageDemo(t *testing.T) { //nolint:paralleltest // serves until killed
 	}
 	g.ask = func(string) screen.Asker { return stuffing{} }
 
-	if g.ui, _, err = g.serveWeb(ctx, addr, demoToken); err != nil {
+	ln, hosts, err := listenPage(ctx, addr)
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	g.ui = pageURL(ln)
+	g.servePage(ctx, ln, newWeb(s, nil, gatewayHome(home), demoToken, hosts, g.log))
 
 	t.Logf("demo page: %s#token=%s (home %s)", g.ui, demoToken, home)
 

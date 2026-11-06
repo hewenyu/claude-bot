@@ -59,45 +59,58 @@ type channelType struct {
 
 var proxyField = channelField{Key: "proxy", Label: "代理", Placeholder: "留空用默认；direct、env 或 http://host:port"}
 
-var channelTypes = []channelType{
-	{Name: lark.Name, Label: "飞书 / Lark", Fields: []channelField{
+// channelForm is what the page asks for a kind of channel, besides what
+// config.Kinds says of it.
+type channelForm struct {
+	fields  []channelField
+	note    string
+	addNote string
+}
+
+// channelForms are the forms of every kind of channel; each field's key is
+// the JSON key of the field in the channel's configuration.
+var channelForms = map[string]channelForm{
+	lark.Name: {fields: []channelField{
 		{Key: "app_id", Label: "App ID", Required: true, Placeholder: "cli_…"},
 		{Key: "app_secret", Label: "App Secret", Secret: true, Required: true},
 		{Key: "domain", Label: "版本", Select: true, Options: []string{lark.DomainFeishu, lark.DomainLark}},
 		proxyField,
-	}, AddNote: "新建飞书应用更方便的办法：在项目里运行 claude-bot init，浏览器里点一下「确认」就建好了。"},
-	{Name: dingtalk.Name, Label: "钉钉", Fields: []channelField{
+	}, addNote: "新建飞书应用更方便的办法：在项目里运行 claude-bot init，浏览器里点一下「确认」就建好了。"},
+	dingtalk.Name: {fields: []channelField{
 		{Key: "client_id", Label: "Client ID（AppKey）", Required: true},
 		{Key: "client_secret", Label: "Client Secret（AppSecret）", Secret: true, Required: true},
 		proxyField,
 	}},
-	{Name: telegram.Name, Label: "Telegram", Fields: []channelField{
+	telegram.Name: {fields: []channelField{
 		{Key: "token", Label: "Bot token", Secret: true, Required: true, Placeholder: "123456:ABC…"},
 		proxyField,
 	}},
-	{Name: discord.Name, Label: "Discord", Fields: []channelField{
+	discord.Name: {fields: []channelField{
 		{Key: "token", Label: "Bot token", Secret: true, Required: true},
 		proxyField,
 	}},
-	{Name: slack.Name, Label: "Slack", Fields: []channelField{
+	slack.Name: {fields: []channelField{
 		{Key: "app_token", Label: "App-Level Token", Secret: true, Required: true, Placeholder: "xapp-…"},
 		{Key: "bot_token", Label: "Bot User OAuth Token", Secret: true, Required: true, Placeholder: "xoxb-…"},
 		proxyField,
 	}},
-	{Name: github.Name, Label: "GitHub", Fields: []channelField{
+	github.Name: {fields: []channelField{
 		{Key: fieldRepo, Label: "仓库", Required: true, Placeholder: "owner/name"},
 		{Key: fieldTokenName, Label: "GitHub token", Select: true},
 		proxyField,
-	}, Note: "token 在「共用设置」里管理：默认 token 给所有项目用；另一个账号的项目，在那里加一个 token 并指定给它。"},
+	}, note: "token 在「共用设置」里管理：默认 token 给所有项目用；另一个账号的项目，在那里加一个 token 并指定给它。"},
 }
 
+// channelTypeOf describes the kind of channel called name for the page.
 func channelTypeOf(name string) (channelType, bool) {
-	i := slices.IndexFunc(channelTypes, func(t channelType) bool { return t.Name == name })
-	if i < 0 {
+	k, ok := config.KindOf(name)
+	if !ok {
 		return channelType{}, false
 	}
 
-	return channelTypes[i], true
+	f := channelForms[name]
+
+	return channelType{Name: k.Name, Label: k.Label, Fields: slices.Clone(f.fields), Note: f.note, AddNote: f.addNote}, true
 }
 
 // channelTypes are the channels a project can add, with the choices it has:
@@ -116,10 +129,11 @@ func (w *web) channelTypes(r *http.Request) (any, error) {
 
 	names := sortedKeys(named)
 	remote := githubRemote(r.Context(), p.Dir)
-	out := make([]channelType, len(channelTypes))
+	kinds := config.Kinds()
+	out := make([]channelType, len(kinds))
 
-	for i, t := range channelTypes {
-		t.Fields = slices.Clone(t.Fields)
+	for i, k := range kinds {
+		t, _ := channelTypeOf(k.Name)
 
 		if t.Name == github.Name {
 			for j, f := range t.Fields {
@@ -219,12 +233,12 @@ func (w *web) submitted(r *http.Request, p store.Project) (config.Config, channe
 
 	t, ok := channelTypeOf(name)
 	if !ok {
-		return config.Config{}, nil, badRequestf("unknown channel %q", name)
+		return config.Config{}, nil, badFormf("unknown channel %q", name)
 	}
 
 	var in channelInput
-	if err := decodeBody(r, &in); err != nil {
-		return config.Config{}, nil, err
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		return config.Config{}, nil, badForm(err)
 	}
 
 	chans, err := w.store.Channels(r.Context(), p.ID)
@@ -244,7 +258,7 @@ func (w *web) submitted(r *http.Request, p store.Project) (config.Config, channe
 
 	cfg, err := config.ChannelConfig(name, raw)
 	if err != nil {
-		return cfg, nil, badRequest(err)
+		return cfg, nil, badForm(err)
 	}
 
 	if cfg.GitHub != nil {
@@ -253,9 +267,9 @@ func (w *web) submitted(r *http.Request, p store.Project) (config.Config, channe
 		}
 	}
 
-	opened, err := openChannels(cfg, quiet)
+	opened, err := cfg.Open(quiet)
 	if err != nil {
-		return cfg, nil, badRequest(err)
+		return cfg, nil, badForm(err)
 	}
 
 	if len(opened) != 1 {
@@ -269,7 +283,7 @@ func (w *web) submitted(r *http.Request, p store.Project) (config.Config, channe
 func (w *web) withGitHubToken(ctx context.Context, cfg *config.Config) error {
 	token, err := config.GitHubToken(ctx, w.store, cfg.GitHubTokenName)
 	if errors.Is(err, config.ErrNoGitHubToken) {
-		return badRequest(err)
+		return badForm(err)
 	}
 
 	if err != nil {
@@ -277,7 +291,7 @@ func (w *web) withGitHubToken(ctx context.Context, cfg *config.Config) error {
 	}
 
 	if token == "" {
-		return badRequestf("the gateway has no default GitHub token yet: add one in 共用设置")
+		return badFormf("the gateway has no default GitHub token yet: add one in 共用设置")
 	}
 
 	cfg.GitHub.Token = token
@@ -310,7 +324,7 @@ func mergeForm(t channelType, stored json.RawMessage, form map[string]string) (j
 
 	for _, f := range t.Fields {
 		if s, _ := merged[f.Key].(string); f.Required && s == "" {
-			return nil, badRequestf("%s is required", f.Label)
+			return nil, badFormf("%s is required", f.Label)
 		}
 	}
 
@@ -361,9 +375,8 @@ func (w *web) testChannel(r *http.Request) (any, error) {
 
 	_, ch, err := w.submitted(r, p)
 
-	var he *httpError
-	if errors.As(err, &he) && he.status == http.StatusBadRequest {
-		return testResult{Error: he.Error()}, nil
+	if form, ok := errors.AsType[*formError](err); ok {
+		return testResult{Error: form.Error()}, nil
 	}
 
 	if err != nil {
@@ -405,7 +418,7 @@ func (w *web) deleteProject(r *http.Request) (any, error) {
 		return nil, err
 	}
 
-	path, err := unregister(r.Context(), w.store, p)
+	path, err := config.Unregister(r.Context(), w.store, p)
 	if err != nil {
 		return nil, err
 	}

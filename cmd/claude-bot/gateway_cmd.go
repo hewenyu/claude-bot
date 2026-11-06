@@ -18,52 +18,50 @@ import (
 // The gateway, like a project's listener, is started and stopped by the
 // user from their own terminal, so that it keeps their environment.
 func gatewayStart(ctx context.Context, args []string) error {
-	if _, err := parseArgs("gateway start", args); err != nil {
+	if _, err := parseCommand(nil, args, exactly(0), "gateway start"); err != nil {
 		return err
 	}
 
-	if pid, err := gatewayPID(); pid != 0 || err != nil {
+	dir, err := config.EnsureHome()
+	if err != nil {
+		return err
+	}
+
+	home := gatewayHome(dir)
+
+	if pid, err := home.pid(); pid != 0 || err != nil {
 		if err == nil {
-			fmt.Printf("gateway already running (pid %d); `claude-bot gateway restart` replaces it\n", pid)
+			fmt.Printf("gateway already running (pid %d); %s replaces it\n", pid, hintGatewayRestart)
 		}
 
 		return err
 	}
 
-	home, err := config.Home()
-	if err != nil {
-		return err
-	}
+	logPath := home.path(gatewayLog)
 
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", home, err)
-	}
-
-	logPath := filepath.Join(home, gatewayLog)
-
-	cmd, err := spawn(home, logPath, "gateway", "serve")
+	cmd, err := spawn(dir, logPath, "gateway", "serve")
 	if err != nil {
 		return err
 	}
 
 	pid := cmd.Process.Pid
 
-	err = waitStarted(ctx, cmd, logPath, "gateway did not start", func() bool {
-		hb, alive := readGatewayHeartbeat()
+	err = waitStarted(ctx, cmd, logPath, "gateway", func() bool {
+		hb, alive := home.heartbeat()
 
 		return alive && hb.PID == pid
 	})
 	if err != nil {
-		return fmt.Errorf("gateway %w", err)
+		return err
 	}
 
 	fmt.Printf("started gateway (pid %d), log: %s\n", pid, logPath)
 
-	if err := reportSettled(ctx); err != nil {
+	if err := reportSettled(ctx, home); err != nil {
 		return err
 	}
 
-	if hb, _ := readGatewayHeartbeat(); hb.UI != "" {
+	if hb, _ := home.heartbeat(); hb.UI != "" {
 		fmt.Printf("page: %s (open it with `claude-bot gateway open`, which adds the access token)\n", hb.UI)
 	} else {
 		fmt.Printf("! the page is not served; see %s\n", logPath)
@@ -77,20 +75,25 @@ func gatewayOpen(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("gateway open", flag.ContinueOnError)
 	printOnly := fs.Bool("print", false, "only print the address")
 
-	if err := parseFlags(fs, args); err != nil {
+	if _, err := parseCommand(fs, args, exactly(0), "gateway open [--print]"); err != nil {
 		return err
 	}
 
-	hb, alive := readGatewayHeartbeat()
+	home, err := currentHome()
+	if err != nil {
+		return err
+	}
+
+	hb, alive := home.heartbeat()
 	if !alive {
-		return errors.New("gateway not running: run `claude-bot gateway start` first")
+		return errors.New("gateway not running: run " + hintGatewayStart + " first")
 	}
 
 	if hb.UI == "" {
-		return fmt.Errorf("the gateway does not serve its page; see %s", gatewayLogPath())
+		return fmt.Errorf("the gateway does not serve its page; see %s", home.path(gatewayLog))
 	}
 
-	s, err := config.OpenStore(ctx)
+	s, err := store.Open(ctx, string(home))
 	if err != nil {
 		return err
 	}
@@ -113,9 +116,9 @@ func gatewayOpen(ctx context.Context, args []string) error {
 
 // reportSettled gives the projects a moment to connect, then says how they
 // are doing.
-func reportSettled(ctx context.Context) error {
+func reportSettled(ctx context.Context, home gatewayHome) error {
 	deadline := time.Now().Add(settleWait)
-	for time.Now().Before(deadline) && !settled() {
+	for time.Now().Before(deadline) && !settled(home) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -123,19 +126,19 @@ func reportSettled(ctx context.Context) error {
 		}
 	}
 
-	st, err := collectGatewayStatus(ctx)
+	st, err := collectGatewayStatus(ctx, home)
 	if err != nil {
 		return err
 	}
 
-	printProjects(st)
+	printProjects(os.Stdout, st)
 
 	return nil
 }
 
 // settled reports whether no project is still connecting.
-func settled() bool {
-	hb, alive := readGatewayHeartbeat()
+func settled(home gatewayHome) bool {
+	hb, alive := home.heartbeat()
 	if !alive {
 		return false
 	}
@@ -144,11 +147,16 @@ func settled() bool {
 }
 
 func gatewayStop(ctx context.Context, args []string) error {
-	if _, err := parseArgs("gateway stop", args); err != nil {
+	if _, err := parseCommand(nil, args, exactly(0), "gateway stop"); err != nil {
 		return err
 	}
 
-	pid, err := gatewayPID()
+	home, err := currentHome()
+	if err != nil {
+		return err
+	}
+
+	pid, err := home.pid()
 	if pid == 0 || err != nil {
 		if err == nil {
 			fmt.Println("gateway not running")
@@ -157,12 +165,7 @@ func gatewayStop(ctx context.Context, args []string) error {
 		return err
 	}
 
-	lock, err := gatewayFile(gatewayLock)
-	if err != nil {
-		return err
-	}
-
-	if err := stopHolder(ctx, lock, pid, "gateway"); err != nil {
+	if err := stopHolder(ctx, home.path(gatewayLock), pid, "gateway"); err != nil {
 		return err
 	}
 
@@ -171,175 +174,9 @@ func gatewayStop(ctx context.Context, args []string) error {
 	return nil
 }
 
-// gatewayStatus is the output of `claude-bot gateway status`.
-type gatewayStatus struct {
-	Home      string          `json:"home"`
-	Running   bool            `json:"running"`
-	PID       int             `json:"pid,omitempty"`
-	Version   string          `json:"version,omitempty"` // of the running gateway
-	StartedAt *time.Time      `json:"started_at,omitempty"`
-	Jev       bool            `json:"jev"`          // the shared TypeSafe API key is set
-	GitHub    bool            `json:"github_token"` // the shared GitHub token is set
-	Projects  []projectStatus `json:"projects"`
-}
-
-// projectStatus is how one registered project is doing.
-type projectStatus struct {
-	ID        int64             `json:"id"`
-	Name      string            `json:"name"`
-	Dir       string            `json:"dir"`
-	State     projectState      `json:"state"`
-	Error     string            `json:"error,omitempty"`
-	Channels  []string          `json:"channels"`            // configured
-	Connected []string          `json:"connected,omitempty"` // listening now
-	Stopped   []string          `json:"stopped,omitempty"`   // failed while the others kept running
-	Errors    map[string]string `json:"errors,omitempty"`    // why they stopped
-	Pending   int               `json:"pending"`             // tasks waiting for Claude
-	Screening int               `json:"screening"`           // messages waiting for Jev
-}
-
-func gatewayStatusCmd(ctx context.Context, args []string) error {
-	if _, err := parseArgs("gateway status", args); err != nil {
-		return err
-	}
-
-	st, err := collectGatewayStatus(ctx)
-	if err != nil {
-		return err
-	}
-
-	return printJSON(st)
-}
-
-// errNoGateway reports that no project was ever registered.
-var errNoGateway = errors.New("no gateway set up yet: run `claude-bot init` in a project, or `claude-bot gateway import` in one set up before the gateway")
-
-// collectGatewayStatus reads the database, the gateway's heartbeat and each
-// project's heartbeat and inbox.
-func collectGatewayStatus(ctx context.Context) (gatewayStatus, error) {
-	home, err := config.Home()
-	if err != nil {
-		return gatewayStatus{}, err
-	}
-
-	s, ok, err := store.OpenExisting(ctx, home)
-	if err != nil {
-		return gatewayStatus{}, err
-	}
-
-	if !ok {
-		return gatewayStatus{}, errNoGateway
-	}
-
-	defer s.Close() //nolint:errcheck // read-only use
-
-	return gatherStatus(ctx, home, s)
-}
-
-func gatherStatus(ctx context.Context, home string, s *store.Store) (gatewayStatus, error) {
-	st := gatewayStatus{Home: home, Projects: []projectStatus{}}
-
-	hb, alive := readGatewayHeartbeat()
-	if alive {
-		st.Running, st.PID, st.Version, st.StartedAt = true, hb.PID, hb.Version, &hb.StartedAt
-	}
-
-	for key, set := range map[string]*bool{store.SettingTypeSafeKey: &st.Jev, store.SettingGitHubToken: &st.GitHub} {
-		v, err := s.Setting(ctx, key)
-		if err != nil {
-			return st, err
-		}
-
-		*set = v != ""
-	}
-
-	projects, err := s.Projects(ctx)
-	if err != nil {
-		return st, err
-	}
-
-	for _, p := range projects {
-		ps, err := projectStatusOf(ctx, s, p, hb, alive)
-		if err != nil {
-			return st, err
-		}
-
-		st.Projects = append(st.Projects, ps)
-	}
-
-	return st, nil
-}
-
-func projectStatusOf(ctx context.Context, s *store.Store, p store.Project, gw gatewayHeartbeat, gwAlive bool) (projectStatus, error) {
-	ps := projectStatus{ID: p.ID, Name: p.Name, Dir: p.Dir, State: stateStopped, Channels: []string{}}
-
-	chans, err := s.Channels(ctx, p.ID)
-	if err != nil {
-		return ps, err
-	}
-
-	for _, c := range chans {
-		ps.Channels = append(ps.Channels, c.Name)
-	}
-
-	if gwAlive {
-		ps.State = stateStarting
-		if i := slices.IndexFunc(gw.Projects, func(o runOutcome) bool { return o.ID == p.ID }); i >= 0 {
-			ps.State, ps.Error = gw.Projects[i].State, gw.Projects[i].Error
-		}
-	}
-
-	dir := botDir(p)
-	if hb, alive := readHeartbeat(dir); alive && (hb.PID == gw.PID || !gwAlive) {
-		ps.Connected, ps.Stopped, ps.Errors = hb.Channels, hb.Stopped, hb.Errors
-	}
-
-	box := projectInbox(p)
-
-	pending, err := box.PendingTasks()
-	if err != nil {
-		return ps, err
-	}
-
-	incoming, err := box.Incoming()
-	if err != nil {
-		return ps, err
-	}
-
-	ps.Pending, ps.Screening = len(pending), len(incoming)
-
-	return ps, nil
-}
-
-// printProjects shows the projects as a table for people.
-func printProjects(st gatewayStatus) {
-	if len(st.Projects) == 0 {
-		fmt.Println("no projects registered yet: run `claude-bot init` in a project (or `claude-bot gateway import` in one set up before the gateway)")
-
-		return
-	}
-
-	for _, p := range st.Projects {
-		detail := strings.Join(p.Connected, ", ")
-		if detail == "" {
-			detail = strings.Join(p.Channels, ", ")
-		}
-
-		if len(p.Stopped) > 0 {
-			detail += "; stopped: " + strings.Join(p.Stopped, ", ")
-		}
-
-		fmt.Printf("  %-20s %-9s %s\n", p.Name, p.State, detail)
-
-		if p.Error != "" {
-			fmt.Printf("  %-20s           %s\n", "", p.Error)
-		}
-	}
-}
-
 // gatewayImport moves projects set up before the gateway into it.
 func gatewayImport(ctx context.Context, project string, args []string) error {
-	dirs, err := parseArgs("gateway import", args)
+	dirs, err := parseCommand(nil, args, atLeast(0), "gateway import [<repo>...]")
 	if err != nil {
 		return err
 	}
@@ -357,7 +194,7 @@ func gatewayImport(ctx context.Context, project string, args []string) error {
 	}
 
 	if gw, _ := gatewayPID(); gw == 0 && len(errs) < len(dirs) {
-		fmt.Println("\n下一步：在终端里运行  claude-bot gateway start")
+		fmt.Println("\n下一步：在终端里运行  " + lineGatewayStart)
 	}
 
 	return errors.Join(errs...)
@@ -386,26 +223,34 @@ func importProject(ctx context.Context, project string) error {
 
 	// A listener of the project's own still holds it; the gateway takes over
 	// once it stops.
-	a := assemble(dir, newLogger())
-	if pid, err := a.listenerPID(); err == nil && pid != 0 {
-		if gw, _ := gatewayPID(); gw != pid {
-			fmt.Printf("  ! 这个项目自己的监听进程（pid %d）还在运行，gateway 要等它停掉才接手：claude-bot -C %s stop\n", pid, imp.Project.Dir)
-		}
+	if pid := ownListener(dir); pid != 0 {
+		fmt.Printf("  ! 这个项目自己的监听进程（pid %d）还在运行，gateway 要等它停掉才接手：claude-bot -C %s stop\n", pid, imp.Project.Dir)
 	}
 
 	return nil
 }
 
+// ownListener is the pid of the project's own listener, which keeps the
+// gateway out of the project in the bot directory dir; 0 if there is none.
+func ownListener(dir string) int {
+	pid, err := assemble(dir, quiet).listenerPID()
+	if err != nil || pid == 0 {
+		return 0
+	}
+
+	if gw, _ := gatewayPID(); gw == pid {
+		return 0
+	}
+
+	return pid
+}
+
 // gatewayRemove unregisters a project. Its configuration goes back to its
 // config.json, so that it can still run on its own.
 func gatewayRemove(ctx context.Context, args []string) error {
-	args, err := parseArgs("gateway remove", args)
+	args, err := parseCommand(nil, args, exactly(1), "gateway remove <project name or directory>")
 	if err != nil {
 		return err
-	}
-
-	if len(args) != 1 {
-		return fmt.Errorf("%w: gateway remove <project name or directory>", errUsage)
 	}
 
 	s, err := config.OpenStore(ctx)
@@ -425,7 +270,7 @@ func gatewayRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	path, err := unregister(ctx, s, p)
+	path, err := config.Unregister(ctx, s, p)
 	if err != nil {
 		return err
 	}
@@ -437,29 +282,4 @@ func gatewayRemove(ctx context.Context, args []string) error {
 	}
 
 	return nil
-}
-
-// unregister removes a project from the gateway after writing its
-// configuration back to its config.json, and returns that file.
-func unregister(ctx context.Context, s *store.Store, p store.Project) (string, error) {
-	cfg, err := config.FromStore(ctx, s, p)
-	if err != nil {
-		return "", err
-	}
-
-	cfg.Gateway = nil
-	dir := botDir(p)
-	path := config.FilePath(dir)
-
-	if _, err := os.Stat(p.Dir); err != nil {
-		path = "" // the project is gone; nothing to write back
-	} else if err := config.WriteFile(dir, cfg); err != nil {
-		return "", err
-	}
-
-	if err := s.RemoveProject(ctx, p.ID); err != nil {
-		return "", err
-	}
-
-	return path, nil
 }

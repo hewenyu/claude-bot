@@ -9,87 +9,40 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"os/signal"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
-
-	"github.com/hewenyu/claude-bot/internal/config"
 )
-
-// listenerHelperEnv makes the test binary act as a listener: it holds the
-// lock named by the variable, with its pid in it, until SIGTERM.
-const listenerHelperEnv = "CLAUDE_BOT_TEST_LISTENER"
-
-func TestMain(m *testing.M) {
-	if lock := os.Getenv(listenerHelperEnv); lock != "" {
-		os.Exit(fakeListener(lock))
-	}
-
-	// No test may touch the user's gateway.
-	home, err := os.MkdirTemp("", "claude-bot-home-")
-	if err != nil {
-		panic(err)
-	}
-
-	os.Setenv(config.HomeEnv, home) //nolint:errcheck // before any test runs
-
-	code := m.Run()
-
-	_ = os.RemoveAll(home)
-
-	os.Exit(code)
-}
-
-// fakeListener holds each lock in locks (a path list), with its pid in it.
-func fakeListener(locks string) int {
-	term := make(chan os.Signal, 1)
-	signal.Notify(term, syscall.SIGTERM)
-
-	for lock := range strings.SplitSeq(locks, string(os.PathListSeparator)) {
-		unlock, err := lockFile(lock)
-		if err != nil {
-			return 1
-		}
-		defer unlock()
-
-		if err := os.WriteFile(lock, []byte(strconv.Itoa(os.Getpid())), privatePerm); err != nil {
-			return 1
-		}
-	}
-
-	os.Stdout.WriteString("ready\n") //nolint:errcheck // the test waits for it
-	<-term
-
-	return 0
-}
 
 func TestCheckListener(t *testing.T) {
 	t.Parallel()
 
 	a := assemble(t.TempDir(), slog.New(slog.DiscardHandler), &fakeChannel{})
 
-	if err := a.checkListener(); !errors.Is(err, errListenerDown) {
+	if _, err := a.checkListener(); !errors.Is(err, errListenerDown) {
 		t.Fatalf("checkListener() with no listener = %v, want errListenerDown", err)
 	}
 
 	listener, _ := startFakeListener(t, a.path(listenerLock))
 
 	// Holding the lock without a heartbeat: still connecting.
-	if err := a.checkListener(); err == nil || !strings.Contains(err.Error(), "not connected") {
+	if _, err := a.checkListener(); err == nil || !strings.Contains(err.Error(), "not connected") {
 		t.Errorf("checkListener() while connecting = %v, want not connected", err)
 	}
 
 	// An outdated listener still serves; inbox only warns.
-	hb := heartbeat{PID: listener, BeatAt: time.Now().UTC(), Channels: []string{"lark"}, Version: "v0.0.1"}
-	if err := writeJSON(a.path(heartbeatFile), hb); err != nil {
+	hb := heartbeat{PID: listener, BeatAt: time.Now().UTC(), Version: "v0.0.1", Channels: []string{"lark"}}
+	if err := writeBeat(a.path(heartbeatFile), hb); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := a.checkListener(); err != nil {
+	warnings, err := a.checkListener()
+	if err != nil {
 		t.Errorf("checkListener() with an outdated listener = %v, want nil", err)
+	}
+
+	if len(warnings) != 2 || !strings.Contains(warnings[0], "lark but fake") || !strings.Contains(warnings[1], `"v0.0.1"`) {
+		t.Errorf("checkListener() warnings = %q, want the channels and the version", warnings)
 	}
 }
 

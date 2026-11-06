@@ -21,18 +21,17 @@ func cmdInbox(ctx context.Context, project string, args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
 	wait := fs.Duration("wait", 0, "block up to this long until a task is pending (e.g. 55m)")
 
-	if err := parseFlags(fs, args); err != nil {
-		return err
-	}
-
-	a, err := newApp(ctx, project)
+	a, _, err := openApp(ctx, project, fs, args, exactly(0), "inbox [--wait <duration>]")
 	if err != nil {
 		return err
 	}
 
-	if err := a.checkListener(); err != nil {
+	warnings, err := a.checkListener()
+	if err != nil {
 		return err
 	}
+
+	warn(warnings)
 
 	if a.typesafe == nil {
 		return errNoJev
@@ -112,37 +111,6 @@ func (a *app) show(tasks []inbox.Task) ([]taskLine, error) {
 	}
 
 	return lines, nil
-}
-
-// replyArgs is a parsed `reply [--keep] <id> [text|-]`.
-type replyArgs struct {
-	id   string
-	text []string
-	keep bool
-}
-
-func parseReplyArgs(args []string) (replyArgs, error) {
-	var r replyArgs
-
-	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
-	fs.BoolVar(&r.keep, "keep", false, "leave the message pending (e.g. for an interim \"looking into it\" reply)")
-
-	if err := parseFlags(fs, args); err != nil {
-		return r, err
-	}
-
-	if fs.NArg() < 1 {
-		return r, fmt.Errorf("%w: reply <id> [text|-]", errUsage)
-	}
-
-	r.id, r.text = fs.Arg(0), fs.Args()[1:]
-
-	// The flag package stops at the id; don't send a misplaced flag as text.
-	if len(r.text) > 0 && (r.text[0] == "--keep" || r.text[0] == "-keep") {
-		r.keep, r.text = true, r.text[1:]
-	}
-
-	return r, nil
 }
 
 func cmdReply(ctx context.Context, project string, args []string) error {
@@ -283,16 +251,7 @@ func (a *app) lookup(ctx context.Context, id string) (channel.Channel, channel.M
 }
 
 func cmdDone(ctx context.Context, project string, args []string) error {
-	ids, err := parseArgs("done", args)
-	if err != nil {
-		return err
-	}
-
-	if len(ids) == 0 {
-		return fmt.Errorf("%w: done <id> [<id> ...]", errUsage)
-	}
-
-	a, err := newApp(ctx, project)
+	a, ids, err := openApp(ctx, project, nil, args, atLeast(1), "done <id> [<id> ...]")
 	if err != nil {
 		return err
 	}
@@ -319,16 +278,7 @@ func cmdDone(ctx context.Context, project string, args []string) error {
 }
 
 func cmdGet(ctx context.Context, project string, args []string) error {
-	args, err := parseArgs("get", args)
-	if err != nil {
-		return err
-	}
-
-	if len(args) != 1 {
-		return fmt.Errorf("%w: get <id>", errUsage)
-	}
-
-	a, err := newApp(ctx, project)
+	a, args, err := openApp(ctx, project, nil, args, exactly(1), "get <id>")
 	if err != nil {
 		return err
 	}
@@ -347,16 +297,7 @@ func cmdGet(ctx context.Context, project string, args []string) error {
 }
 
 func cmdDownload(ctx context.Context, project string, args []string) error {
-	args, err := parseArgs("download", args)
-	if err != nil {
-		return err
-	}
-
-	if len(args) != 1 {
-		return fmt.Errorf("%w: download <id>", errUsage)
-	}
-
-	a, err := newApp(ctx, project)
+	a, args, err := openApp(ctx, project, nil, args, exactly(1), "download <id>")
 	if err != nil {
 		return err
 	}
@@ -384,16 +325,7 @@ func cmdDownload(ctx context.Context, project string, args []string) error {
 }
 
 func cmdSend(ctx context.Context, project string, args []string) error {
-	args, err := parseArgs("send", args)
-	if err != nil {
-		return err
-	}
-
-	if len(args) < 1 {
-		return fmt.Errorf("%w: send <channel>:<chat-id> [text|-]", errUsage)
-	}
-
-	a, err := newApp(ctx, project)
+	a, args, err := openApp(ctx, project, nil, args, atLeast(1), "send <channel>:<chat-id> [text|-]")
 	if err != nil {
 		return err
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -19,15 +18,11 @@ import (
 )
 
 const (
-	heartbeatEvery   = 15 * time.Second
-	heartbeatStale   = 45 * time.Second // three missed beats
 	listenerStartup  = 30 * time.Second
 	listenerShutdown = 30 * time.Second
 	startupPoll      = 200 * time.Millisecond
 	ackTimeout       = 10 * time.Second
 	logTailLines     = 10 // log lines quoted when the listener fails
-
-	restartHint = "`claude-bot restart`"
 )
 
 // channelResult is how a channel's Listen ended.
@@ -36,25 +31,8 @@ type channelResult struct {
 	err  error
 }
 
-// heartbeat is written to .claude-bot/serve.json while the listener runs.
-type heartbeat struct {
-	PID       int       `json:"pid"`
-	StartedAt time.Time `json:"started_at"`
-	BeatAt    time.Time `json:"beat_at"`
-	Channels  []string  `json:"channels"`
-	// Stopped lists channels that failed while the others kept running;
-	// Errors says why, by channel.
-	Stopped []string          `json:"stopped,omitempty"`
-	Errors  map[string]string `json:"errors,omitempty"`
-	Version string            `json:"version"`
-}
-
 func cmdServe(ctx context.Context, project string, args []string) error {
-	if _, err := parseArgs("serve", args); err != nil {
-		return err
-	}
-
-	a, err := newApp(ctx, project)
+	a, _, err := openApp(ctx, project, nil, args, exactly(0), "serve")
 	if err != nil {
 		return err
 	}
@@ -67,7 +45,7 @@ func cmdServe(ctx context.Context, project string, args []string) error {
 		return errNoJev
 	}
 
-	return a.serve(ctx, jev.New(a.typesafe.APIKey))
+	return a.serve(ctx, jev.New(a.typesafe.APIKey), nil)
 }
 
 // busyError reports a project whose listener lock another process holds:
@@ -83,8 +61,9 @@ func (e *busyError) Error() string {
 
 // serve runs the project's listener until ctx ends or every channel has
 // failed: it holds the project's lock, screens incoming messages with ask
-// and keeps the heartbeat. Both `claude-bot serve` and the gateway run it.
-func (a *app) serve(ctx context.Context, ask screen.Asker) error {
+// and keeps the heartbeat. Both `claude-bot serve` and the gateway run it;
+// locked, if not nil, is called once it holds the lock.
+func (a *app) serve(ctx context.Context, ask screen.Asker, locked func()) error {
 	if err := os.MkdirAll(a.dir, dirPerm); err != nil {
 		return fmt.Errorf("create %s: %w", a.dir, err)
 	}
@@ -105,8 +84,8 @@ func (a *app) serve(ctx context.Context, ask screen.Asker) error {
 
 	a.log.Info("listening", "channels", a.names())
 
-	if a.locked != nil {
-		a.locked()
+	if locked != nil {
+		locked()
 	}
 
 	// The heartbeat means "connected": it starts once every channel has
@@ -132,24 +111,24 @@ func (a *app) serve(ctx context.Context, ask screen.Asker) error {
 
 	// Every message waits in incoming/ until Jev has screened it; leftovers
 	// from a previous run are screened first.
-	a.wake = make(chan struct{}, 1)
-	a.wake <- struct{}{}
+	wake := make(chan struct{}, 1)
+	wake <- struct{}{}
 
-	wg.Go(func() { a.screener(ctx, ask, a.wake) })
+	wg.Go(func() { a.screener(ctx, ask, wake) })
 
 	if a.closable() {
 		wg.Go(func() { a.watchClosed(ctx) })
 	}
 
-	return a.listen(ctx, &wg)
+	return a.listen(ctx, &wg, wake)
 }
 
 // listen runs every channel until ctx ends. A channel that fails is logged
 // and dropped from the heartbeat, which lists it as stopped so that inbox
 // asks for a restart; the other channels keep running. listen returns only
 // once every channel has stopped, or ctx has ended; the goroutines it starts
-// are counted in wg.
-func (a *app) listen(ctx context.Context, wg *sync.WaitGroup) error {
+// are counted in wg. Each message delivered is a wake-up for the screener.
+func (a *app) listen(ctx context.Context, wg *sync.WaitGroup, wake chan<- struct{}) error {
 	allReady := make(chan struct{})
 
 	var waiting atomic.Int64
@@ -168,7 +147,7 @@ func (a *app) listen(ctx context.Context, wg *sync.WaitGroup) error {
 		})
 		readies[name] = ready
 
-		wg.Go(func() { results <- channelResult{name, ch.Listen(ctx, a.deliverer(ctx, ch), ready)} })
+		wg.Go(func() { results <- channelResult{name, ch.Listen(ctx, a.deliverer(ctx, ch, wake), ready)} })
 	}
 
 	wg.Go(func() { a.beat(ctx, allReady, stopped) })
@@ -203,7 +182,9 @@ func (a *app) listen(ctx context.Context, wg *sync.WaitGroup) error {
 	return errors.Join(errs...)
 }
 
-func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Message) error {
+// deliverer holds a message ch delivers in the inbox, acknowledges it on the
+// platform and wakes the screener with wake; nil wakes nobody.
+func (a *app) deliverer(ctx context.Context, ch channel.Channel, wake chan<- struct{}) func(channel.Message) error {
 	return func(m channel.Message) error {
 		fresh, err := a.inbox.Hold(m)
 		if err != nil {
@@ -219,7 +200,7 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 		a.log.Info("message", "id", m.ID, "chat", m.ChatType, "from", m.Sender.ID)
 
 		select {
-		case a.wake <- struct{}{}:
+		case wake <- struct{}{}:
 		default: // a wake-up is already due
 		}
 
@@ -239,7 +220,7 @@ func (a *app) deliverer(ctx context.Context, ch channel.Channel) func(channel.Me
 // beat writes the heartbeat every heartbeatEvery once ready is closed, and
 // at once when a channel arrives on stopped.
 func (a *app) beat(ctx context.Context, ready <-chan struct{}, stopped <-chan channelResult) {
-	hb := heartbeat{PID: os.Getpid(), StartedAt: time.Now().UTC(), Channels: a.names(), Version: Version}
+	hb := heartbeat{PID: os.Getpid(), StartedAt: time.Now().UTC(), Version: Version, Channels: a.names()}
 
 	stop := func(r channelResult) {
 		hb.Channels = slices.DeleteFunc(hb.Channels, func(c string) bool { return c == r.name })
@@ -273,7 +254,7 @@ func (a *app) beat(ctx context.Context, ready <-chan struct{}, stopped <-chan ch
 		}
 
 		hb.BeatAt = time.Now().UTC()
-		if err := writeJSON(a.path(heartbeatFile), hb); err != nil {
+		if err := writeBeat(a.path(heartbeatFile), hb); err != nil {
 			a.log.Warn("write heartbeat", "err", err)
 		}
 
@@ -285,17 +266,6 @@ func (a *app) beat(ctx context.Context, ready <-chan struct{}, stopped <-chan ch
 		case <-t.C:
 		}
 	}
-}
-
-func readHeartbeat(dir string) (heartbeat, bool) {
-	var hb heartbeat
-
-	raw, err := os.ReadFile(filepath.Join(dir, heartbeatFile)) //nolint:gosec // fixed file in the bot dir
-	if err != nil || json.Unmarshal(raw, &hb) != nil {
-		return hb, false
-	}
-
-	return hb, time.Since(hb.BeatAt) < heartbeatStale
 }
 
 // The listener runs in the background and is started and stopped by the
@@ -314,7 +284,7 @@ func cmdStart(ctx context.Context, project string, args []string) error {
 
 	if pid, err := a.listenerPID(); pid != 0 || err != nil {
 		if err == nil {
-			fmt.Printf("listener already running (pid %d); %s replaces it\n", pid, restartHint)
+			fmt.Printf("listener already running (pid %d); %s replaces it\n", pid, hintRestart)
 		}
 
 		return err
@@ -325,7 +295,7 @@ func cmdStart(ctx context.Context, project string, args []string) error {
 
 // errServedByGateway is what start and serve say in a registered project
 // while the gateway is down.
-var errServedByGateway = errors.New("this project is registered with the gateway, which serves every registered project: run `claude-bot gateway start` in a terminal of your own")
+var errServedByGateway = errors.New("this project is registered with the gateway, which serves every registered project: run " + hintGatewayStart + " in a terminal of your own")
 
 // servedByGateway reports, for start in a registered project, whether the
 // gateway serves it.
@@ -340,12 +310,12 @@ func (a *app) servedByGateway() error {
 	}
 
 	if own, err := a.listenerPID(); err == nil && own != 0 && own != gw {
-		fmt.Printf("the gateway (pid %d) serves this project once its own listener (pid %d) stops: run `claude-bot stop` here\n", gw, own)
+		fmt.Printf("the gateway (pid %d) serves this project once its own listener (pid %d) stops: run %s here\n", gw, own, hintStop)
 
 		return nil
 	}
 
-	fmt.Printf("this project is served by the gateway (pid %d), which picks up configuration changes by itself; `claude-bot gateway status` shows how it is doing\n", gw)
+	fmt.Printf("this project is served by the gateway (pid %d), which picks up configuration changes by itself; %s shows how it is doing\n", gw, hintGatewayStatus)
 
 	return nil
 }
@@ -376,8 +346,8 @@ func cmdStop(ctx context.Context, project string, args []string) error {
 			name = a.gateway.Name
 		}
 
-		return fmt.Errorf("the gateway (pid %d) serves this project: `claude-bot gateway stop` stops it for every project, `claude-bot gateway remove %s` takes only this one out",
-			pid, name)
+		return fmt.Errorf("the gateway (pid %d) serves this project: %s stops it for every project, `claude-bot gateway remove %s` takes only this one out",
+			pid, hintGatewayStop, name)
 	}
 
 	if err := a.stopListener(ctx, pid); err != nil {
@@ -401,55 +371,62 @@ func cmdRestart(ctx context.Context, project string, args []string) error {
 }
 
 func listenerApp(ctx context.Context, project, name string, args []string) (*app, error) {
-	if _, err := parseArgs(name, args); err != nil {
-		return nil, err
-	}
+	a, _, err := openApp(ctx, project, nil, args, exactly(0), name)
 
-	return newApp(ctx, project)
+	return a, err
 }
 
 // Errors that tell Claude what to ask of the user.
 var (
-	errListenerDown = errors.New("listener not running: ask the user to run `claude-bot start` in a terminal of their own")
-	errGatewayDown  = errors.New("gateway not running: ask the user to run `claude-bot gateway start` in a terminal of their own")
+	errListenerDown = errors.New("listener not running: ask the user to run " + hintStart + " in a terminal of their own")
+	errGatewayDown  = errors.New("gateway not running: ask the user to run " + hintGatewayStart + " in a terminal of their own")
 )
 
 // checkListener fails unless a listener (the project's own, or the gateway)
-// is connected, and warns when it predates this version or the configured
-// channels.
-func (a *app) checkListener() error {
+// is connected, and returns warnings for Claude when it predates this
+// version or the configured channels.
+func (a *app) checkListener() ([]string, error) {
 	gw, err := gatewayPID()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	hb, alive := readHeartbeat(a.dir)
 	if !alive {
-		return a.listenerDown(gw)
+		return nil, a.listenerDown(gw)
 	}
 
-	restart := restartHint
+	var warnings []string
+
+	restart := hintRestart
 
 	switch {
 	case a.gateway != nil && hb.PID == gw:
-		restart = "`claude-bot gateway restart`"
+		restart = hintGatewayRestart
 	case a.gateway != nil:
-		fmt.Fprintf(os.Stderr, "claude-bot: a listener of this project's own (pid %d) still serves it, though it is registered with the gateway; ask the user to run `claude-bot stop` here so that the gateway takes over\n", hb.PID)
+		warnings = append(warnings, fmt.Sprintf("a listener of this project's own (pid %d) still serves it, though it is registered with the gateway; ask the user to run %s here so that the gateway takes over", hb.PID, hintStop))
 	}
 
 	if len(hb.Stopped) > 0 {
-		a.warnStopped(hb, restart)
+		warnings = append(warnings, stoppedWarning(hb, restart))
 	} else if !slices.Equal(hb.Channels, a.names()) && hb.PID != gw {
 		// The gateway picks up configuration changes by itself.
-		fmt.Fprintf(os.Stderr, "claude-bot: the listener serves %s but %s are configured; ask the user to run %s\n",
-			strings.Join(hb.Channels, ", "), strings.Join(a.names(), ", "), restart)
+		warnings = append(warnings, fmt.Sprintf("the listener serves %s but %s are configured; ask the user to run %s",
+			strings.Join(hb.Channels, ", "), strings.Join(a.names(), ", "), restart))
 	}
 
 	if hb.Version != Version {
-		fmt.Fprintf(os.Stderr, "claude-bot: the listener is version %q, this is %q; ask the user to run %s\n", hb.Version, Version, restart)
+		warnings = append(warnings, fmt.Sprintf("the listener is version %q, this is %q; ask the user to run %s", hb.Version, Version, restart))
 	}
 
-	return nil
+	return warnings, nil
+}
+
+// warn prints warnings for Claude.
+func warn(warnings []string) {
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "claude-bot: "+w)
+	}
 }
 
 // listenerDown explains why no listener beats for the project; gw is the
@@ -461,8 +438,8 @@ func (a *app) listenerDown(gw int) error {
 	case err != nil:
 		return err
 	case pid != 0 && pid == gw:
-		return fmt.Errorf("the gateway (pid %d) serves this project but has not connected it yet; `claude-bot gateway status` and %s say why",
-			gw, gatewayLogPath())
+		return fmt.Errorf("the gateway (pid %d) serves this project but has not connected it yet; %s and %s say why",
+			gw, hintGatewayStatus, gatewayLogPath())
 	case pid != 0:
 		logPath := a.path(listenerLog)
 
@@ -473,12 +450,13 @@ func (a *app) listenerDown(gw int) error {
 		return errGatewayDown
 	}
 
-	return fmt.Errorf("the gateway (pid %d) is running but does not serve this project; `claude-bot gateway status` says why", gw)
+	return fmt.Errorf("the gateway (pid %d) is running but does not serve this project; %s says why", gw, hintGatewayStatus)
 }
 
-// warnStopped says which channels of the listener failed and where to look.
-func (a *app) warnStopped(hb heartbeat, restart string) {
-	fmt.Fprintf(os.Stderr, "claude-bot: channel %s stopped after an error (see \"channel stopped\" in the log) while the others keep running; ask the user to fix it and run %s\n",
+// stoppedWarning says which channels of the listener failed and where to
+// look.
+func stoppedWarning(hb heartbeat, restart string) string {
+	return fmt.Sprintf("channel %s stopped after an error (see \"channel stopped\" in the log) while the others keep running; ask the user to fix it and run %s",
 		strings.Join(hb.Stopped, ", "), restart)
 }
 
@@ -512,16 +490,21 @@ func (a *app) startListener(ctx context.Context) error {
 
 	pid := cmd.Process.Pid
 
-	err = waitStarted(ctx, cmd, logPath, "listener did not connect", func() bool {
-		hb, alive := readHeartbeat(a.dir)
-		if alive && hb.PID == pid && len(hb.Stopped) > 0 {
-			a.warnStopped(hb, restartHint)
-		}
+	var hb heartbeat
+
+	err = waitStarted(ctx, cmd, logPath, "listener", func() bool {
+		var alive bool
+
+		hb, alive = readHeartbeat(a.dir)
 
 		return alive && hb.PID == pid
 	})
 	if err != nil {
 		return err
+	}
+
+	if len(hb.Stopped) > 0 {
+		warn([]string{stoppedWarning(hb, hintRestart)})
 	}
 
 	fmt.Printf("started listener (pid %d), log: %s\n", pid, logPath)

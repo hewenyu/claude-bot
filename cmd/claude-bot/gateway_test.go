@@ -78,6 +78,7 @@ func (p *pipeChannel) send(t *testing.T, m channel.Message) {
 // connect to fake channels, by repository root.
 type gatewayFixture struct {
 	t     *testing.T
+	home  gatewayHome
 	store *store.Store
 	g     *gateway
 	pipes map[string]*pipeChannel
@@ -87,7 +88,9 @@ type gatewayFixture struct {
 func newGatewayFixture(t *testing.T) *gatewayFixture {
 	t.Helper()
 
-	s, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "home"))
+	home := gatewayHome(filepath.Join(t.TempDir(), "home"))
+
+	s, err := store.Open(t.Context(), string(home))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +101,13 @@ func newGatewayFixture(t *testing.T) *gatewayFixture {
 		t.Fatal(err)
 	}
 
-	f := &gatewayFixture{t: t, store: s, pipes: map[string]*pipeChannel{}}
+	f := &gatewayFixture{t: t, home: home, store: s, pipes: map[string]*pipeChannel{}}
 	f.g = newGateway(s, slog.New(slog.DiscardHandler))
 	f.g.tick = 20 * time.Millisecond
 	f.g.ask = func(string) screen.Asker { return stuffing{} }
 	f.g.build = func(dir string, cfg config.Config, log *slog.Logger) (*app, error) {
 		if cfg.Lark == nil {
-			return nil, errNotConfigured
+			return nil, config.ErrNotConfigured
 		}
 
 		f.mu.Lock()
@@ -342,7 +345,7 @@ func TestGateway_states(t *testing.T) {
 
 	f := newGatewayFixture(t)
 
-	idle, err := f.store.AddProject(t.Context(), t.TempDir())
+	idle, err := f.store.SaveProject(t.Context(), t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +416,7 @@ func TestCheckListener_registered(t *testing.T) {
 	a.gateway = &store.Project{ID: 1, Name: "api"}
 
 	// The test home has no gateway running.
-	if err := a.checkListener(); !errors.Is(err, errGatewayDown) {
+	if _, err := a.checkListener(); !errors.Is(err, errGatewayDown) {
 		t.Errorf("checkListener() = %v, want errGatewayDown", err)
 	}
 }
@@ -424,7 +427,7 @@ func TestUnregister_writesConfigBack(t *testing.T) {
 	f := newGatewayFixture(t)
 	api := f.register("api", "cli_api")
 
-	path, err := unregister(t.Context(), f.store, api)
+	path, err := config.Unregister(t.Context(), f.store, api)
 	if err != nil {
 		t.Fatal(err)
 	}

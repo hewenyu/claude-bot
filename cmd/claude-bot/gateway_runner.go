@@ -1,17 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hewenyu/claude-bot/internal/agent"
+	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/runner"
@@ -37,32 +35,13 @@ const (
 	runnerFile = "runner.json"
 	// runnerSaveDelay gathers a burst of changes into one save.
 	runnerSaveDelay = 500 * time.Millisecond
-	// hookTimeout is how long a hook waits for the gateway: never long, so
-	// a gateway that went away does not hold Claude up.
-	hookTimeout = 2 * time.Second
-	// maxHookInput bounds the hook event read from stdin.
-	maxHookInput = 1 << 20
 	// hookTokenBytes is the size of the agents' token.
 	hookTokenBytes = 24
-	// headerAgent names the agent a hook comes from.
-	headerAgent = "X-Claude-Bot-Agent"
-	// hookPath is where agents report their hooks, finishPath the end of
-	// their round.
-	hookPath   = "/agent/hook"
-	finishPath = "/agent/finish"
-	// runnerOn is the value that turns a project's runner on.
-	runnerOn = "on"
-)
-
-// What the gateway gives each agent, besides agent.EnvAgentID.
-const (
-	envAgentURL   = agent.EnvPrefix + "URL"
-	envAgentToken = agent.EnvPrefix + "TOKEN"
 )
 
 // How the gateway starts the agents, from its own environment.
 const (
-	envRunnerAgent = "CLAUDE_BOT_RUNNER_AGENT" // the agent command, "claude" by default
+	envRunnerAgent = "CLAUDE_BOT_RUNNER_AGENT" // the agent command, agent.DefaultProgram by default
 	envRunnerArgs  = "CLAUDE_BOT_RUNNER_ARGS"  // its extra arguments, space separated
 )
 
@@ -101,8 +80,8 @@ func agentCommand() (string, []string) {
 }
 
 // startBots starts the runner, its agents running program with args and
-// reporting to the gateway at url, and runs it until ctx ends. Wait for it
-// with wait.
+// reporting to the gateway at url, its base URL, and runs it until ctx
+// ends. Wait for it with wait.
 func startBots(ctx context.Context, home, url string, log *slog.Logger, program string, args []string) (*bots, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -118,16 +97,8 @@ func startBots(ctx context.Context, home, url string, log *slog.Logger, program 
 	b := &bots{token: newHex(hookTokenBytes), path: filepath.Join(home, runnerFile), log: log, done: make(chan struct{})}
 
 	var saved runnerState
-
-	raw, err := os.ReadFile(b.path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-	case err != nil:
+	if err := atomicfile.ReadJSON(b.path, &saved); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
-	default:
-		if err := json.Unmarshal(raw, &saved); err != nil {
-			return nil, fmt.Errorf("%s: %w", b.path, err)
-		}
 	}
 
 	b.agents = agent.NewManager(agent.Config{
@@ -136,18 +107,24 @@ func startBots(ctx context.Context, home, url string, log *slog.Logger, program 
 		HookCommand: shellQuote(self) + " hook",
 		Allow:       botAllow,
 		Env: map[string]string{
-			envAgentURL:   strings.TrimSuffix(url, "/") + hookPath,
+			envAgentURL:   strings.TrimSuffix(url, "/"),
 			envAgentToken: b.token,
 			// /bot runs claude-bot: this one, whatever the PATH says.
 			"PATH": filepath.Dir(self),
 		},
 	}, func() {
 		b.changed()
-
-		if b.runner != nil {
-			b.runner.Kick()
-		}
+		b.runner.Kick()
 	})
+
+	// The runner is made before any agent is, so that what an agent
+	// reports always finds it.
+	b.runner = runner.New(runner.Options{
+		Agents:   b.agents,
+		Pending:  pendingIn,
+		Check:    checkBotCommand,
+		OnChange: b.changed,
+	}, runner.Saved{Runs: saved.Runs})
 
 	// What its agents left when the gateway last stopped, e.g. crashed,
 	// ends now; each project keeps only its latest agent, to show.
@@ -156,13 +133,6 @@ func startBots(ctx context.Context, home, url string, log *slog.Logger, program 
 	}
 
 	b.agents.Restore(latestAgents(saved))
-
-	b.runner = runner.New(runner.Options{
-		Agents:   b.agents,
-		Pending:  pendingIn,
-		Check:    checkBotCommand,
-		OnChange: b.changed,
-	}, runner.Saved{Runs: saved.Runs})
 
 	go func() {
 		defer close(b.done)
@@ -235,10 +205,6 @@ func (b *bots) changed() {
 // nothing is saved: a save scheduled before it would record the agents
 // ending with the gateway as ended.
 func (b *bots) save(final bool) {
-	if b.runner == nil {
-		return // restoring the agents, before the runner is made
-	}
-
 	b.saveMu.Lock()
 	defer b.saveMu.Unlock()
 
@@ -262,14 +228,14 @@ func (b *bots) sync(ctx context.Context, s *store.Store) error {
 		return err
 	}
 
-	on, err := s.SettingsWithPrefix(ctx, store.SettingRunnerPrefix)
+	on, err := s.RunnersOn(ctx)
 	if err != nil {
 		return err
 	}
 
 	list := make([]runner.Project, 0, len(projects))
 	for _, p := range projects {
-		list = append(list, runner.Project{ID: p.ID, Name: p.Name, Dir: p.Dir, On: on[strconv.FormatInt(p.ID, 10)] == runnerOn})
+		list = append(list, runner.Project{ID: p.ID, Name: p.Name, Dir: p.Dir, On: on[p.ID]})
 	}
 
 	b.runner.SetProjects(list)
@@ -306,7 +272,7 @@ func validMaxParallel(n int) bool {
 // what people wrote, not the bot's own replies: a reply is no news, but
 // when the latest was is how the runner tells a task answered.
 func pendingIn(dir string) ([]runner.Pending, error) {
-	tasks, err := inbox.New(filepath.Join(dir, config.DirName, inboxDir)).PendingTasks()
+	tasks, err := inboxOf(config.BotDir(dir)).PendingTasks()
 	if err != nil {
 		return nil, err
 	}
@@ -333,15 +299,10 @@ func pendingIn(dir string) ([]runner.Pending, error) {
 // checkBotCommand reports a project where Claude Code has no /bot: not in
 // the project, not in the user's own commands or skills.
 func checkBotCommand(dir string) error {
-	places := []string{
-		filepath.Join(dir, ".claude", "commands", "bot.md"),
-		filepath.Join(dir, ".claude", "skills", "bot", "SKILL.md"),
-	}
+	places := []string{botCommandPath(dir), botSkillPath(dir)}
 
 	if home, err := os.UserHomeDir(); err == nil {
-		places = append(places,
-			filepath.Join(home, ".claude", "commands", "bot.md"),
-			filepath.Join(home, ".claude", "skills", "bot", "SKILL.md"))
+		places = append(places, botCommandPath(home), botSkillPath(home))
 	}
 
 	for _, p := range places {
@@ -351,103 +312,6 @@ func checkBotCommand(dir string) error {
 	}
 
 	return fmt.Errorf("%s: %w", dir, runner.ErrNoBotCommand)
-}
-
-// cmdHook forwards a Claude Code hook event, read from stdin, to the
-// gateway that runs the agent, and prints what the gateway decided, e.g.
-// that a Stop must wait. It never fails the hook: an agent the gateway does
-// not run reports nothing, a gateway that does not answer decides nothing,
-// and Claude goes on.
-func cmdHook(ctx context.Context, _ string, _ []string) error {
-	forwardHook(ctx, os.Getenv(envAgentURL), os.Getenv(envAgentToken), os.Getenv(agent.EnvAgentID), os.Stdin, os.Stdout)
-
-	return nil
-}
-
-// forwardHook posts the hook event read from in to url, as agent id, and
-// writes a decision the gateway answered to out.
-func forwardHook(ctx context.Context, url, token, id string, in io.Reader, out io.Writer) {
-	body, err := io.ReadAll(io.LimitReader(in, maxHookInput))
-	if err != nil || url == "" || token == "" || id == "" {
-		return
-	}
-
-	var answer hookAnswer
-	if agentPost(ctx, url, token, id, body, &answer) != nil || answer.Decision == "" {
-		return
-	}
-
-	b, err := json.Marshal(map[string]string{"decision": answer.Decision, "reason": answer.Reason})
-	if err == nil {
-		_, _ = out.Write(append(b, '\n'))
-	}
-}
-
-// cmdFinish tells the gateway that runs the agent that its round is done:
-// it ends the agent once its turn ends. Run elsewhere, it does nothing.
-func cmdFinish(ctx context.Context, _ string, args []string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("%w: finish takes no arguments", errUsage)
-	}
-
-	url, token, id := os.Getenv(envAgentURL), os.Getenv(envAgentToken), os.Getenv(agent.EnvAgentID)
-	if url == "" || token == "" || id == "" {
-		fmt.Println("not an agent the gateway runs: nothing to finish")
-
-		return nil
-	}
-
-	if err := agentPost(ctx, strings.TrimSuffix(url, hookPath)+finishPath, token, id, nil, nil); err != nil {
-		return err
-	}
-
-	fmt.Println("finished: end your turn now; the gateway ends this session, and starts a new one for what comes next")
-
-	return nil
-}
-
-// agentPost posts body to the gateway at url, as agent id, and decodes its
-// answer into out, if out is not nil. An answer that is not a 200 is an
-// error, with what the gateway said.
-func agentPost(ctx context.Context, url, token, id string, body []byte, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, hookTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body)) //nolint:gosec // the gateway's own address, given by the gateway
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set(headerAuthorization, bearerPrefix+token)
-	req.Header.Set(headerAgent, id)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // the gateway's own loopback address, given by the gateway
-	if err != nil {
-		return fmt.Errorf("the gateway: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // read to the end below
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxHookInput))
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		var e struct {
-			Error string `json:"error"`
-		}
-
-		_ = json.Unmarshal(raw, &e)
-
-		return errors.New(cmp.Or(e.Error, resp.Status))
-	}
-
-	if out == nil {
-		return nil
-	}
-
-	return json.Unmarshal(raw, out)
 }
 
 func newHex(n int) string {
