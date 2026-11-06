@@ -1,8 +1,8 @@
 # 常见问题
 
-**无人值守时被权限确认卡住**
+**自己开终端跑 `/bot` 时被权限确认卡住**
 
-在项目的 `.claude/settings.json` 里放行 bot 的命令：
+「自动处理」启动的 Claude 默认跳过权限确认，不会卡在这里。自己在终端里跑 `/bot` 的，在项目的 `.claude/settings.json` 里放行 bot 的命令：
 
 ```json
 { "permissions": { "allow": ["Bash(claude-bot:*)"] } }
@@ -22,15 +22,15 @@
 
 **升级 claude-bot 之后**
 
-`go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest` 之后：
+换上新版本（用 App 的从 Releases 下载新的 DMG 替换「应用程序」里的；否则重新下载二进制，或者 `go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest`）之后：
 
-1. 运行 `claude-bot gateway restart`，换成新版本的 gateway（还没迁进 gateway 的项目运行 `claude-bot restart`）。
+1. 运行 `claude-bot gateway restart`，换成新版本的 gateway（还没迁进 gateway 的项目运行 `claude-bot restart`）。gateway 重启时，它启动的 Claude 跟着结束，正在处理的那一批由新的 Claude 重新做。
 2. 运行 `claude-bot init --bot-md`，用新版本的值守流程覆盖 `.claude/commands/bot.md`（不动任何配置）。如果你改过 bot.md，先备份，或者用 git 看一下差异。
 3. 打开了「自动处理」的项目不用管，下一个会话就用新的 bot.md；自己开终端跑的，重新运行 `/bot`。
 
 **inbox 报 listener not running**
 
-gateway 要你自己在终端里运行 `claude-bot gateway start` 来启动（还没迁进 gateway 的项目是 `claude-bot start`），Claude 不会替你启动，免得它带上 Claude Code 会话里的环境变量。电脑重启之后也要重新 start。
+gateway 没在运行。在自己的终端里运行 `claude-bot gateway start`，或者打开桌面 App（还没迁进 gateway 的项目是 `claude-bot start`）。Claude 不会替你启动，免得它带上 Claude Code 会话里的环境变量。电脑重启之后也要重新启动。
 
 **从单项目监听进程迁到 gateway**
 
@@ -49,4 +49,8 @@ claude-bot stop             # 停掉这个项目自己的监听进程
 
 **群里一次来了好几个任务**
 
-按到达顺序逐个处理，每条消息到达时都会先收到一个表情回应，见[多条消息怎么处理](how-it-works.md#多条消息怎么处理)。
+每条消息到达时都会先收到一个表情回应。Claude 整批取出所有待办，按轻重缓急处理：能直接答的先回，要改代码的几件合进一个 PR，每件事分别回复，见[多条消息怎么处理](how-it-works.md#多条消息怎么处理)。
+
+**「自动处理」打开了，却一直没启动 Claude**
+
+看项目「自动处理」标签上的状态和记录：项目里（或 `~/.claude/commands/`）没有 `/bot` 命令时不会启动，运行 `claude-bot init --bot-md` 生成；所有项目一共能同时跑的 Claude 有上限（默认 3 个，在「共用设置」里改），满了就排队；上一轮一件都没处理掉的，等新的消息或者 30 分钟后再试；启动就失败的（比如 Claude Code 没登录）显示「启动不了」，修好后点「再跑一轮」。

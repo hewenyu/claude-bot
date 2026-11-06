@@ -2,7 +2,9 @@
 
 在项目仓库里运行 `claude-bot init`，它会先让你选渠道（飞书 / Lark、Discord、Telegram、Slack、GitHub、钉钉）。至少接一个，其他的之后再运行 `claude-bot init --channel <渠道>` 补上，多个渠道可以同时用。选 Discord、Telegram、Slack、GitHub 或钉钉时，它会提示你输入 token（输入时不显示），获取方法见下面各渠道的说明。不在终端里运行时（比如脚本，或者 Claude Code 的 Bash 工具），不会弹出菜单，默认接飞书；要接其他渠道，用 `--channel` 或对应的 token 参数指定。
 
-不管选哪个渠道，`init` 都会把这个项目登记进 gateway、把凭证存进 `~/.claude-bot/gateway.db`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通（GitHub 没有私聊，只检查 token 能不能访问仓库）。`init` 的全部参数见[命令与配置](reference.md#命令)。
+不管选哪个渠道，`init` 都会把这个项目登记进 gateway、把凭证存进 `~/.claude-bot/gateway.db`（权限 `0600`），把 `.claude-bot/` 加进 `.gitignore`，生成值守流程 `.claude/commands/bot.md`（已经存在就保留），最后等你私聊 bot 一条消息，收到「连接成功」的回复就说明收发都已打通（GitHub 没有私聊，只检查 token 能不能访问仓库）。gateway 已经在运行时跳过这一步，它几秒内接上新渠道，用 `claude-bot gateway status` 或网页确认连上没有。`init` 的全部参数见[命令与配置](reference.md#命令)。
+
+项目登记进 gateway 之后，也可以在 gateway 网页的「渠道」标签里添加、修改渠道：填上凭证，保存前可以先点「测试连接」核对。飞书在网页上只能填已有应用的 App ID 和 App Secret，要新建应用还是用 `init`。
 
 - [飞书 / Lark](#飞书--lark)
 - [Discord](#discord)
@@ -139,7 +141,7 @@ Telegram 的 Bot API 没法按 ID 读取一条消息，所以 `get` 在 Telegram
 
 ## GitHub
 
-接了 GitHub 渠道之后，Claude 不用每轮跑 `gh` 去扫仓库：新开的 issue 和 PR、issue 和 PR 下的评论、PR 的 review 和行内 review 评论，都会进收件箱（只收人发的，Actions、Dependabot 这类 bot 的不收）。Claude 回复时会在原 issue 或 PR 下发评论并 @ 对方，行内 review 评论回在同一个讨论串里。同样不需要公网地址和 webhook：监听进程每 30 秒轮询一次 REST API，没有新动态时 GitHub 返回 304，不占限流额度。
+接了 GitHub 渠道之后，Claude 不用每轮跑 `gh` 去扫仓库：新开的 issue 和 PR、issue 和 PR 下的评论、PR 的 review 和行内 review 评论，都会进收件箱（只收人发的，Actions、Dependabot 这类 bot 的不收）。Claude 回复时会在原 issue 或 PR 下发评论并 @ 对方，行内 review 评论回在同一个讨论串里。同样不需要公网地址和 webhook：gateway 每 30 秒轮询一次 REST API，没有新动态时 GitHub 返回 304，不占限流额度。
 
 1. 建一个 token。推荐 [fine-grained token](https://github.com/settings/personal-access-tokens/new)，只选这个仓库，权限：
    - Issues：读写
@@ -164,7 +166,7 @@ claude-bot init --github-token <另一个账号的 token> --github-token-name wo
 
 用谁的 token，回复就显示成谁发的。可以单独注册一个机器人账号，也可以直接用自己的。用自己的也没关系：bot 发的评论和开的 PR 末尾都带一个隐藏标记 `<!-- claude-bot -->`，只有带标记的才会被跳过，你自己手写的评论和 PR 照样会进收件箱，也会被当成别人的 PR 来审。
 
-监听进程第一次启动时，会把还开着、而且最后一条评论不是 bot 回复的 issue 和 PR 放进收件箱；已经处理过（回复过或者 `done` 过）的不会再进来。
+gateway 每次接上这个仓库时，会把还开着、而且最后一条评论不是 bot 回复的 issue 和 PR 放进收件箱；已经处理过（回复过或者 `done` 过）的不会再进来。
 
 回复之外的操作用 `claude-bot github`：
 

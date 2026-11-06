@@ -9,46 +9,46 @@
 
 **在群里 @ 一下，Claude Code 就去仓库里把活干了。**
 
-把飞书 / Lark、Discord、Telegram、Slack 或钉钉机器人接到项目仓库里常驻的 Claude Code 会话上，GitHub 的 issue 和 PR 也可以作为一个渠道接进来。
+项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求；仓库里有人开 issue、提 PR、写评论。本机的 claude-bot gateway 把这些收进项目的收件箱，有待办时在仓库里启动 Claude Code 跑 `/bot`：它排查、改代码、跑测试、开 PR，然后在原消息下回复。一批处理完，这个 Claude Code 就关掉，下次有事再开一个新的。
 
-项目成员私聊 bot，或在群里 @ 它，提问题、报 bug、提需求。gateway 在仓库里启动 Claude Code 跑 `/bot`，它排查、修改、跑测试，然后在原消息下回复。它也盯着仓库的 issue 和 PR。代码改动一律走 PR，实际验证过才合并、发版。
+支持飞书 / Lark、Discord、Telegram、Slack、钉钉，以及 GitHub 的 issue 和 PR。
 
-claude-bot 本身只负责**收发消息**：把发给 bot 的消息放进本地收件箱，并提供回复命令。理解需求、决定怎么做、怎么回复，都由 Claude 自己判断。issue 和 PR 要把 GitHub 接成渠道才会进收件箱。
+```
+ 私聊 / 群里 @bot ─┐
+ GitHub 动态 ──────┴─▶ claude-bot gateway ──Jev 筛选──▶ 项目的 .claude-bot/inbox/
+                              │                                 │
+                              └─ 有待办：在仓库里启动 ─▶ Claude Code (/bot)
+                                                       │  claude-bot inbox    取出这一批
+                                                       │  claude-bot reply    在原消息下回复
+                                                       └─ claude-bot finish   这一批做完，gateway 关掉它
+```
+
+claude-bot 本身只负责**收发消息、启停 Claude**。理解需求、决定怎么做、怎么回复，都由 Claude 按项目里的 `.claude/commands/bot.md` 自己判断。详见[工作原理](docs/how-it-works.md)。
 
 ## 特性
 
-- **五个聊天渠道 + GitHub**：飞书 / Lark、Discord、Telegram、Slack、钉钉，私聊和群里 @bot 都支持；GitHub 的 issue、PR、评论和 review 也能接成渠道。一个仓库里可以同时接多个。
-- **不需要公网地址**：全部通过长连接或长轮询从本机主动连出去，不用配域名、HTTPS 和回调地址。
-- **一个 gateway 管所有项目**：本机只跑一个 `claude-bot gateway` 进程，服务所有登记过的项目。每个项目有自己的 bot（一个应用只属于一个项目），可以同时接多个渠道。配置统一存在本地 SQLite（`~/.claude-bot/gateway.db`），TypeSafe key 和 GitHub token 只配一次；消息仍进各项目自己的 `.claude-bot/inbox/`，多个项目同时值守、互不影响。
-- **本地网页看全局**：gateway 自带一个只在本机打开的网页（`claude-bot gateway open`）：每个项目和它的渠道连没连上、出了什么错；每个项目正在处理哪些事，点开看整段对话和 bot 的回复（处理完的自动归档，有人追问时回到列表里）；在页面上添加、修改渠道凭证并测试连接，改完 gateway 几秒内自动重连。凭证只进不出，页面上只显示末几位。
-- **不用一直开着终端**：在网页上给项目打开「自动处理」，gateway 有待办时就在项目里启动 Claude Code 跑 `/bot`，不用每个仓库都开一个终端。一个 Claude Code 只处理一批，处理完 `claude-bot finish`，gateway 就关掉它和它启动的所有进程，还有待办再开一个新的。每个项目最多一个 Claude，所有项目一共最多几个（默认 3 个，可改）。Claude 的终端就在网页上，能看、能打字、能中断。也有一个桌面 App（`desktop/`），就是这个网页的独立窗口。
+- **不需要公网地址**：所有渠道都是从本机主动连出去（长连接或轮询），不用配域名、HTTPS 和回调地址。
+- **一个 gateway 管所有项目**：本机一个 `claude-bot gateway` 进程服务所有登记过的项目。每个项目有自己的 bot，可以同时接多个渠道；配置存在本地 SQLite（`~/.claude-bot/gateway.db`），消息进各项目自己的 `.claude-bot/inbox/`，互不影响。
+- **不用开着终端**：在 gateway 的网页上给项目打开「自动处理」，有待办时 gateway 自己启动 Claude Code。一个 Claude 只做一批，`finish` 之后连同它启动的所有进程一起关掉；空闲时不花 token。每个项目最多一个 Claude，所有项目一共默认最多 3 个。
+- **本地网页看全局**：哪个渠道断了、为什么、怎么修；每个项目在处理哪些事、整段对话和 bot 的回复；在页面上添加和修改渠道、测试连接；Claude 的终端也在页面上，能看、能打字、能中断。桌面 App 就是这个网页的独立窗口。
+- **Jev 先筛一遍**：每条消息先经过 [TypeSafe](https://typesafe.ai) 的 Jev 模型，归成一件件事，追问（24 小时内）并回原来那件事，附件提前下载好；非法请求直接回复「现在暂时不支持。」，不交给 Claude。见 [PROTOCOL.md §1.1](PROTOCOL.md#11-jev-筛选)。
+- **整批处理**：Claude 一次取出所有待办，能直接答的先回，要改代码的几件合进一个 PR、一次发版，每件事分别回复。
+- **改代码一律走 PR**：Claude 自己开的 PR 验证后合并、发版；别人的 PR 先判断值不值得要，再在本地实际跑过才合并。
+- **消息不会丢**：消息一到就写进本地收件箱并加表情回应；Claude 中断、电脑重启，没做完的事下次接着做。
 - **几分钟接入**：`claude-bot init` 选渠道。飞书在浏览器里点一下「确认」就建好应用；其他渠道粘贴 token 即可。
-- **改代码一律走 PR**：Claude 自己开的 PR 验证后合并、打 tag 发版；别人的 PR 先判断值不值得要，再在本地实际跑过才合并。
-- **消息不会丢**：消息一到就写进本地收件箱并加表情回应，会话中断、电脑重启之后接着处理。
-- **Jev 先过一遍**：每条消息先由 [TypeSafe](https://typesafe.ai) 的 Jev 模型筛选：把消息和附件归组成一件件事（一条消息不会拆开），追问（24 小时内）并回原来那件事，附件下载好并标明存在哪里；非法请求直接回复「现在暂时不支持。」，不交给 Claude。Claude 每一轮整批取出这些事，在主会话里按轻重缓急处理：能直接答的先回，要改代码的几件合进一个 PR、一次发版，每件事用自己的 id 分别回复。`init` 时填入 TypeSafe API key。见 [PROTOCOL.md §1.1](PROTOCOL.md#11-jev-筛选)。
-- **工具保持简单**：单个 Go 二进制，数据库是一个本地 SQLite 文件，网页也打包在二进制里，没有额外的服务要装。值守流程是一个 Markdown 文件（`.claude/commands/bot.md`），可以按项目约定修改。
-
-```
- 私聊 / 群里 @bot、GitHub 动态 ──▶ claude-bot gateway ──▶ 各项目的 .claude-bot/inbox/
-                                                                     │
- Claude Code (/bot)      ◀──── claude-bot inbox ────────────────────┘
-          └── claude-bot reply <id> ──▶ 原消息下回复
-```
-
-详见[工作原理](docs/how-it-works.md)。
+- **工具保持简单**：单个 Go 二进制，网页打包在里面，没有别的服务要装。值守流程是一个 Markdown 文件，可以按项目约定修改。
 
 ## 环境要求
 
 - macOS 或 Linux
-- Go 1.27+（用于安装）
-- git
-- [GitHub CLI](https://cli.github.com)（`gh`，已登录；用来开 PR。把 GitHub 接成渠道后，盯 issue 和 PR 就不再需要它）
-- [Claude Code](https://claude.com/claude-code)
+- [Claude Code](https://claude.com/claude-code)，已登录
+- git，以及 [GitHub CLI](https://cli.github.com)（`gh`，已登录；Claude 用它开 PR）
+- [TypeSafe](https://console.typesafe.ai/keys) 的 API key（Jev 筛选用，必需）
 - 飞书 / Lark、Discord、Telegram、Slack、钉钉或 GitHub 中任意一个的账号
 
 ## 安装
 
-**Apple Silicon 的 Mac（M 系列芯片）**：从 [Releases](https://github.com/hewenyu/claude-bot/releases) 下载 `claude-bot-<版本>-arm64.dmg`，打开后把 claude-bot 拖进「应用程序」。App 里带着 `claude-bot` 命令，打开 App 就会启动 gateway 并显示它的网页。其他平台暂时没有 App，用下面的 `go install`。
+**Apple Silicon 的 Mac（M 系列芯片）**：从 [Releases](https://github.com/hewenyu/claude-bot/releases) 下载 `claude-bot-<版本>-arm64.dmg`，把 claude-bot 拖进「应用程序」。打开 App 就会启动 gateway 并显示它的网页。
 
 App 没有签 Apple 的开发者证书、也没有公证（开源项目），第一次打开会被 macOS 拦下。在终端里运行一次：
 
@@ -56,24 +56,22 @@ App 没有签 Apple 的开发者证书、也没有公证（开源项目），第
 xattr -dr com.apple.quarantine /Applications/claude-bot.app
 ```
 
-或者先双击打开一次，再到「系统设置 → 隐私与安全性」里点「仍要打开」。
-
-在终端里用 `claude-bot`（`init` 登记项目等），把 App 里的那个链接到 PATH 上，和 App 用同一个版本：
+或者先双击打开一次，再到「系统设置 → 隐私与安全性」里点「仍要打开」。App 里带着 `claude-bot` 命令，把它链接到 PATH 上，终端里用的就和 App 是同一个版本：
 
 ```bash
 sudo ln -sf /Applications/claude-bot.app/Contents/Resources/claude-bot /usr/local/bin/claude-bot
 ```
 
-**只要命令行**：[Releases](https://github.com/hewenyu/claude-bot/releases) 里有编译好的二进制，Apple Silicon 的 Mac（`darwin-arm64`）和 Linux（`linux-amd64`、`linux-arm64`）各一个。比如 Linux amd64：
+**只要命令行**：[Releases](https://github.com/hewenyu/claude-bot/releases) 里有 `darwin-arm64`、`linux-amd64`、`linux-arm64` 的二进制（附 `SHA256SUMS`）。比如 Linux amd64：
 
 ```bash
 curl -fsSL https://github.com/hewenyu/claude-bot/releases/latest/download/claude-bot-<版本>-linux-amd64.tar.gz | tar -xz claude-bot
 sudo install claude-bot /usr/local/bin/
 ```
 
-`<版本>` 是 Releases 上的 tag，比如 `v0.3.0`。和 DMG 一样没有签名：在 Mac 上用浏览器下载的话，先 `xattr -d com.apple.quarantine claude-bot`；用 `curl` 下载不需要。
+`<版本>` 是 Releases 上的 tag，比如 `v0.3.2`。在 Mac 上用浏览器下载的话，先 `xattr -d com.apple.quarantine claude-bot`；用 `curl` 下载不需要。
 
-或者用 Go 安装（macOS 或 Linux）：
+**用 Go 安装**（Go 1.27+）：
 
 ```bash
 go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
@@ -83,33 +81,43 @@ go install github.com/hewenyu/claude-bot/cmd/claude-bot@latest
 
 ## 快速开始
 
-```bash
-cd your-project
-claude-bot init           # 填 TypeSafe API key、选渠道、把项目登记进 gateway、生成 .claude/commands/bot.md、验证收发
-claude-bot gateway start  # 在后台启动 gateway，一个进程服务所有项目（stop 停止，restart 重启）
-claude-bot gateway open   # 在浏览器里打开 gateway 的网页，看各项目的状态和处理过的事
-```
+1. **登记项目**：在要值守的仓库里运行
 
-然后让 Claude 值守，二选一：
+   ```bash
+   claude-bot init
+   ```
 
-- **gateway 来跑（推荐）**：在网页上打开项目的「自动处理」标签，打开开关。有待办时 gateway 在项目里启动 Claude Code 跑 `/bot`，终端也在这个标签里。
-- **自己开终端**：在项目里启动 Claude Code，运行 `/bot`，处理完这一批就停。
+   第一次会要 TypeSafe API key（所有项目共用，只填一次），然后选渠道、建好 bot、把项目登记进 gateway，并生成 `.claude/commands/bot.md`（值守流程，提交进仓库）。各渠道怎么建应用、拿 token 见[接入各个渠道](docs/channels.md)。
 
-两种别同时用在一个项目上，不然两个 Claude 会抢同一批任务。
+2. **启动 gateway**：用桌面 App 的话打开它就行；否则在自己的终端里运行
 
-把 bot 拉进项目群，之后大家私聊 bot 或在群里 @ 它就可以了。再值守一个项目，只要在那个仓库里 `claude-bot init`，gateway 几秒内自动接上，不用重启。
+   ```bash
+   claude-bot gateway start   # 在后台启动，一个进程服务所有项目（stop 停止，restart 重启）
+   claude-bot gateway open    # 在浏览器里打开 gateway 的网页
+   ```
 
-以前用 `claude-bot start` 单独跑监听进程的项目，升级后运行 `claude-bot gateway import` 迁进 gateway，见[常见问题](docs/faq.md#从单项目监听进程迁到-gateway)。各渠道怎么建应用、拿 token 见[接入各个渠道](docs/channels.md)。
+   要在自己的终端里启动，gateway 和它启动的 Claude 才用得上你的 PATH 和代理等环境变量。
+
+3. **打开「自动处理」**：在网页上进这个项目的「自动处理」标签，打开开关。之后有待办，gateway 就在仓库里启动 Claude Code 跑 `/bot`。
+
+   不想让 gateway 来跑，也可以自己在仓库里打开 Claude Code，运行 `/bot`，它处理完这一批就停。两种方式别同时用在一个项目上，不然两个 Claude 会抢同一批任务。
+
+4. **把 bot 拉进项目群**，之后大家私聊它或在群里 @ 它就可以了。
+
+再值守一个项目，在那个仓库里 `claude-bot init` 就行，gateway 几秒内自动接上，不用重启。
+
+> **安全**：「自动处理」启动的 Claude 以你的身份运行，默认跳过权限确认（`bypassPermissions`），能读写你能读写的一切。只给信任的项目打开，项目最好放在给它专用的机器上；`bot.md` 就是给它的指令，改它要像改代码一样审。见[自动处理](docs/how-it-works.md#自动处理)。
+
+升级之后要做什么、以前用 `claude-bot start` 单独跑监听进程的项目怎么迁进 gateway，见[常见问题](docs/faq.md)。
 
 ## 文档
 
 - [接入各个渠道](docs/channels.md)：飞书 / Lark、Discord、Telegram、Slack、钉钉、GitHub 的接入步骤、权限和限制
-- [工作原理](docs/how-it-works.md)：消息怎么收进来、多条消息怎么排队处理
-- [自动处理](docs/how-it-works.md#自动处理)：gateway 怎么替你跑 `/bot`，以及桌面 App
-- [命令与配置](docs/reference.md)：全部命令和 `init` 参数、项目定位、文件、环境变量、代理
-- [常见问题](docs/faq.md)：权限确认卡住、监听进程起不来、升级之后怎么办
+- [工作原理](docs/how-it-works.md)：消息怎么收进来、一批事怎么处理、「自动处理」怎么启停 Claude
+- [命令与配置](docs/reference.md)：全部命令和 `init` 参数、gateway 的网页、文件、环境变量、代理
+- [常见问题](docs/faq.md)：连不上、升级、从单项目监听进程迁到 gateway
 - [开发](docs/development.md)：构建、测试和代码结构
-- [PROTOCOL.md](PROTOCOL.md)：消息协议，以及怎么接入新渠道
+- [PROTOCOL.md](PROTOCOL.md)：消息协议、CLI 约定，以及怎么接入新渠道
 
 ## 社区
 
