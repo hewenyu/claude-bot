@@ -14,6 +14,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/atomicfile"
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/filelock"
 )
 
 // Task states, each a subdirectory of tasks/.
@@ -170,7 +171,7 @@ func (b *Inbox) Locked(f func() error) error {
 		return fmt.Errorf("create inbox: %w", err)
 	}
 
-	unlock, err := lockPath(filepath.Join(b.dir, tasksLock))
+	unlock, err := filelock.Lock(filepath.Join(b.dir, tasksLock), messagePerm)
 	if err != nil {
 		return err
 	}
