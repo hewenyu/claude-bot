@@ -56,3 +56,21 @@ func TestSplit_longFenceLineTerminates(t *testing.T) {
 		}
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{s: "short", n: 5, want: "short"},
+		{s: "longer", n: 5, want: "long…"},
+		{s: "你好世界你好", n: 3, want: "你好…"},
+	} {
+		if got := Truncate(tt.s, tt.n); got != tt.want {
+			t.Errorf("Truncate(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+		}
+	}
+}

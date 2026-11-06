@@ -42,6 +42,13 @@ const ClientTimeout = 2 * time.Minute
 // MaxResponse bounds an API answer read into memory.
 const MaxResponse = 16 << 20
 
+// Header values the adapters send.
+const (
+	UserAgent = "claude-bot"
+	Bearer    = "Bearer " // Authorization scheme of API tokens
+	JSON      = "application/json"
+)
+
 // Proxy parses a proxy mode: ProxyDirect, ProxyEnv or a proxy URL.
 func Proxy(mode string) (ProxyFunc, error) {
 	switch mode {

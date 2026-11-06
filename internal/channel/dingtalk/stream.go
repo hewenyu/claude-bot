@@ -13,12 +13,6 @@ import (
 	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
-const (
-	backoffStart = 2 * time.Second // first wait after a failed connection
-	backoffCap   = time.Minute
-	userAgent    = "claude-bot"
-)
-
 // Stream mode frames: their types, the topics claude-bot handles, and the
 // subscription that asks for robot messages.
 const (
@@ -59,37 +53,14 @@ type ack struct {
 // server asks for, are retried with backoff; only refused credentials end it.
 // ready is called on every connect.
 func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
-	if _, err := c.App(ctx); err != nil {
+	_, err := transport.Retry(ctx, transport.ReconnectBackoff(), c.log, "dingtalk credentials", fatal, c.App)
+	if err != nil || ctx.Err() != nil {
 		return err
 	}
 
-	backoff := transport.Backoff{Start: backoffStart, Cap: backoffCap}
-
-	for {
-		connected, err := c.session(ctx, deliver, ready)
-
-		switch {
-		case ctx.Err() != nil:
-			return nil //nolint:nilerr // cancelled: the connection error is just the shutdown
-		case fatal(err):
-			return err
-		case connected:
-			backoff.Reset()
-		}
-
-		if err == nil && connected {
-			c.log.Info("dingtalk reconnecting", "reason", "requested by DingTalk")
-
-			continue
-		}
-
-		wait := backoff.Next()
-		c.log.Warn("dingtalk connection", "err", err, "retry_in", wait)
-
-		if !transport.Sleep(ctx, wait) {
-			return nil
-		}
-	}
+	return transport.Reconnect(ctx, c.log, Name, fatal, func(ctx context.Context) (bool, error) {
+		return c.session(ctx, deliver, ready)
+	})
 }
 
 // streamURL registers a Stream connection for robot messages and returns
@@ -99,7 +70,7 @@ func (c *Channel) streamURL(ctx context.Context) (string, error) {
 		"clientId":      c.cfg.ClientID,
 		"clientSecret":  c.cfg.ClientSecret,
 		"subscriptions": []map[string]string{{"type": frameCallback, "topic": topicBotMessage}},
-		"ua":            userAgent,
+		"ua":            transport.UserAgent,
 	}
 
 	var r struct {
@@ -208,7 +179,7 @@ func (c *Channel) frame(conn *websocket.Conn, data []byte, deliver func(channel.
 func (c *Channel) ack(conn *websocket.Conn, f frame, data string) error {
 	a := ack{
 		Code:    ackOK,
-		Headers: frameHeaders{MessageID: f.Headers.MessageID, ContentType: "application/json"},
+		Headers: frameHeaders{MessageID: f.Headers.MessageID, ContentType: transport.JSON},
 		Message: ackMessage,
 		Data:    data,
 	}

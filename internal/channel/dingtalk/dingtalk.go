@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,9 +33,6 @@ const (
 	maxTitleLen    = 30   // characters of the title shown in notifications
 	msgKeyMarkdown = "sampleMarkdown"
 )
-
-// ErrNoGet is returned by Get: the OpenAPI cannot fetch a message by id.
-var ErrNoGet = errors.New("dingtalk: the OpenAPI cannot fetch messages by id")
 
 // Config holds the credentials of the project's DingTalk app (Client ID and
 // Client Secret, formerly AppKey and AppSecret). The app's robot code is its
@@ -74,7 +70,10 @@ type Channel struct {
 	tokenExpiry time.Time
 }
 
-var _ channel.Channel = (*Channel)(nil)
+var (
+	_ channel.Channel    = (*Channel)(nil)
+	_ channel.Identifier = (*Channel)(nil)
+)
 
 // New returns a DingTalk channel for cfg. DingTalk is reached directly by
 // default, like Feishu: local proxies often break TLS to Chinese services.
@@ -107,6 +106,16 @@ func (c *Channel) App(ctx context.Context) (App, error) {
 	}
 
 	return App{ClientID: c.cfg.ClientID}, nil
+}
+
+// Identity implements channel.Identifier.
+func (c *Channel) Identity(ctx context.Context) (string, error) {
+	app, err := c.App(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return "钉钉应用 " + app.ClientID, nil
 }
 
 // Reply implements channel.Channel: in a direct chat a message to the
@@ -160,21 +169,16 @@ func title(text string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
 	line = strings.TrimSpace(strings.TrimLeft(line, "#>*-` "))
 
-	runes := []rune(line)
-	if len(runes) > maxTitleLen {
-		return string(runes[:maxTitleLen-1]) + "…"
-	}
-
 	if line == "" {
 		return "claude-bot"
 	}
 
-	return line
+	return markdown.Truncate(line, maxTitleLen)
 }
 
 // Get implements channel.Channel; DingTalk offers no way to do it.
 func (c *Channel) Get(context.Context, string) (channel.Message, error) {
-	return channel.Message{}, ErrNoGet
+	return channel.Message{}, fmt.Errorf("dingtalk: the OpenAPI %w", channel.ErrNoGet)
 }
 
 // Download implements channel.Channel. att.Key is the file's download code.
@@ -197,17 +201,9 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("dingtalk download: %w", err)
 	}
 
-	name := channel.BaseName(att.Name)
-	if name == "" {
-		_, msgID, _ := channel.LocateScoped(msg.ID)
-		name = channel.PathSafe(msgID)
-	}
+	_, msgID, _ := channel.LocateScoped(msg.ID)
 
-	if filepath.Ext(name) == "" {
-		name += channel.Extension(data)
-	}
-
-	path, err := channel.SaveFile(dir, name, data)
+	path, err := channel.SaveFile(dir, channel.FileName(msgID, data, att.Name), data)
 	if err != nil {
 		return "", fmt.Errorf("dingtalk download: %w", err)
 	}

@@ -5,6 +5,7 @@ package lark
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"sync"
 
@@ -131,7 +131,10 @@ type Channel struct {
 	names channel.Names // display names of senders; events carry open_ids only
 }
 
-var _ channel.Channel = (*Channel)(nil)
+var (
+	_ channel.Channel    = (*Channel)(nil)
+	_ channel.Identifier = (*Channel)(nil)
+)
 
 // New returns a Lark channel for cfg.
 func New(cfg Config, log *slog.Logger) (*Channel, error) {
@@ -214,11 +217,32 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 	return body.Bot, nil
 }
 
-// Listen implements channel.Channel. It delivers direct messages and group
-// messages that @-mention the bot, from users only (never from bots).
-func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
+// Identity implements channel.Identifier.
+func (c *Channel) Identity(ctx context.Context) (string, error) {
 	bot, err := c.Bot(ctx)
 	if err != nil {
+		return "", err
+	}
+
+	return "飞书应用「" + bot.AppName + "」", nil
+}
+
+// fatal reports errors that retrying cannot fix: the platform refused the
+// credentials, or the call.
+func fatal(err error) bool {
+	_, refused := errors.AsType[*apiError](err)
+	_, badToken := errors.AsType[larkcore.CodeError](err)
+
+	return refused || badToken
+}
+
+// Listen implements channel.Channel. It delivers direct messages and group
+// messages that @-mention the bot, from users only (never from bots). Network
+// errors are retried with backoff (the long connection reconnects by
+// itself); only refused credentials end it.
+func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
+	bot, err := transport.Retry(ctx, transport.ReconnectBackoff(), c.log, "lark bot info", fatal, c.Bot)
+	if err != nil || ctx.Err() != nil {
 		return err
 	}
 
@@ -434,8 +458,12 @@ func (c *Channel) Reply(ctx context.Context, msg channel.Message, text string) e
 	})
 }
 
-// Send implements channel.Channel.
+// Send implements channel.Channel. Lark sends at most one message per uuid
+// within an hour, so each call gets its own: the same text sent twice is
+// two messages. The text fallback shares it, since the post was refused.
 func (c *Channel) Send(ctx context.Context, chatID, text string) error {
+	uuid := rand.Text()
+
 	return c.sendWithFallback(text, "", func(msgType, content string) error {
 		resp, err := c.client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
 			ReceiveIdType(larkim.CreateMessageV1ReceiveIDTypeChatId).
@@ -443,7 +471,7 @@ func (c *Channel) Send(ctx context.Context, chatID, text string) error {
 				ReceiveId(chatID).
 				MsgType(msgType).
 				Content(content).
-				Uuid(dedupeKey(chatID, msgType, content)).
+				Uuid(uuid).
 				Build()).
 			Build())
 		if err != nil {
@@ -589,7 +617,7 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("lark download: %w", err)
 	}
 
-	path, err := channel.SaveFile(dir, fileName(att, resp.FileName, data), data)
+	path, err := channel.SaveFile(dir, channel.FileName(att.Key, data, att.Name, resp.FileName), data)
 	if err != nil {
 		return "", fmt.Errorf("lark download: %w", err)
 	}
@@ -603,25 +631,6 @@ func resourceType(kind channel.AttachmentKind) string {
 	}
 
 	return resourceFile
-}
-
-// fileName picks a local name for a download: the attachment's own name, the
-// name the server sent, or the key, plus an extension sniffed from the data.
-func fileName(att channel.Attachment, served string, data []byte) string {
-	name := channel.BaseName(att.Name)
-	if name == "" {
-		name = channel.BaseName(served)
-	}
-
-	if name == "" {
-		name = channel.PathSafe(att.Key)
-	}
-
-	if filepath.Ext(name) == "" {
-		name += channel.Extension(data)
-	}
-
-	return name
 }
 
 // Ack implements channel.Channel with an emoji reaction.

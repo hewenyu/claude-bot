@@ -319,6 +319,8 @@ func attachments(body string) []channel.Attachment {
 		out = append(out, channel.Attachment{Kind: kind, Key: u, Name: channel.BaseName(path.Base(stripQuery(u)))})
 	}
 
+	channel.UniqueNames(out)
+
 	return out
 }
 

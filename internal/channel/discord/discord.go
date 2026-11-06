@@ -92,7 +92,10 @@ type Channel struct {
 	bot   *Bot // cached once fetched successfully
 }
 
-var _ channel.Channel = (*Channel)(nil)
+var (
+	_ channel.Channel    = (*Channel)(nil)
+	_ channel.Identifier = (*Channel)(nil)
+)
 
 // New returns a Discord channel for cfg.
 func New(cfg Config, log *slog.Logger) (*Channel, error) {
@@ -154,12 +157,31 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 	return *c.bot, nil
 }
 
-// Listen implements channel.Channel. It delivers direct messages and server
-// messages that @-mention the bot, from people only (never bots or webhooks).
-// The session reconnects by itself; ready is called on every (re)connect.
-func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
+// Identity implements channel.Identifier.
+func (c *Channel) Identity(ctx context.Context) (string, error) {
 	bot, err := c.Bot(ctx)
 	if err != nil {
+		return "", err
+	}
+
+	return "Discord bot " + bot.Name, nil
+}
+
+// fatal reports errors that retrying cannot fix: a rejected token.
+func fatal(err error) bool {
+	re, ok := errors.AsType[*discordgo.RESTError](err)
+
+	return ok && re.Response != nil && re.Response.StatusCode == http.StatusUnauthorized
+}
+
+// Listen implements channel.Channel. It delivers direct messages and server
+// messages that @-mention the bot, from people only (never bots or webhooks).
+// Until the first connection is up, errors are retried with backoff; only a
+// rejected token ends it. Then the session reconnects by itself; ready is
+// called on every (re)connect.
+func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
+	bot, err := transport.Retry(ctx, transport.ReconnectBackoff(), c.log, "discord bot info", fatal, c.Bot)
+	if err != nil || ctx.Err() != nil {
 		return err
 	}
 
@@ -187,8 +209,15 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 		}
 	}()
 
-	if err := c.s.Open(); err != nil {
-		return fmt.Errorf("discord gateway: %w", err)
+	_, err = transport.Retry(ctx, transport.ReconnectBackoff(), c.log, "discord gateway", fatal, func(context.Context) (struct{}, error) {
+		if err := c.s.Open(); err != nil {
+			return struct{}{}, fmt.Errorf("discord gateway: %w", err)
+		}
+
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return err
 	}
 
 	<-ctx.Done()
@@ -303,21 +332,12 @@ func (c *Channel) Download(ctx context.Context, msg channel.Message, att channel
 		return "", fmt.Errorf("discord download: %w", err)
 	}
 
-	path, err := channel.SaveFile(dir, fileName(found), data)
+	path, err := channel.SaveFile(dir, channel.FileName(found.ID, data, att.Name, found.Filename), data)
 	if err != nil {
 		return "", fmt.Errorf("discord download: %w", err)
 	}
 
 	return path, nil
-}
-
-// fileName is the attachment's own name without any directories, or its id.
-func fileName(a *discordgo.MessageAttachment) string {
-	if name := channel.BaseName(a.Filename); name != "" {
-		return name
-	}
-
-	return a.ID
 }
 
 // Ack implements channel.Channel with an emoji reaction.

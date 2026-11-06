@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/markdown"
@@ -27,10 +26,11 @@ const Name = "telegram"
 
 const (
 	// pollSeconds stays below the transport's 30 s response header timeout.
-	pollSeconds   = 25
-	backoffStart  = 2 * time.Second // first wait after a failed poll
-	backoffCap    = time.Minute
-	maxMessageLen = 4096 // Telegram's limit per message, in characters
+	pollSeconds = 25
+	// Telegram allows 4096 UTF-16 code units per message, but Split counts
+	// characters, and emoji and other characters outside the BMP take two
+	// units. The margin covers a reasonable share of them.
+	maxMessageLen = 4000
 	ackEmoji      = "👀"
 	reactionEmoji = "emoji" // ReactionType of a plain emoji
 	updateMessage = "message"
@@ -46,9 +46,6 @@ const (
 	methodGetFile     = "getFile"
 	methodSetReaction = "setMessageReaction"
 )
-
-// ErrNoGet is returned by Get: the Bot API cannot fetch a message by id.
-var ErrNoGet = errors.New("telegram: the Bot API cannot fetch messages by id; quoted messages are included in the text")
 
 // Config holds the token of the project's bot, from @BotFather.
 type Config struct {
@@ -100,7 +97,10 @@ type Channel struct {
 	bot   *Bot // cached once fetched successfully
 }
 
-var _ channel.Channel = (*Channel)(nil)
+var (
+	_ channel.Channel    = (*Channel)(nil)
+	_ channel.Identifier = (*Channel)(nil)
+)
 
 // New returns a Telegram channel for cfg.
 func New(cfg Config, log *slog.Logger) (*Channel, error) {
@@ -144,6 +144,16 @@ func (c *Channel) Bot(ctx context.Context) (Bot, error) {
 	return *c.bot, nil
 }
 
+// Identity implements channel.Identifier.
+func (c *Channel) Identity(ctx context.Context) (string, error) {
+	bot, err := c.Bot(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return "Telegram @" + bot.Username, nil
+}
+
 type getUpdates struct {
 	Offset         int64    `json:"offset,omitempty"`
 	Timeout        int      `json:"timeout"`
@@ -152,22 +162,33 @@ type getUpdates struct {
 
 // Listen implements channel.Channel. It long-polls for new messages and
 // delivers direct messages, and group messages that @-mention the bot or
-// reply to it, from people only. Network errors are retried with backoff;
-// only a rejected token (or a webhook in the way) ends it.
+// reply to it, from people only. Network errors, and updates that could not
+// be delivered, are retried with backoff; only a rejected token (or a
+// webhook in the way) ends it.
 func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) error, ready func()) error {
-	bot, err := c.Bot(ctx)
-	if err != nil {
+	backoff := transport.ReconnectBackoff()
+
+	bot, err := transport.Retry(ctx, backoff, c.log, "telegram getMe", fatal, c.Bot)
+	if err != nil || ctx.Err() != nil {
 		return err
 	}
 
 	req := getUpdates{Timeout: pollSeconds, AllowedUpdates: []string{updateMessage}}
-	backoff := transport.Backoff{Start: backoffStart, Cap: backoffCap}
 	connected := false
 
 	for {
 		var updates []update
 
 		err := c.call(ctx, methodGetUpdates, req, &updates)
+		if err == nil && !connected {
+			c.log.Info("telegram connected", "bot", bot.Username)
+			ready()
+		}
+
+		connected = err == nil
+		if err == nil {
+			err = deliverAll(updates, bot, &req.Offset, deliver)
+		}
 
 		switch {
 		case ctx.Err() != nil:
@@ -175,39 +196,34 @@ func (c *Channel) Listen(ctx context.Context, deliver func(channel.Message) erro
 		case fatal(err):
 			return err
 		case err != nil:
-			connected = false
 			wait := backoff.Next()
 			c.log.Warn("telegram poll", "err", err, "retry_in", wait)
 
 			if !transport.Sleep(ctx, wait) {
 				return nil
 			}
-
-			continue
-		}
-
-		if !connected {
-			c.log.Info("telegram connected", "bot", bot.Username)
-			ready()
-		}
-
-		connected = true
-
-		backoff.Reset()
-
-		for _, u := range updates {
-			req.Offset = u.UpdateID + 1 // confirms it on the next poll
-
-			msg, ok := fromMessage(u.Message, bot)
-			if !ok {
-				continue
-			}
-
-			if err := deliver(msg); err != nil {
-				c.log.Error("telegram deliver", "id", msg.ID, "err", err)
-			}
+		default:
+			backoff.Reset()
 		}
 	}
+}
+
+// deliverAll delivers the messages of updates addressed to the bot, moving
+// offset past each update handled: the next poll confirms them. It stops at
+// the first update that could not be delivered, so the next poll gets it
+// again.
+func deliverAll(updates []update, bot Bot, offset *int64, deliver func(channel.Message) error) error {
+	for _, u := range updates {
+		if msg, ok := fromMessage(u.Message, bot); ok {
+			if err := deliver(msg); err != nil {
+				return fmt.Errorf("telegram deliver %s: %w", msg.ID, err)
+			}
+		}
+
+		*offset = u.UpdateID + 1
+	}
+
+	return nil
 }
 
 // Reply implements channel.Channel. The answer replies to the original
@@ -283,9 +299,10 @@ func (c *Channel) post(ctx context.Context, chatID, threadID string, replyTo int
 }
 
 // Get implements channel.Channel. The Bot API has no way to fetch a message,
-// so it always fails with ErrNoGet; messages carry what they quote instead.
+// so it always fails with channel.ErrNoGet; messages carry what they quote
+// instead.
 func (c *Channel) Get(context.Context, string) (channel.Message, error) {
-	return channel.Message{}, ErrNoGet
+	return channel.Message{}, fmt.Errorf("telegram: the Bot API %w; quoted messages are included in the text", channel.ErrNoGet)
 }
 
 type fileInfo struct {
@@ -309,14 +326,8 @@ func (c *Channel) Download(ctx context.Context, _ channel.Message, att channel.A
 		return "", fmt.Errorf("telegram download: %w", redact(err))
 	}
 
-	name := channel.BaseName(att.Name)
-	if name == "" {
-		name = channel.BaseName(path.Base(f.FilePath)) // photos have no name of their own
-	}
-
-	if name == "" {
-		name = channel.PathSafe(att.Key)
-	}
+	// Photos have no name of their own; the file path has one.
+	name := channel.FileName(att.Key, data, att.Name, path.Base(f.FilePath))
 
 	path, err := channel.SaveFile(dir, name, data)
 	if err != nil {

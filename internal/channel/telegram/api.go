@@ -15,10 +15,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
-const (
-	defaultAPI    = "https://api.telegram.org"
-	maxRetryAfter = 60 * time.Second // longest flood wait honoured before giving up
-)
+const defaultAPI = "https://api.telegram.org"
 
 // APIError is an error answer of the Bot API.
 type APIError struct {
@@ -72,17 +69,16 @@ type response struct {
 // call invokes a Bot API method with params as JSON and decodes the result
 // into out (if not nil). A flood wait is honoured once.
 func (c *Channel) call(ctx context.Context, method string, params, out any) error {
-	err := c.callOnce(ctx, method, params, out)
+	return transport.RetryOnce(ctx, floodWait, func() error { return c.callOnce(ctx, method, params, out) })
+}
 
-	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeTooMany && ae.RetryAfter <= maxRetryAfter {
-		if !transport.Sleep(ctx, ae.RetryAfter) {
-			return ctx.Err()
-		}
-
-		err = c.callOnce(ctx, method, params, out)
+// floodWait is how long a 429 answer asks to wait.
+func floodWait(err error) (time.Duration, bool) {
+	if ae, ok := errors.AsType[*APIError](err); ok && ae.Code == codeTooMany {
+		return ae.RetryAfter, true
 	}
 
-	return err
+	return 0, false
 }
 
 func (c *Channel) callOnce(ctx context.Context, method string, params, out any) error {
@@ -96,7 +92,7 @@ func (c *Channel) callOnce(ctx context.Context, method string, params, out any) 
 		return fmt.Errorf("telegram %s: %w", method, redact(err))
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", transport.JSON)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

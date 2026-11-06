@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	imageMIME     = "image/"
 	directPrefix  = "D" // channel ids of direct messages
 	channelTypeIM = "im"
 	eventMention  = "app_mention"
@@ -128,13 +127,10 @@ func attachments(files []file) []channel.Attachment {
 			continue
 		}
 
-		kind := channel.AttachmentFile
-		if strings.HasPrefix(f.Mimetype, imageMIME) {
-			kind = channel.AttachmentImage
-		}
-
-		out = append(out, channel.Attachment{Kind: kind, Key: f.ID, Name: f.Name})
+		out = append(out, channel.Attachment{Kind: channel.KindOf(f.Mimetype), Key: f.ID, Name: f.Name})
 	}
+
+	channel.UniqueNames(out)
 
 	return out
 }

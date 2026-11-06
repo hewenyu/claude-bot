@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -257,18 +258,6 @@ func TestReply_directHasNoMention(t *testing.T) {
 	}
 }
 
-func TestFileName(t *testing.T) {
-	t.Parallel()
-
-	if got := fileName(&discordgo.MessageAttachment{ID: "a1", Filename: "../x/crash.log"}); got != "crash.log" {
-		t.Errorf("fileName() = %q, want crash.log", got)
-	}
-
-	if got := fileName(&discordgo.MessageAttachment{ID: "a1", Filename: ".."}); got != "a1" {
-		t.Errorf("fileName() = %q, want the id", got)
-	}
-}
-
 func TestBot(t *testing.T) {
 	t.Parallel()
 
@@ -311,5 +300,75 @@ func TestBot_applicationEndsWithContext(t *testing.T) {
 
 	if _, err := c.Bot(ctx); err == nil {
 		t.Fatal("Bot() succeeded without the application")
+	}
+}
+
+// flaky fails the first request with a network error, and answers the others
+// with status, if set.
+type flaky struct {
+	recorder
+
+	status int
+}
+
+func (f *flaky) RoundTrip(req *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	first := len(f.reqs) == 0
+	f.mu.Unlock()
+
+	resp, err := f.recorder.RoundTrip(req)
+
+	if first {
+		return nil, errors.New("connection reset")
+	}
+
+	if err == nil && f.status != 0 {
+		resp.StatusCode = f.status
+	}
+
+	return resp, err
+}
+
+func (f *flaky) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.reqs)
+}
+
+func TestListen_rejectedTokenEnds(t *testing.T) {
+	t.Parallel()
+
+	c, _ := newRecorded(t)
+	c.s.Client = &http.Client{Transport: &flaky{status: http.StatusUnauthorized}}
+
+	if err := c.Listen(t.Context(), func(channel.Message) error { return nil }, func() {}); !fatal(err) {
+		t.Errorf("Listen() = %v, want the 401", err)
+	}
+}
+
+func TestListen_retriesBotInfoAtStart(t *testing.T) {
+	t.Parallel()
+
+	c, _ := newRecorded(t)
+	rt := &flaky{}
+	c.s.Client = &http.Client{Transport: rt}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+
+	go func() { done <- c.Listen(ctx, func(channel.Message) error { return nil }, func() {}) }()
+
+	// After the failure the bot info is asked again, and the gateway after it.
+	for deadline := time.Now().Add(3 * transport.ReconnectStart); rt.count() < 3; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d requests after a failed bot info, want it asked again", rt.count())
+		}
+	}
+
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Errorf("Listen() = %v after cancel, want nil", err)
 	}
 }

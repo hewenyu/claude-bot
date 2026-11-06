@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
+	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
 const (
@@ -379,6 +380,51 @@ func TestListen_badTokenEnds(t *testing.T) {
 
 	if err := ch.Listen(t.Context(), func(channel.Message) error { return nil }, func() {}); !fatal(err) {
 		t.Errorf("Listen() = %v, want invalid_auth", err)
+	}
+
+	f.mu.Lock()
+	f.answer["auth.test"] = `{"ok":true,"user_id":"U1","user":"alice"}` // a user's token
+	f.mu.Unlock()
+
+	if err := ch.Listen(t.Context(), func(channel.Message) error { return nil }, func() {}); !errors.Is(err, errNotBot) {
+		t.Errorf("Listen() with a user token = %v, want errNotBot", err)
+	}
+}
+
+func TestListen_retriesAuthTestAtStart(t *testing.T) {
+	t.Parallel()
+
+	f, ch := newFake(t)
+	f.answer["auth.test"] = `{"ok":false,"error":"internal_error"}`
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	ready := make(chan struct{}, 1)
+
+	go func() {
+		_ = ch.Listen(ctx, func(channel.Message) error { return nil }, func() {
+			select {
+			case ready <- struct{}{}:
+			default:
+			}
+		})
+	}()
+
+	for deadline := time.Now().Add(5 * time.Second); len(f.called("auth.test")) == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("auth.test never called")
+		}
+	}
+
+	f.mu.Lock()
+	delete(f.answer, "auth.test")
+	f.mu.Unlock()
+
+	select {
+	case <-ready:
+	case <-time.After(3 * transport.ReconnectStart):
+		t.Fatalf("not connected after a failed auth.test; called %d times", len(f.called("auth.test")))
 	}
 }
 

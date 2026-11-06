@@ -21,6 +21,9 @@ var (
 	ErrUnknownChannel = errors.New("unknown channel") // prefix not configured
 )
 
+// ErrNoGet is returned by Get on platforms that cannot fetch a message by id.
+var ErrNoGet = fmt.Errorf("cannot fetch messages by id: %w", errors.ErrUnsupported)
+
 // ChatType tells direct chats from group chats.
 type ChatType string
 
@@ -114,6 +117,13 @@ type Closable interface {
 	ClosedAt(ctx context.Context, chatID string) (time.Time, error)
 }
 
+// Identifier is a Channel that can tell who its credentials belong to.
+type Identifier interface {
+	// Identity asks the platform and returns a human-readable "who am I",
+	// e.g. "Telegram @my_bot". It doubles as a credentials check.
+	Identity(ctx context.Context) (string, error)
+}
+
 // ID builds a protocol message id.
 func ID(channel, platformID string) string {
 	return channel + ":" + platformID
@@ -182,6 +192,67 @@ func BaseName(name string) string {
 	default:
 		return base
 	}
+}
+
+// KindOf tells images from other files by MIME type.
+func KindOf(mimeType string) AttachmentKind {
+	if strings.HasPrefix(mimeType, "image/") {
+		return AttachmentImage
+	}
+
+	return AttachmentFile
+}
+
+// UniqueNames makes the names of one message's attachments unique, so their
+// downloads do not overwrite each other: a second "image.png" becomes
+// "image-2.png". Unnamed attachments are left alone: downloads name them
+// after their key.
+func UniqueNames(atts []Attachment) {
+	seen := map[string]bool{}
+
+	for i := range atts {
+		name := BaseName(atts[i].Name)
+		if name == "" {
+			continue
+		}
+
+		ext := filepath.Ext(name)
+		stem := strings.TrimSuffix(name, ext)
+
+		// Case is ignored: so do the file systems of macOS and Windows.
+		for n := 2; seen[strings.ToLower(name)]; n++ {
+			name = fmt.Sprintf("%s-%d%s", stem, n, ext)
+		}
+
+		seen[strings.ToLower(name)] = true
+
+		if name != BaseName(atts[i].Name) {
+			atts[i].Name = name
+		}
+	}
+}
+
+// FileName is the local name of a download: the first usable of names (the
+// attachment's own name first, then any the platform reports), else key made
+// path-safe, plus an extension sniffed from data when it has none.
+func FileName(key string, data []byte, names ...string) string {
+	name := ""
+
+	for _, n := range names {
+		if name = BaseName(n); name != "" {
+			break
+		}
+	}
+
+	if name == "" {
+		name = PathSafe(key)
+	}
+
+	if filepath.Ext(name) == "" {
+		name += Extension(data)
+	}
+
+	return name
 }
 
 // Extensions of the types people send most. mime's own list is the fallback,

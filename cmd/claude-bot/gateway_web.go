@@ -832,39 +832,8 @@ func (w *web) testChannel(rw http.ResponseWriter, r *http.Request) {
 
 // whoIs asks the platform who a channel's credentials belong to.
 func whoIs(ctx context.Context, ch channel.Channel) (string, error) {
-	switch c := ch.(type) {
-	case *lark.Channel:
-		bot, err := c.Bot(ctx)
-
-		return "飞书应用「" + bot.AppName + "」", err
-	case *discord.Channel:
-		bot, err := c.Bot(ctx)
-
-		return "Discord bot " + bot.Name, err
-	case *telegram.Channel:
-		bot, err := c.Bot(ctx)
-
-		return "Telegram @" + bot.Username, err
-	case *slack.Channel:
-		bot, err := c.Bot(ctx)
-		if err == nil {
-			err = c.CheckAppToken(ctx)
-		}
-
-		return "Slack bot " + bot.Name + "（" + bot.Team + "）", err
-	case *dingtalk.Channel:
-		app, err := c.App(ctx)
-
-		return "钉钉应用 " + app.ClientID, err
-	case *github.Channel:
-		acct, err := c.Account(ctx)
-		who := acct.Login + " @ " + acct.Repo
-
-		if err == nil && !acct.CanPush {
-			who += "（没有写权限：能收消息、发评论，但不能 close / merge）"
-		}
-
-		return who, err
+	if id, ok := ch.(channel.Identifier); ok {
+		return id.Identity(ctx)
 	}
 
 	return "", fmt.Errorf("cannot check channel %s", ch.Name())

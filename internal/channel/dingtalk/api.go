@@ -63,7 +63,7 @@ func (c *Channel) call(ctx context.Context, path string, body, out any) error {
 		return fmt.Errorf("dingtalk %s: %w", path, err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", transport.JSON)
 
 	if path != pathAccessToken {
 		token, err := c.accessToken(ctx)

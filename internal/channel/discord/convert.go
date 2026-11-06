@@ -9,10 +9,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel"
 )
 
-const (
-	imageMIME   = "image/" // content type prefix of images
-	mentionMark = "@"      // shown before a mentioned person's name in text
-)
+const mentionMark = "@" // shown before a mentioned person's name in text
 
 // userMention matches <@id> and the legacy nickname form <@!id>.
 var userMention = regexp.MustCompile(`<@!?(\d+)>`)
@@ -122,13 +119,10 @@ func attachments(in []*discordgo.MessageAttachment) []channel.Attachment {
 			continue
 		}
 
-		kind := channel.AttachmentFile
-		if strings.HasPrefix(a.ContentType, imageMIME) {
-			kind = channel.AttachmentImage
-		}
-
-		out = append(out, channel.Attachment{Kind: kind, Key: a.ID, Name: a.Filename})
+		out = append(out, channel.Attachment{Kind: channel.KindOf(a.ContentType), Key: a.ID, Name: a.Filename})
 	}
+
+	channel.UniqueNames(out)
 
 	return out
 }
