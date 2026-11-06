@@ -98,7 +98,7 @@ func (t *TitleParser) finish(titles []string) []string {
 }
 
 // Clip is s cut to n runes, and an ellipsis if it was longer: what an
-// agent did or said, shown in a line.
+// agent did or said shown in a line, the start of a conversation, a title.
 func Clip(s string, n int) string {
 	if r := []rune(s); len(r) > n {
 		return string(r[:n]) + "…"

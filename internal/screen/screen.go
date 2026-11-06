@@ -17,6 +17,7 @@ import (
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/jev"
+	"github.com/hewenyu/claude-bot/internal/term"
 )
 
 // Asker answers yes/no questions about a state; *jev.Client is one.
@@ -186,7 +187,7 @@ func cutConversation(conv []Item) []Piece {
 				text := strings.TrimSpace(it.Msg.Text[s.start:s.end])
 				pieces = append(pieces, Piece{
 					Message: it.Msg.ID, Text: text, Attachment: -1,
-					start: s.start, end: s.end, jevText: truncate(text, maxPieceRunes),
+					start: s.start, end: s.end, jevText: term.Clip(text, maxPieceRunes),
 				})
 			}
 
@@ -250,14 +251,6 @@ func textExcerpt(path string) string {
 	}
 
 	return string(buf)
-}
-
-func truncate(s string, runes int) string {
-	if utf8.RuneCountInString(s) <= runes {
-		return s
-	}
-
-	return string([]rune(s)[:runes]) + "…"
 }
 
 // Crop removes pieces from their message: text spans are cut out and

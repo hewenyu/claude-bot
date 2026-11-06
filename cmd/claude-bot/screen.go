@@ -13,6 +13,7 @@ import (
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/screen"
+	"github.com/hewenyu/claude-bot/internal/term"
 	"github.com/hewenyu/claude-bot/internal/transport"
 )
 
@@ -199,7 +200,7 @@ func (a *app) threads(m channel.Message) ([]screen.Thread, error) {
 			asked = append(asked, e.Text)
 		}
 
-		transcript := firstRunes(strings.Join(opening, "\n"), askRunes)
+		transcript := term.Clip(strings.Join(opening, "\n"), askRunes) // what opened it
 		if len(rest) > 0 {
 			transcript += "\n" + lastRunes(strings.Join(rest, "\n"), transcriptRunes)
 		}
@@ -212,16 +213,6 @@ func (a *app) threads(m channel.Message) ([]screen.Thread, error) {
 	}
 
 	return out, nil
-}
-
-// firstRunes keeps the start of s, what opened a conversation.
-func firstRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-
-	return string(r[:n]) + "…"
 }
 
 // lastRunes keeps the end of s, the latest of a conversation.

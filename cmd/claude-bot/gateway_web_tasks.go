@@ -8,13 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/hewenyu/claude-bot/internal/channel"
 	"github.com/hewenyu/claude-bot/internal/channel/github"
 	"github.com/hewenyu/claude-bot/internal/config"
 	"github.com/hewenyu/claude-bot/internal/inbox"
 	"github.com/hewenyu/claude-bot/internal/store"
+	"github.com/hewenyu/claude-bot/internal/term"
 )
 
 // The page's tasks: what each project was asked, and how it went.
@@ -119,11 +119,7 @@ func titleOf(e inbox.Entry) string {
 		line = filepath.Base(e.File)
 	}
 
-	if utf8.RuneCountInString(line) > titleRunes {
-		line = string([]rune(line)[:titleRunes]) + "…"
-	}
-
-	return line
+	return term.Clip(line, titleRunes)
 }
 
 // taskLink is where a task can be seen on its platform, if it has an address.
